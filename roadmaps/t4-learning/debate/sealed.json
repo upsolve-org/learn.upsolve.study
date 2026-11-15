@@ -1,0 +1,598 @@
+{
+  "round": 2,
+  "claims": {
+    "J1": {
+      "id": "J1",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "device",
+      "text": "The working repository is empty apart from Git and this debate; no application, dependencies, build outputs, calibration or prior debates were found. Git has no commits. Local C: has 71.71 GiB free; CIM RAM inspection is denied and capacity.py was not found in the two local skills roots. These are workstation observations, not server measurements.",
+      "evidence": {
+        "type": "measured",
+        "source": "Get-ChildItem; rg --files; git log; Get-PSDrive C",
+        "detail": "No server connection or T4 benchmark is available."
+      }
+    },
+    "J2": {
+      "id": "J2",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "device",
+      "text": "User specifies one T4 server and about 100 users; concurrency and host RAM/CPU/storage remain unverified.",
+      "evidence": {
+        "type": "inferred",
+        "source": "User request",
+        "detail": "No throughput guarantee follows from user count."
+      }
+    },
+    "J3": {
+      "id": "J3",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "time",
+      "text": "No deadline, calibration history, existing code or decision records exist in this workspace.",
+      "evidence": {
+        "type": "measured",
+        "source": "git log -1; Get-ChildItem -Force; rg",
+        "detail": "Implementation duration must be an estimate."
+      }
+    },
+    "J4": {
+      "id": "J4",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "tokens",
+      "text": "There are no application source files to load; initial application-context token count is zero. Debate references and external sources add context; actual aggregate agent billing is unavailable.",
+      "evidence": {
+        "type": "measured",
+        "source": "Workspace inventory",
+        "detail": "Do not report fabricated token usage."
+      }
+    },
+    "J5": {
+      "id": "J5",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "device",
+      "text": "NVIDIA lists T4 as a 16 GB GDDR6 Turing GPU with 70 W board power.",
+      "evidence": {
+        "type": "source",
+        "source": "https://www.nvidia.com/en-us/data-center/tesla-t4/",
+        "detail": "Board power is not whole-server power."
+      }
+    },
+    "J6": {
+      "id": "J6",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "time",
+      "text": "Jane Street's tutor specifies a diagnostic, a skill map, questioning, evidence-based advancement, spaced review and a final assessment.",
+      "evidence": {
+        "type": "prior-art",
+        "source": "https://raw.githubusercontent.com/janestreet/agent_skills/master/socratic-tutor/SKILL.md",
+        "detail": "Inspect the original for exact transitions and overrides. It is a prompt specification, not evidence of small-model efficacy."
+      }
+    },
+    "J7": {
+      "id": "J7",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "time",
+      "text": "LearnHarness describes probing, a dependency map, teaching, practice and a persistent reasoning record; it is a desktop app supporting custom endpoints as well as subscriptions and API keys.",
+      "evidence": {
+        "type": "prior-art",
+        "source": "https://learnharness.ai/",
+        "detail": "Public screenshots and descriptions inspected, not an authenticated hands-on usability test. No verified requirement for prior subject knowledge."
+      }
+    },
+    "J8": {
+      "id": "J8",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "time",
+      "text": "Gizmo's official help documents an AI Tutor with courses, notes, lessons and quizzes, including entry through imported material.",
+      "evidence": {
+        "type": "prior-art",
+        "source": "https://help.gizmo.ai/en/articles/13011417-how-does-the-ai-tutor-work",
+        "detail": "The competitive premise that Gizmo has no tutor is outdated; actual learning quality was not tested."
+      }
+    },
+    "J9": {
+      "id": "J9",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "device",
+      "text": "Qwen3-4B is a candidate with a non-thinking mode; its config has 36 layers, 8 KV heads and head dimension 128. vLLM lists AWQ and GPTQ support on Turing, but the exact runtime/quantization artifact still needs testing.",
+      "evidence": {
+        "type": "source",
+        "source": "https://huggingface.co/Qwen/Qwen3-4B",
+        "detail": "Config: https://huggingface.co/Qwen/Qwen3-4B/raw/main/config.json ; compatibility: https://docs.vllm.ai/en/latest/features/quantization/"
+      }
+    },
+    "J10": {
+      "id": "J10",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "time",
+      "text": "A field experiment with nearly 1,000 high-school math students found unrestricted GPT assistance could harm subsequent unaided performance; designed tutor safeguards mitigated that harm.",
+      "evidence": {
+        "type": "prior-art",
+        "source": "https://pubmed.ncbi.nlm.nih.gov/40560616/",
+        "detail": "This supports checking unaided learning, not assuming a 4B model matches GPT-4."
+      }
+    },
+    "J11": {
+      "id": "J11",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "time",
+      "text": "The requested outcome is an accessible responsive webapp with persistent per-skill progress and a managed tutor, without learner AI subscription setup.",
+      "evidence": {
+        "type": "inferred",
+        "source": "User request",
+        "detail": "Self-hosted inference is preferred; broad subject scope and user age are not settled."
+      }
+    },
+    "P1": {
+      "id": "P1",
+      "kind": "proposal",
+      "text": "Use a server-controlled tutoring sequence: material selection, diagnostic, editable skill map, one-question teaching turns, spaced review, and a mixed final assessment; the model supplies bounded explanations and questions while code decides the next state. Preserve the learner's ability to request a direct explanation, adjust difficulty, choose the next skill, or pause and resume.",
+      "evidence": {
+        "type": "prior-art",
+        "source": "https://raw.githubusercontent.com/janestreet/agent_skills/master/socratic-tutor/SKILL.md",
+        "detail": "evidence/proponent-round1.md"
+      },
+      "round": 1,
+      "by": "proponent"
+    },
+    "P2": {
+      "id": "P2",
+      "kind": "proposal",
+      "text": "Persist demonstrated skill levels 0-5 with cited attempt evidence, and show level/5 progress bars separately from session completion, recall due dates and engagement rewards. Require independent checks including later unaided recall for promotion, treat assisted answers as practice evidence, and show diagnostic levels as provisional until assessed.",
+      "evidence": {
+        "type": "prior-art",
+        "source": "https://raw.githubusercontent.com/janestreet/agent_skills/master/socratic-tutor/SKILL.md",
+        "detail": "evidence/proponent-round1.md"
+      },
+      "round": 1,
+      "by": "proponent"
+    },
+    "P3": {
+      "id": "P3",
+      "kind": "proposal",
+      "text": "Let school students upload their own selectable-text PDFs or paste notes, confirm an extracted outline and choose a chapter; asynchronously prepare source-linked skill cards, questions, answer rubrics and misconception hints, then serve short retrieval-grounded tutor turns. Start with text-dominant material and explicit unsupported-content handling for scans, handwritten work, diagrams, missing solutions and disputed claims; release additional formats only after extraction and grading checks.",
+      "evidence": {
+        "type": "user",
+        "question": "Q2",
+        "source": "User clarification: school students studying from their own materials",
+        "detail": "evidence/proponent-round1.md"
+      },
+      "round": 1,
+      "by": "proponent"
+    },
+    "P4": {
+      "id": "P4",
+      "kind": "proposal",
+      "text": "Use a responsive React webapp, one application service with deterministic lesson state, PostgreSQL plus private file storage, a background ingestion worker, and one isolated model endpoint; benchmark a 4-bit Qwen3-4B non-thinking candidate first, retaining a 7-8B comparison only if quality needs it. Budget for an initially queued 2-4 active generations, 4k-token request contexts, 250-token ordinary responses and one model at a time, with admission limits determined by a real T4 test rather than the 100-account count.",
+      "estimate": {
+        "value": 4,
+        "unit": "initial maximum active generation slots, provisional"
+      },
+      "evidence": {
+        "type": "estimate",
+        "source": "J5, J9 and Q1; architecture budget in evidence/proponent-round1.md",
+        "detail": "evidence/proponent-round1.md"
+      },
+      "round": 1,
+      "by": "proponent"
+    },
+    "P5": {
+      "id": "P5",
+      "kind": "proposal",
+      "text": "Make the default screen a simple 'Continue learning' action with today's review and per-skill bars; desktop opens a lesson with a compact map, question/work area and collapsible source panel, while mobile shows one learning card with progress and sources in drawers. Use short optional sessions, progress celebrations, forgiving streaks and recoverable pauses; defer leaderboards, social feeds, native apps, live voice and generated executable demos.",
+      "evidence": {
+        "type": "inferred",
+        "source": "User request for LearnHarness UI/features, Gizmo ease/fun, desktop/mobile and school material uploads",
+        "detail": "evidence/proponent-round1.md"
+      },
+      "round": 1,
+      "by": "proponent"
+    },
+    "P6": {
+      "id": "P6",
+      "kind": "proposal",
+      "text": "Gate each supported material category on a fixed, human-labelled tutoring set and a T4 load replay before inviting the full cohort; measure incorrect-answer acceptance, source support, answer leakage, extraction fidelity, state-transition compliance and delayed unaided recall separately. Ship a small invited pilot first, with 8-12 engineering weeks as an uncalibrated planning range and 1-3 million development-agent tokens as an allowance to revisit after the first complete lesson.",
+      "estimate": {
+        "value": "8-12",
+        "unit": "engineering weeks, estimate not commitment"
+      },
+      "evidence": {
+        "type": "estimate",
+        "source": "J1, J3, J10; work breakdown and workload assumptions in evidence/proponent-round1.md",
+        "detail": "evidence/proponent-round1.md"
+      },
+      "round": 1,
+      "by": "proponent"
+    },
+    "P7": {
+      "id": "P7",
+      "kind": "proposal",
+      "text": "Keep learner files, attempts and model context private per account with server-side authorization, explicit deletion/export, bounded retention and encrypted transport/backups; treat imported text as data and never execute instructions from it. Launch by invitation with an operator workflow for bad material and disputed feedback, and settle target ages/jurisdictions and any guardian or school requirements before public registration.",
+      "evidence": {
+        "type": "inferred",
+        "source": "Q2 selects school students with personal material; user specifies a self-hosted server",
+        "detail": "evidence/proponent-round1.md"
+      },
+      "round": 1,
+      "by": "proponent"
+    },
+    "P8": {
+      "id": "P8",
+      "kind": "alternative",
+      "text": "An import-to-study-pack product with fixed quizzes and source excerpts could use the same progress UI and one small asynchronous model worker, making live tutoring optional after the quiz experience works. This reduces live GPU pressure and grading variability but delays the requested adaptive one-to-one tutor, so it is a fallback if the live quality or latency gates fail.",
+      "estimate": {
+        "value": "4-6",
+        "unit": "engineering weeks for narrower study-pack pilot, uncalibrated"
+      },
+      "evidence": {
+        "type": "estimate",
+        "source": "P3/P4 work decomposition; omits live adaptive turn routing and concurrent model serving",
+        "detail": "evidence/proponent-round1.md"
+      },
+      "round": 1,
+      "by": "proponent"
+    },
+    "O1": {
+      "id": "O1",
+      "round": 1,
+      "by": "opponent",
+      "kind": "risk",
+      "answers": [
+        "P1",
+        "P2",
+        "P3"
+      ],
+      "text": "Model-authored questions, rubrics and grading can agree on the same error; code-controlled progression and delayed recall do not make that semantic judgment independent. This is a plausible, unmeasured risk for the proposed small model and makes confident level/5 mastery bars unsafe until promotion evidence is validated separately.",
+      "evidence": {
+        "type": "prior-art",
+        "source": "https://www.anthropic.com/research/towards-understanding-sycophancy-in-language-models",
+        "detail": "evidence/opponent-round1.md"
+      },
+      "axis": "learning-quality",
+      "severity": "high"
+    },
+    "O2": {
+      "id": "O2",
+      "round": 1,
+      "by": "opponent",
+      "kind": "risk",
+      "answers": [
+        "P3"
+      ],
+      "text": "Selectable text does not guarantee faithful school-material extraction: tables, formulas and reading order can silently change meaning, so rejecting scans alone leaves a plausible unsupported-content failure. Outline confirmation cannot establish question answerability or correctness of generated solutions.",
+      "evidence": {
+        "type": "source",
+        "source": "https://github.com/py-pdf/pypdf/blob/main/docs/user/extract-text.md",
+        "detail": "evidence/opponent-round1.md"
+      },
+      "axis": "learning-quality",
+      "severity": "high"
+    },
+    "O3": {
+      "id": "O3",
+      "round": 1,
+      "by": "opponent",
+      "kind": "cost",
+      "answers": [
+        "P4",
+        "P5"
+      ],
+      "text": "Memory fit does not establish conversational responsiveness: four 250-token replies completed in ten seconds require 100 aggregate output tokens/s before prefill overhead. No target T4 measurement exists, so the four-slot configuration must remain a test hypothesis and a slower result requires fewer admitted sessions or shorter turns.",
+      "evidence": {
+        "type": "estimate",
+        "source": "P4; J1/J2; arithmetic in evidence/opponent-round1.md",
+        "detail": "evidence/opponent-round1.md"
+      },
+      "axis": "device",
+      "severity": "high",
+      "estimate": {
+        "value": 100,
+        "unit": "aggregate output tokens/s required for illustrative four replies in ten seconds"
+      }
+    },
+    "O4": {
+      "id": "O4",
+      "round": 1,
+      "by": "opponent",
+      "kind": "cost",
+      "answers": [
+        "P3",
+        "P4"
+      ],
+      "text": "Preparing ten chapters under the stated illustrative 10-skill, three-item, 250-token bundle assumptions costs 75000 generated tokens before retries and outlines. Asynchronous work still competes with live tutoring on the single model endpoint; preparation needs per-account quotas, interruptible chunks and priority below learner turns.",
+      "evidence": {
+        "type": "estimate",
+        "source": "P3/P4; workload sensitivity in evidence/opponent-round1.md",
+        "detail": "evidence/opponent-round1.md"
+      },
+      "axis": "tokens",
+      "severity": "high",
+      "estimate": {
+        "value": 75000,
+        "unit": "generated preparation tokens for illustrative ten chapters"
+      }
+    },
+    "O5": {
+      "id": "O5",
+      "round": 1,
+      "by": "opponent",
+      "kind": "cost",
+      "answers": [
+        "P6",
+        "P7"
+      ],
+      "text": "The plan assigns no subject reviewer or review budget, while an illustrative 200-response validation set already costs ten expert hours and sampling ten items across 100 chapters costs about 33 hours. Broad school uploads cannot inherit a category-level pass as proof that each new rubric is sound; promotion eligibility and dispute handling need bounded review workloads.",
+      "evidence": {
+        "type": "estimate",
+        "source": "P6/P7; review arithmetic in evidence/opponent-round1.md",
+        "detail": "evidence/opponent-round1.md"
+      },
+      "axis": "time",
+      "severity": "high",
+      "estimate": {
+        "value": 33.3,
+        "unit": "expert hours for illustrative 100-chapter item sample"
+      }
+    },
+    "O6": {
+      "id": "O6",
+      "round": 1,
+      "by": "opponent",
+      "kind": "risk",
+      "answers": [
+        "P1",
+        "P3",
+        "P5"
+      ],
+      "text": "The first-use path combines upload, extraction wait, outline confirmation, chapter choice, skill mapping and diagnosis before ordinary teaching, which plausibly conflicts with the intended easy mobile experience. A simple home screen does not settle this risk; test whether a student can reach a useful first lesson unaided and provide a short-excerpt start while full preparation continues.",
+      "evidence": {
+        "type": "inferred",
+        "source": "P1/P3/P5 and Q2; inferred first-session sequence",
+        "detail": "evidence/opponent-round1.md"
+      },
+      "axis": "time",
+      "severity": "medium"
+    },
+    "O7": {
+      "id": "O7",
+      "round": 1,
+      "by": "opponent",
+      "kind": "risk",
+      "answers": [
+        "P3",
+        "P7"
+      ],
+      "text": "Imported instructions can contaminate retrieval or feedback despite a prompt saying to treat them as data; the likelihood is unmeasured here. Enforce ownership filters before retrieval, keep model outputs outside authorization decisions and validate any proposed durable state change, then test adversarial uploads and cross-account access in the pilot gate.",
+      "evidence": {
+        "type": "source",
+        "source": "https://cheatsheetseries.owasp.org/cheatsheets/LLM_Prompt_Injection_Prevention_Cheat_Sheet.html",
+        "detail": "evidence/opponent-round1.md"
+      },
+      "axis": "privacy",
+      "severity": "medium"
+    },
+    "O8": {
+      "id": "O8",
+      "round": 1,
+      "by": "opponent",
+      "kind": "alternative",
+      "answers": [
+        "P1",
+        "P2",
+        "P3",
+        "P6"
+      ],
+      "text": "Keep live adaptive tutoring, but launch assessed progression for one bounded material family with verified answer keys or human-reviewed promotion items; treat other accepted uploads as source-linked practice with explicitly provisional progress. Prepare only the selected section, separate assessment from conversational feedback, and expand supported grading only when a reviewer and held-out evidence exist.",
+      "evidence": {
+        "type": "inferred",
+        "source": "J1/J10; O1/O2/O4/O5; preserves the requested live tutor while narrowing assessment obligations",
+        "detail": "evidence/opponent-round1.md"
+      }
+    },
+    "J12": {
+      "id": "J12",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "device",
+      "text": "With Qwen3-4B architecture and FP16 cache, four independent 4096-token sequences require 2.25 GiB KV storage before weights and runtime overhead; eight require 4.5 GiB. This is calculated memory, not a T4 benchmark.",
+      "evidence": {
+        "type": "measured",
+        "source": "PowerShell arithmetic from official Qwen config",
+        "detail": "evidence/measurement-notes.md; evidence/kv-arithmetic.json"
+      }
+    },
+    "J13": {
+      "id": "J13",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "device",
+      "text": "Qwen3-4B-Instruct-2507 is an official non-thinking-only 4B candidate; llama.cpp documents quantized GPU inference, continuous batching and constrained JSON. Neither establishes task quality or T4 throughput.",
+      "evidence": {
+        "type": "source",
+        "source": "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507",
+        "detail": "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/tools/server/README.md"
+      }
+    },
+    "J14": {
+      "id": "J14",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "device",
+      "text": "The user clarified 100 registered learners with modest concurrent use, superseding the concurrency uncertainty in J2.",
+      "evidence": {
+        "type": "user",
+        "question": "Q1",
+        "source": "User answer"
+      }
+    },
+    "J15": {
+      "id": "J15",
+      "round": 1,
+      "by": "judge",
+      "kind": "fact",
+      "axis": "learning-quality",
+      "text": "The user selected school students studying their own materials; this supersedes the audience uncertainty in J11 and excludes a curated-adult-course-only product as the main outcome.",
+      "evidence": {
+        "type": "user",
+        "question": "Q2",
+        "source": "User answer"
+      }
+    },
+    "P9": {
+      "id": "P9",
+      "kind": "concession",
+      "answers": [
+        "P2",
+        "P3",
+        "P6"
+      ],
+      "why": "O1, O2 and O5 identify correlated grading errors, extraction losses and an unassigned review burden; O8 preserves the tutor without claiming verified mastery for arbitrary uploads.",
+      "text": "Amend P2/P3/P6 to adopt O8: uploaded material can support live source-linked practice, but assessed skill levels require versioned verified promotion items and independently checked scoring in a bounded supported material family. Unreviewed uploads show clearly provisional learning progress, and a learner's outline approval or the model's confidence cannot qualify an assessment.",
+      "round": 2,
+      "by": "proponent"
+    },
+    "P10": {
+      "id": "P10",
+      "kind": "proposal",
+      "answers": [
+        "P4",
+        "O3",
+        "O4"
+      ],
+      "axis": "device",
+      "text": "Use Qwen3-4B-Instruct-2507 as the first candidate and select its quantization artifact and serving runtime only after a target-T4 comparison; enforce short contexts, one outstanding generation per learner, a fair bounded queue and low-priority interruptible import jobs. A capped target-server load measurement must choose admission limits at 1, 2 and 4 simultaneous requests, with burst rejection or existing review exercises when the queue is full, before the 100-account rollout.",
+      "estimate": {
+        "value": 30,
+        "unit": "minutes per initial T4 load measurement after environment setup"
+      },
+      "evidence": {
+        "type": "source",
+        "source": "J12/J13; https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507",
+        "detail": "evidence/proponent-round2.md"
+      },
+      "round": 2,
+      "by": "proponent"
+    },
+    "P11": {
+      "id": "P11",
+      "kind": "proposal",
+      "answers": [
+        "P3",
+        "P5",
+        "O4",
+        "O6"
+      ],
+      "axis": "time",
+      "text": "Prepare only a selected short excerpt first, offer a brief diagnostic and useful teaching exchange, then reveal the growing skill map as later sections become ready; cap each initial preparation job and separate it from full-document processing. Keep pasted text and simple selectable-text PDF prose as the explicit first supported formats, detect broken reading order and unsupported equations/tables/diagrams, and test the complete phone upload-to-first-lesson path with five students before expanding formats.",
+      "estimate": {
+        "value": 5,
+        "unit": "students in first supervised usability check"
+      },
+      "evidence": {
+        "type": "inferred",
+        "source": "O2/O4/O6 and user requirement for Gizmo-like ease on mobile",
+        "detail": "evidence/proponent-round2.md"
+      },
+      "round": 2,
+      "by": "proponent"
+    },
+    "P12": {
+      "id": "P12",
+      "kind": "proposal",
+      "answers": [
+        "P6",
+        "O1",
+        "O5"
+      ],
+      "axis": "learning-quality",
+      "text": "Before implementation expands, cap assessment-feasibility work at one engineer-day plus a proposed 12 subject-review hours for one supported material family; require a named consenting qualified reviewer or verified answer-key/checker route, otherwise keep mastery unavailable for that content. Freeze a 200-case held-out grading and tutoring set, release only after the specified error gates pass, and invite 10-15 learners for a two-week pilot that measures delayed unaided performance without claiming efficacy from engagement.",
+      "estimate": {
+        "value": 12,
+        "unit": "proposed subject-review hours for initial feasibility gate, availability unconfirmed"
+      },
+      "evidence": {
+        "type": "estimate",
+        "source": "O1/O5/O8 and J10; proposed release thresholds in evidence/proponent-round2.md",
+        "detail": "evidence/proponent-round2.md"
+      },
+      "round": 2,
+      "by": "proponent"
+    },
+    "P13": {
+      "id": "P13",
+      "kind": "proposal",
+      "answers": [
+        "P7",
+        "O7"
+      ],
+      "axis": "privacy",
+      "text": "Make account ownership filters, source-only retrieval, validated durable state updates and cross-account attack tests mandatory before the invited school pilot; the model cannot authorize access or publish uploads. The operator must set target ages/jurisdictions, onboarding responsibility, retention and incident/dispute handling before inviting students, with unresolved requirements blocking that release rather than turning into an assumed future reviewer job.",
+      "evidence": {
+        "type": "inferred",
+        "source": "O7; Q2 school students and self-hosted user data",
+        "detail": "evidence/proponent-round2.md"
+      },
+      "round": 2,
+      "by": "proponent"
+    },
+    "O9": {
+      "id": "O9",
+      "round": 2,
+      "by": "opponent",
+      "kind": "concession",
+      "answers": [
+        "O1",
+        "O2",
+        "O4",
+        "O5",
+        "O6",
+        "O7"
+      ],
+      "why": "P9 adopts verified promotion items and provisional practice; P10/P11 add bounded priority-aware preparation and a short first lesson; P12 assigns a conditional review gate; P13 makes authorization and operational readiness release requirements. These changes directly answer the structural omissions behind the original objections.",
+      "text": "Withdraw the objection that the proposed structure assumes arbitrary uploads can produce trusted mastery or leaves preparation, onboarding and account isolation without release boundaries. The revised structure is suitable for a bounded feasibility stage; these concessions do not assert that its gates have passed."
+    },
+    "O10": {
+      "id": "O10",
+      "round": 2,
+      "by": "opponent",
+      "kind": "risk",
+      "axis": "learning-quality",
+      "severity": "high",
+      "answers": [
+        "P9",
+        "P10",
+        "P12"
+      ],
+      "text": "The supported assessment route remains unproven: no qualified reviewer has accepted the role, no held-out set exists, and neither candidate quality nor target-T4 latency has been measured. If the review cap or model gates fail, provisional-only practice would leave the demonstrated-progress promise unresolved, so that fallback requires an explicit product-scope decision rather than being counted as completion of the assessed tutor.",
+      "evidence": {
+        "type": "inferred",
+        "source": "P12 and evidence/proponent-round2.md; J1/J2",
+        "detail": "evidence/opponent-round2.md"
+      }
+    }
+  }
+}

@@ -1,0 +1,58 @@
+[
+  {
+    "id": "J12",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "device",
+    "text": "With Qwen3-4B architecture and FP16 cache, four independent 4096-token sequences require 2.25 GiB KV storage before weights and runtime overhead; eight require 4.5 GiB. This is calculated memory, not a T4 benchmark.",
+    "evidence": {
+      "type": "measured",
+      "source": "PowerShell arithmetic from official Qwen config",
+      "detail": "evidence/measurement-notes.md; evidence/kv-arithmetic.json"
+    },
+    "ruling": "upheld"
+  },
+  {
+    "id": "J13",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "device",
+    "text": "Qwen3-4B-Instruct-2507 is an official non-thinking-only 4B candidate; llama.cpp documents quantized GPU inference, continuous batching and constrained JSON. Neither establishes task quality or T4 throughput.",
+    "evidence": {
+      "type": "source",
+      "source": "https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507",
+      "detail": "https://raw.githubusercontent.com/ggml-org/llama.cpp/master/tools/server/README.md"
+    },
+    "ruling": "upheld"
+  },
+  {
+    "id": "J14",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "device",
+    "text": "The user clarified 100 registered learners with modest concurrent use, superseding the concurrency uncertainty in J2.",
+    "evidence": {
+      "type": "user",
+      "question": "Q1",
+      "source": "User answer"
+    },
+    "ruling": "upheld"
+  },
+  {
+    "id": "J15",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "learning-quality",
+    "text": "The user selected school students studying their own materials; this supersedes the audience uncertainty in J11 and excludes a curated-adult-course-only product as the main outcome.",
+    "evidence": {
+      "type": "user",
+      "question": "Q2",
+      "source": "User answer"
+    },
+    "ruling": "upheld"
+  }
+]

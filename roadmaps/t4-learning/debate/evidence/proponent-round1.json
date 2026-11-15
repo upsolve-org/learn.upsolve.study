@@ -1,0 +1,111 @@
+[
+  {
+    "id": "P1",
+    "kind": "proposal",
+    "text": "Use a server-controlled tutoring sequence: material selection, diagnostic, editable skill map, one-question teaching turns, spaced review, and a mixed final assessment; the model supplies bounded explanations and questions while code decides the next state. Preserve the learner's ability to request a direct explanation, adjust difficulty, choose the next skill, or pause and resume.",
+    "evidence": {
+      "type": "prior-art",
+      "source": "https://raw.githubusercontent.com/janestreet/agent_skills/master/socratic-tutor/SKILL.md",
+      "detail": "evidence/proponent-round1.md"
+    },
+    "round": 1,
+    "by": "proponent"
+  },
+  {
+    "id": "P2",
+    "kind": "proposal",
+    "text": "Persist demonstrated skill levels 0-5 with cited attempt evidence, and show level/5 progress bars separately from session completion, recall due dates and engagement rewards. Require independent checks including later unaided recall for promotion, treat assisted answers as practice evidence, and show diagnostic levels as provisional until assessed.",
+    "evidence": {
+      "type": "prior-art",
+      "source": "https://raw.githubusercontent.com/janestreet/agent_skills/master/socratic-tutor/SKILL.md",
+      "detail": "evidence/proponent-round1.md"
+    },
+    "round": 1,
+    "by": "proponent"
+  },
+  {
+    "id": "P3",
+    "kind": "proposal",
+    "text": "Let school students upload their own selectable-text PDFs or paste notes, confirm an extracted outline and choose a chapter; asynchronously prepare source-linked skill cards, questions, answer rubrics and misconception hints, then serve short retrieval-grounded tutor turns. Start with text-dominant material and explicit unsupported-content handling for scans, handwritten work, diagrams, missing solutions and disputed claims; release additional formats only after extraction and grading checks.",
+    "evidence": {
+      "type": "user",
+      "question": "Q2",
+      "source": "User clarification: school students studying from their own materials",
+      "detail": "evidence/proponent-round1.md"
+    },
+    "round": 1,
+    "by": "proponent"
+  },
+  {
+    "id": "P4",
+    "kind": "proposal",
+    "text": "Use a responsive React webapp, one application service with deterministic lesson state, PostgreSQL plus private file storage, a background ingestion worker, and one isolated model endpoint; benchmark a 4-bit Qwen3-4B non-thinking candidate first, retaining a 7-8B comparison only if quality needs it. Budget for an initially queued 2-4 active generations, 4k-token request contexts, 250-token ordinary responses and one model at a time, with admission limits determined by a real T4 test rather than the 100-account count.",
+    "estimate": {
+      "value": 4,
+      "unit": "initial maximum active generation slots, provisional"
+    },
+    "evidence": {
+      "type": "estimate",
+      "source": "J5, J9 and Q1; architecture budget in evidence/proponent-round1.md",
+      "detail": "evidence/proponent-round1.md"
+    },
+    "round": 1,
+    "by": "proponent"
+  },
+  {
+    "id": "P5",
+    "kind": "proposal",
+    "text": "Make the default screen a simple 'Continue learning' action with today's review and per-skill bars; desktop opens a lesson with a compact map, question/work area and collapsible source panel, while mobile shows one learning card with progress and sources in drawers. Use short optional sessions, progress celebrations, forgiving streaks and recoverable pauses; defer leaderboards, social feeds, native apps, live voice and generated executable demos.",
+    "evidence": {
+      "type": "inferred",
+      "source": "User request for LearnHarness UI/features, Gizmo ease/fun, desktop/mobile and school material uploads",
+      "detail": "evidence/proponent-round1.md"
+    },
+    "round": 1,
+    "by": "proponent"
+  },
+  {
+    "id": "P6",
+    "kind": "proposal",
+    "text": "Gate each supported material category on a fixed, human-labelled tutoring set and a T4 load replay before inviting the full cohort; measure incorrect-answer acceptance, source support, answer leakage, extraction fidelity, state-transition compliance and delayed unaided recall separately. Ship a small invited pilot first, with 8-12 engineering weeks as an uncalibrated planning range and 1-3 million development-agent tokens as an allowance to revisit after the first complete lesson.",
+    "estimate": {
+      "value": "8-12",
+      "unit": "engineering weeks, estimate not commitment"
+    },
+    "evidence": {
+      "type": "estimate",
+      "source": "J1, J3, J10; work breakdown and workload assumptions in evidence/proponent-round1.md",
+      "detail": "evidence/proponent-round1.md"
+    },
+    "round": 1,
+    "by": "proponent"
+  },
+  {
+    "id": "P7",
+    "kind": "proposal",
+    "text": "Keep learner files, attempts and model context private per account with server-side authorization, explicit deletion/export, bounded retention and encrypted transport/backups; treat imported text as data and never execute instructions from it. Launch by invitation with an operator workflow for bad material and disputed feedback, and settle target ages/jurisdictions and any guardian or school requirements before public registration.",
+    "evidence": {
+      "type": "inferred",
+      "source": "Q2 selects school students with personal material; user specifies a self-hosted server",
+      "detail": "evidence/proponent-round1.md"
+    },
+    "round": 1,
+    "by": "proponent"
+  },
+  {
+    "id": "P8",
+    "kind": "alternative",
+    "text": "An import-to-study-pack product with fixed quizzes and source excerpts could use the same progress UI and one small asynchronous model worker, making live tutoring optional after the quiz experience works. This reduces live GPU pressure and grading variability but delays the requested adaptive one-to-one tutor, so it is a fallback if the live quality or latency gates fail.",
+    "estimate": {
+      "value": "4-6",
+      "unit": "engineering weeks for narrower study-pack pilot, uncalibrated"
+    },
+    "evidence": {
+      "type": "estimate",
+      "source": "P3/P4 work decomposition; omits live adaptive turn routing and concurrent model serving",
+      "detail": "evidence/proponent-round1.md"
+    },
+    "round": 1,
+    "by": "proponent"
+  }
+]

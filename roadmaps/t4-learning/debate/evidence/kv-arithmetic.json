@@ -1,0 +1,22 @@
+[
+  {
+    "Sequences": 1,
+    "TokensEach": 4096,
+    "KVGiB": 0.5625
+  },
+  {
+    "Sequences": 4,
+    "TokensEach": 4096,
+    "KVGiB": 2.25
+  },
+  {
+    "Sequences": 8,
+    "TokensEach": 4096,
+    "KVGiB": 4.5
+  },
+  {
+    "Sequences": 100,
+    "TokensEach": 4096,
+    "KVGiB": 56.25
+  }
+]

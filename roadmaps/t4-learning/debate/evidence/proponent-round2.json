@@ -1,0 +1,99 @@
+[
+  {
+    "id": "P9",
+    "kind": "concession",
+    "answers": [
+      "P2",
+      "P3",
+      "P6"
+    ],
+    "why": "O1, O2 and O5 identify correlated grading errors, extraction losses and an unassigned review burden; O8 preserves the tutor without claiming verified mastery for arbitrary uploads.",
+    "text": "Amend P2/P3/P6 to adopt O8: uploaded material can support live source-linked practice, but assessed skill levels require versioned verified promotion items and independently checked scoring in a bounded supported material family. Unreviewed uploads show clearly provisional learning progress, and a learner's outline approval or the model's confidence cannot qualify an assessment.",
+    "round": 2,
+    "by": "proponent"
+  },
+  {
+    "id": "P10",
+    "kind": "proposal",
+    "answers": [
+      "P4",
+      "O3",
+      "O4"
+    ],
+    "axis": "device",
+    "text": "Use Qwen3-4B-Instruct-2507 as the first candidate and select its quantization artifact and serving runtime only after a target-T4 comparison; enforce short contexts, one outstanding generation per learner, a fair bounded queue and low-priority interruptible import jobs. A capped target-server load measurement must choose admission limits at 1, 2 and 4 simultaneous requests, with burst rejection or existing review exercises when the queue is full, before the 100-account rollout.",
+    "estimate": {
+      "value": 30,
+      "unit": "minutes per initial T4 load measurement after environment setup"
+    },
+    "evidence": {
+      "type": "source",
+      "source": "J12/J13; https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507",
+      "detail": "evidence/proponent-round2.md"
+    },
+    "round": 2,
+    "by": "proponent"
+  },
+  {
+    "id": "P11",
+    "kind": "proposal",
+    "answers": [
+      "P3",
+      "P5",
+      "O4",
+      "O6"
+    ],
+    "axis": "time",
+    "text": "Prepare only a selected short excerpt first, offer a brief diagnostic and useful teaching exchange, then reveal the growing skill map as later sections become ready; cap each initial preparation job and separate it from full-document processing. Keep pasted text and simple selectable-text PDF prose as the explicit first supported formats, detect broken reading order and unsupported equations/tables/diagrams, and test the complete phone upload-to-first-lesson path with five students before expanding formats.",
+    "estimate": {
+      "value": 5,
+      "unit": "students in first supervised usability check"
+    },
+    "evidence": {
+      "type": "inferred",
+      "source": "O2/O4/O6 and user requirement for Gizmo-like ease on mobile",
+      "detail": "evidence/proponent-round2.md"
+    },
+    "round": 2,
+    "by": "proponent"
+  },
+  {
+    "id": "P12",
+    "kind": "proposal",
+    "answers": [
+      "P6",
+      "O1",
+      "O5"
+    ],
+    "axis": "learning-quality",
+    "text": "Before implementation expands, cap assessment-feasibility work at one engineer-day plus a proposed 12 subject-review hours for one supported material family; require a named consenting qualified reviewer or verified answer-key/checker route, otherwise keep mastery unavailable for that content. Freeze a 200-case held-out grading and tutoring set, release only after the specified error gates pass, and invite 10-15 learners for a two-week pilot that measures delayed unaided performance without claiming efficacy from engagement.",
+    "estimate": {
+      "value": 12,
+      "unit": "proposed subject-review hours for initial feasibility gate, availability unconfirmed"
+    },
+    "evidence": {
+      "type": "estimate",
+      "source": "O1/O5/O8 and J10; proposed release thresholds in evidence/proponent-round2.md",
+      "detail": "evidence/proponent-round2.md"
+    },
+    "round": 2,
+    "by": "proponent"
+  },
+  {
+    "id": "P13",
+    "kind": "proposal",
+    "answers": [
+      "P7",
+      "O7"
+    ],
+    "axis": "privacy",
+    "text": "Make account ownership filters, source-only retrieval, validated durable state updates and cross-account attack tests mandatory before the invited school pilot; the model cannot authorize access or publish uploads. The operator must set target ages/jurisdictions, onboarding responsibility, retention and incident/dispute handling before inviting students, with unresolved requirements blocking that release rather than turning into an assumed future reviewer job.",
+    "evidence": {
+      "type": "inferred",
+      "source": "O7; Q2 school students and self-hosted user data",
+      "detail": "evidence/proponent-round2.md"
+    },
+    "round": 2,
+    "by": "proponent"
+  }
+]

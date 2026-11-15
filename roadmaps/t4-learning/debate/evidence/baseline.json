@@ -1,0 +1,156 @@
+[
+  {
+    "id": "J1",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "device",
+    "text": "The working repository is empty apart from Git and this debate; no application, dependencies, build outputs, calibration or prior debates were found. Git has no commits. Local C: has 71.71 GiB free; CIM RAM inspection is denied and capacity.py was not found in the two local skills roots. These are workstation observations, not server measurements.",
+    "evidence": {
+      "type": "measured",
+      "source": "Get-ChildItem; rg --files; git log; Get-PSDrive C",
+      "detail": "No server connection or T4 benchmark is available."
+    },
+    "ruling": "upheld"
+  },
+  {
+    "id": "J2",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "device",
+    "text": "User specifies one T4 server and about 100 users; concurrency and host RAM/CPU/storage remain unverified.",
+    "evidence": {
+      "type": "inferred",
+      "source": "User request",
+      "detail": "No throughput guarantee follows from user count."
+    },
+    "ruling": "upheld"
+  },
+  {
+    "id": "J3",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "time",
+    "text": "No deadline, calibration history, existing code or decision records exist in this workspace.",
+    "evidence": {
+      "type": "measured",
+      "source": "git log -1; Get-ChildItem -Force; rg",
+      "detail": "Implementation duration must be an estimate."
+    },
+    "ruling": "upheld"
+  },
+  {
+    "id": "J4",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "tokens",
+    "text": "There are no application source files to load; initial application-context token count is zero. Debate references and external sources add context; actual aggregate agent billing is unavailable.",
+    "evidence": {
+      "type": "measured",
+      "source": "Workspace inventory",
+      "detail": "Do not report fabricated token usage."
+    },
+    "ruling": "upheld"
+  },
+  {
+    "id": "J5",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "device",
+    "text": "NVIDIA lists T4 as a 16 GB GDDR6 Turing GPU with 70 W board power.",
+    "evidence": {
+      "type": "source",
+      "source": "https://www.nvidia.com/en-us/data-center/tesla-t4/",
+      "detail": "Board power is not whole-server power."
+    },
+    "ruling": "upheld"
+  },
+  {
+    "id": "J6",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "time",
+    "text": "Jane Street's tutor specifies a diagnostic, a skill map, questioning, evidence-based advancement, spaced review and a final assessment.",
+    "evidence": {
+      "type": "prior-art",
+      "source": "https://raw.githubusercontent.com/janestreet/agent_skills/master/socratic-tutor/SKILL.md",
+      "detail": "Inspect the original for exact transitions and overrides. It is a prompt specification, not evidence of small-model efficacy."
+    },
+    "ruling": "upheld"
+  },
+  {
+    "id": "J7",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "time",
+    "text": "LearnHarness describes probing, a dependency map, teaching, practice and a persistent reasoning record; it is a desktop app supporting custom endpoints as well as subscriptions and API keys.",
+    "evidence": {
+      "type": "prior-art",
+      "source": "https://learnharness.ai/",
+      "detail": "Public screenshots and descriptions inspected, not an authenticated hands-on usability test. No verified requirement for prior subject knowledge."
+    },
+    "ruling": "upheld"
+  },
+  {
+    "id": "J8",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "time",
+    "text": "Gizmo's official help documents an AI Tutor with courses, notes, lessons and quizzes, including entry through imported material.",
+    "evidence": {
+      "type": "prior-art",
+      "source": "https://help.gizmo.ai/en/articles/13011417-how-does-the-ai-tutor-work",
+      "detail": "The competitive premise that Gizmo has no tutor is outdated; actual learning quality was not tested."
+    },
+    "ruling": "upheld"
+  },
+  {
+    "id": "J9",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "device",
+    "text": "Qwen3-4B is a candidate with a non-thinking mode; its config has 36 layers, 8 KV heads and head dimension 128. vLLM lists AWQ and GPTQ support on Turing, but the exact runtime/quantization artifact still needs testing.",
+    "evidence": {
+      "type": "source",
+      "source": "https://huggingface.co/Qwen/Qwen3-4B",
+      "detail": "Config: https://huggingface.co/Qwen/Qwen3-4B/raw/main/config.json ; compatibility: https://docs.vllm.ai/en/latest/features/quantization/"
+    },
+    "ruling": "upheld"
+  },
+  {
+    "id": "J10",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "time",
+    "text": "A field experiment with nearly 1,000 high-school math students found unrestricted GPT assistance could harm subsequent unaided performance; designed tutor safeguards mitigated that harm.",
+    "evidence": {
+      "type": "prior-art",
+      "source": "https://pubmed.ncbi.nlm.nih.gov/40560616/",
+      "detail": "This supports checking unaided learning, not assuming a 4B model matches GPT-4."
+    },
+    "ruling": "upheld"
+  },
+  {
+    "id": "J11",
+    "round": 1,
+    "by": "judge",
+    "kind": "fact",
+    "axis": "time",
+    "text": "The requested outcome is an accessible responsive webapp with persistent per-skill progress and a managed tutor, without learner AI subscription setup.",
+    "evidence": {
+      "type": "inferred",
+      "source": "User request",
+      "detail": "Self-hosted inference is preferred; broad subject scope and user age are not settled."
+    },
+    "ruling": "upheld"
+  }
+]
