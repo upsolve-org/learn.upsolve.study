@@ -22,6 +22,7 @@
  */
 
 import { emit } from "../core/events.ts";
+import { currentOwnerId } from "../core/owner-scope.ts";
 import { clearTurnFailure } from "./turn-runs.ts";
 
 interface TurnOwner {
@@ -34,6 +35,17 @@ interface LhGlobal {
 	__lhTurnOwners?: Map<string, TurnOwner>;
 }
 
+/**
+ * TENANCY (2026-11-16): registries are keyed `owner:chatId`. Chat ids are
+ * random, so a bare id rarely collides — but two owners' sessions must never
+ * share a liveness entry, and the composite key makes that structural rather
+ * than probabilistic. Unscoped work keeps the bare id.
+ */
+function key(chatId: string): string {
+	const owner = currentOwnerId();
+	return owner ? `${owner}:${chatId}` : chatId;
+}
+
 function registry(): Map<string, number> {
 	const g = globalThis as typeof globalThis & LhGlobal;
 	return (g.__lhTurnRegistry ??= new Map<string, number>());
@@ -44,8 +56,13 @@ function owners(): Map<string, TurnOwner> {
 	return (g.__lhTurnOwners ??= new Map<string, TurnOwner>());
 }
 
-const inFlight = registry();
 const MAX_TURN_MS = 30 * 60_000;
+
+/** The in-flight map, resolved per call so a re-keyed entry always lands in
+ *  the process-global registry (never a module-load snapshot). */
+function inFlight(): Map<string, number> {
+	return registry();
+}
 
 /**
  * Mark a turn as starting. Returns false if one is already running for the
@@ -59,9 +76,9 @@ const MAX_TURN_MS = 30 * 60_000;
 export function beginTurn(chatId: string, preparationOwner?: object): boolean {
 	if (isTurnRunning(chatId)) return false;
 	clearTurnFailure(chatId);
-	if (preparationOwner) owners().set(chatId, { token: preparationOwner, preparing: true });
-	else owners().delete(chatId);
-	inFlight.set(chatId, Date.now());
+	if (preparationOwner) owners().set(key(chatId), { token: preparationOwner, preparing: true });
+	else owners().delete(key(chatId));
+	inFlight().set(key(chatId), Date.now());
 	emit("turn-started", { chatId });
 	return true;
 }
@@ -76,22 +93,22 @@ export function beginTurn(chatId: string, preparationOwner?: object): boolean {
  * unconditional end API for ordinary turns.
  */
 export function endTurn(chatId: string, owner?: object): void {
-	if (owner && owners().get(chatId)?.token !== owner) return;
-	owners().delete(chatId);
-	if (inFlight.delete(chatId)) emit("turn-settled", { chatId });
+	if (owner && owners().get(key(chatId))?.token !== owner) return;
+	owners().delete(key(chatId));
+	if (inFlight().delete(key(chatId))) emit("turn-settled", { chatId });
 }
 
 /** Private ownership fence for preparation and its handed-off teacher. */
 export function isTurnOwner(chatId: string, owner: object): boolean {
-	return isTurnRunning(chatId) && owners().get(chatId)?.token === owner;
+	return isTurnRunning(chatId) && owners().get(key(chatId))?.token === owner;
 }
 
 /** Transfer the pinned preparation to the ordinary teacher TTL, without
  * ending/restarting the turn or emitting another lifecycle event. */
 export function handoffTurn(chatId: string, owner: object): boolean {
 	if (!isTurnOwner(chatId, owner)) return false;
-	owners().get(chatId)!.preparing = false;
-	inFlight.set(chatId, Date.now());
+	owners().get(key(chatId))!.preparing = false;
+	inFlight().set(key(chatId), Date.now());
 	return true;
 }
 
@@ -101,11 +118,11 @@ export function handoffTurn(chatId: string, owner: object): boolean {
  * from a read, and emitting from a read is a side-effect smell. Silence
  * here is a choice, not an oversight. */
 export function isTurnRunning(chatId: string): boolean {
-	const since = inFlight.get(chatId);
+	const since = inFlight().get(key(chatId));
 	if (since === undefined) return false;
-	if (!owners().get(chatId)?.preparing && Date.now() - since > MAX_TURN_MS) {
-		inFlight.delete(chatId);
-		owners().delete(chatId);
+	if (!owners().get(key(chatId))?.preparing && Date.now() - since > MAX_TURN_MS) {
+		inFlight().delete(key(chatId));
+		owners().delete(key(chatId));
 		return false;
 	}
 	return true;

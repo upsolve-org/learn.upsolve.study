@@ -6,9 +6,20 @@
 
 export const LOGIN_PATH = "/auth/login";
 export const CALLBACK_PATH = "/auth/callback";
+export const SIGNUP_PATH = "/auth/signup";
+export const DENIED_PATH = "/auth/denied";
 
 export function loginPath(pathname: string): boolean {
 	return pathname === LOGIN_PATH || pathname === `${LOGIN_PATH}/`;
+}
+
+/** The request-an-account form: public like sign-in, but creates nothing. */
+export function signupPath(pathname: string): boolean {
+	return pathname === SIGNUP_PATH || pathname === `${SIGNUP_PATH}/`;
+}
+
+export function deniedPath(pathname: string): boolean {
+	return pathname === DENIED_PATH || pathname === `${DENIED_PATH}/`;
 }
 
 export function signInCallbackPath(pathname: string): boolean {

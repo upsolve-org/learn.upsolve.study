@@ -74,6 +74,7 @@ import { stores, effectiveSettings } from "./stores.ts";
 import { resolveConversationSpec } from "../core/settings-resolution.ts";
 import { connectionBackgroundAllowed, isSubscriptionProvider, onSubscriptionChange } from "../agent/subscription-connections.ts";
 import { isTurnRunning } from "./turn-liveness.ts";
+import { currentOwnerId, runAsOwner } from "../core/owner-scope.ts";
 import type { Agent } from "@earendil-works/pi-agent-core";
 
 /** Fires one server-side teacher turn: (chatId, input) → HTTP-ish status.
@@ -92,6 +93,12 @@ export function setPluginJobRecovery(recover: PluginJobRecovery): void {
 interface QueuedSteer {
 	steer: SteerMessage;
 	promise: Promise<void>;
+	/** TENANCY (2026-11-16): the raw chat id and the owner the delivery
+	 *  belongs to, captured when it is queued. The pump outlives the request
+	 *  that queued it, so both travel with the entry rather than being
+	 *  re-derived from ambient state. */
+	chatId: string;
+	owner?: string;
 	/** Wake cargo remains owned here, but must not steer into its own run. */
 	waking?: boolean;
 	/** The constructed vehicle, once startup claims a turn. Until then only
@@ -128,8 +135,8 @@ interface WakeState {
 	liveAgents: Map<string, Agent>;
 	/** Chats whose pump loop is currently active (serialization per chat). */
 	pumping: Set<string>;
-	/** Throttle bookkeeping for the stale-job sweep. */
-	lastSweepAt: number;
+	/** Throttle bookkeeping for the stale-job sweep, per owner (tenancy). */
+	lastSweepAt: Map<string, number>;
 	stopConnectionWatch?: () => void;
 	automaticDeferred: WeakSet<Agent>;
 }
@@ -140,7 +147,14 @@ interface LhWakeGlobal {
 
 function state(): WakeState {
 	const g = globalThis as typeof globalThis & LhWakeGlobal;
-	return (g.__lhWakePipeline ??= { queues: new Map(), liveAgents: new Map(), userSteers: new Map(), pumping: new Set(), lastSweepAt: 0, automaticDeferred: new WeakSet() });
+	return (g.__lhWakePipeline ??= { queues: new Map(), liveAgents: new Map(), userSteers: new Map(), pumping: new Set(), lastSweepAt: new Map(), automaticDeferred: new WeakSet() });
+}
+
+/** TENANCY (2026-11-16): `owner:chatId` — the same composite key every other
+ *  registry uses, so two owners' sessions never share delivery state. */
+function key(chatId: string): string {
+	const owner = currentOwnerId();
+	return owner ? `${owner}:${chatId}` : chatId;
 }
 
 /** chat-handler wires this at module init: its adapter around handleChatRequest. */
@@ -190,15 +204,15 @@ export function noteSteersDurable(chatId: string, persisted: readonly LhMessage[
 	for (const message of persisted) {
 		if (message.role === "custom") finalizeSteer(message);
 	}
-	for (const entry of [...(state().queues.get(chatId) ?? [])]) {
+	for (const entry of [...(state().queues.get(key(chatId)) ?? [])]) {
 		if (persisted.some((message) => message.id === entry.steer.id)) completeEntry(chatId, entry);
 	}
 }
 
 function removeEntry(chatId: string, entry: QueuedSteer): void {
-	const remaining = (state().queues.get(chatId) ?? []).filter((candidate) => candidate !== entry);
-	if (remaining.length > 0) state().queues.set(chatId, remaining);
-	else state().queues.delete(chatId);
+	const remaining = (state().queues.get(key(chatId)) ?? []).filter((candidate) => candidate !== entry);
+	if (remaining.length > 0) state().queues.set(key(chatId), remaining);
+	else state().queues.delete(key(chatId));
 }
 
 function completeEntry(chatId: string, entry: QueuedSteer): void {
@@ -210,9 +224,9 @@ function completeEntry(chatId: string, entry: QueuedSteer): void {
 /** Deletion discards the session's obligations, never wakes a deleted chat. */
 export function discardChatDeliveries(chatId: string): void {
 	const s = state();
-	const queue = s.queues.get(chatId) ?? [];
-	s.queues.delete(chatId);
-	s.userSteers.delete(chatId);
+	const queue = s.queues.get(key(chatId)) ?? [];
+	s.queues.delete(key(chatId));
+	s.userSteers.delete(key(chatId));
 	for (const entry of queue) entry.resolve();
 }
 
@@ -234,7 +248,7 @@ export function deliverJobResult(steer: SteerMessage): Promise<void> {
 }
 
 function queueSteer(chatId: string, steer: SteerMessage): QueuedSteer {
-	const queue = state().queues.get(chatId) ?? [];
+	const queue = state().queues.get(key(chatId)) ?? [];
 	const existing = queue.find((entry) => entry.steer.id === steer.id);
 	if (existing) return existing;
 	let resolve!: () => void;
@@ -242,9 +256,9 @@ function queueSteer(chatId: string, steer: SteerMessage): QueuedSteer {
 	const promise = new Promise<void>((res, rej) => { resolve = res; reject = rej; });
 	// Recovery/registration may own an entry with no waiting caller.
 	void promise.catch(() => undefined);
-	const entry: QueuedSteer = { steer, promise, resolve, reject };
+	const entry: QueuedSteer = { steer, promise, chatId, owner: currentOwnerId(), resolve, reject };
 	queue.push(entry);
-	state().queues.set(chatId, queue);
+	state().queues.set(key(chatId), queue);
 	return entry;
 }
 
@@ -263,7 +277,7 @@ export function automaticFollowUpAllowed(chatId: string, agent?: Agent): boolean
 }
 
 function handOffEligible(chatId: string, agent: Agent): void {
-	const queue = state().queues.get(chatId);
+	const queue = state().queues.get(key(chatId));
 	// Keep automatic results in their owning registry. Never mix them into a
 	// foreground batch without express account consent. Learner steers below
 	// remain deliverable, including the first poll of an answer run.
@@ -279,7 +293,7 @@ function handOffEligible(chatId: string, agent: Agent): void {
 	// stranded behind a question or abort rides the chat's next run's
 	// first boundary. No probe-handoff exclusion: these are learner
 	// words, owed to whatever run is live.
-	const userQueue = state().userSteers.get(chatId);
+	const userQueue = state().userSteers.get(key(chatId));
 	if (userQueue && userQueue.length > 0) {
 		for (const entry of userQueue) {
 			if (entry.handedTo !== agent) {
@@ -297,9 +311,9 @@ function handOffEligible(chatId: string, agent: Agent): void {
  *  beat the registration: settlement needs a streamed response, which
  *  never happens inside the constructor call. */
 export function registerLiveAgent(chatId: string, agent: Agent, allowDeferred = true, wakeSteerIds?: ReadonlySet<string>): void {
-	state().liveAgents.set(chatId, agent);
+	state().liveAgents.set(key(chatId), agent);
 	restorePendingDeliveries(chatId);
-	for (const entry of state().queues.get(chatId) ?? []) {
+	for (const entry of state().queues.get(key(chatId)) ?? []) {
 		if (allowDeferred) entry.deferred = false;
 		if (entry.waking && wakeSteerIds?.has(entry.steer.id)) entry.wakeAgent = agent;
 	}
@@ -318,7 +332,7 @@ export interface UserSteerEntry {
  * are deliberately irrelevant: this steer belongs to the captured live run.
  * Settling keeps the existing send fallback; replacements must never retarget. */
 export async function prepareAndSteerChat(chatId: string, input: UserSteerInput): Promise<"accepted" | "settled" | "stale"> {
-	const agent = state().liveAgents.get(chatId);
+	const agent = state().liveAgents.get(key(chatId));
 	if (!agent) return "settled";
 	const model = agent.state.model;
 	const session = stores.chatStore.getChat(chatId);
@@ -328,7 +342,7 @@ export async function prepareAndSteerChat(chatId: string, input: UserSteerInput)
 	const images = await prepareSubmissionImages(input.images, { model });
 	const currentSession = stores.chatStore.getChat(chatId);
 	if (!currentSession || currentSession.createdAt !== session.createdAt || currentSession.kind !== session.kind) return "stale";
-	const current = state().liveAgents.get(chatId);
+	const current = state().liveAgents.get(key(chatId));
 	if (!current) return "settled";
 	if (current !== agent || current.state.model !== model || submissionImagePolicyKey({ model }) !== policy) return "stale";
 	// No await may separate the identity/policy check from this registry handoff.
@@ -339,12 +353,12 @@ export async function prepareAndSteerChat(chatId: string, input: UserSteerInput)
  * memory-only stranding safety net: undelivered steers ride the next run.
  * No live agent means the caller may fall back to an ordinary send. */
 export function steerLiveChat(chatId: string, message: LhMessage): boolean {
-	const agent = state().liveAgents.get(chatId);
+	const agent = state().liveAgents.get(key(chatId));
 	if (!agent) return false;
 	const entry: UserSteerEntry = { message };
-	const q = state().userSteers.get(chatId) ?? [];
+	const q = state().userSteers.get(key(chatId)) ?? [];
 	q.push(entry);
-	state().userSteers.set(chatId, q);
+	state().userSteers.set(key(chatId), q);
 	agent.steer(message);
 	entry.handedTo = agent;
 	return true;
@@ -355,20 +369,20 @@ export function steerLiveChat(chatId: string, message: LhMessage): boolean {
  *  Memory-only by design (same tradeoff as job markers): a server
  *  restart drops parked steers — and the whole turn dies with it anyway. */
 export function reconcileUserSteers(chatId: string, persisted: readonly LhMessage[]): void {
-	const q = state().userSteers.get(chatId);
+	const q = state().userSteers.get(key(chatId));
 	if (!q || q.length === 0) return;
 	const ids = new Set(persisted.map((m) => (m as { id?: string }).id));
 	const kept = q.filter((e) => !ids.has(e.message.id));
-	if (kept.length === 0) state().userSteers.delete(chatId);
-	else state().userSteers.set(chatId, kept);
+	if (kept.length === 0) state().userSteers.delete(key(chatId));
+	else state().userSteers.set(key(chatId), kept);
 }
 
 /** Clear the live agent at settlement — MUST run before settleSteers so the
  *  reconciliation's re-pump can never hand a marker to the dying agent. */
 export function unregisterLiveAgent(chatId: string): void {
-	const agent = state().liveAgents.get(chatId);
+	const agent = state().liveAgents.get(key(chatId));
 	if (agent) state().automaticDeferred.delete(agent);
-	state().liveAgents.delete(chatId);
+	state().liveAgents.delete(key(chatId));
 }
 
 /** Restore exact registry objects after native drain but before dispatch.
@@ -376,11 +390,11 @@ export function unregisterLiveAgent(chatId: string): void {
 export function restoreUncommittedAutomatic(chatId: string, agent: Agent, automaticIds: ReadonlySet<string>, retainedIds: ReadonlySet<string>): void {
 	const s = state();
 	s.automaticDeferred.add(agent);
-	for (const entry of s.queues.get(chatId) ?? []) {
+	for (const entry of s.queues.get(key(chatId)) ?? []) {
 		if (entry.handedTo === agent && automaticIds.has(entry.steer.id)) entry.handedTo = undefined;
 	}
 	agent.clearSteeringQueue();
-	for (const entry of s.userSteers.get(chatId) ?? []) {
+	for (const entry of s.userSteers.get(key(chatId)) ?? []) {
 		if (!retainedIds.has(entry.message.id)) { agent.steer(entry.message); entry.handedTo = agent; }
 	}
 }
@@ -399,7 +413,7 @@ export function restoreUncommittedAutomatic(chatId: string, agent: Agent, automa
  * stranded in a settled agent's queue, so the registry stays the truth and
  * the dead agent's copy is simply abandoned (GC'd with the agent). */
 export function settleSteers(chatId: string, persisted: { id?: string }[], failed = false, settledAgent?: Agent): void {
-	const queue = state().queues.get(chatId);
+	const queue = state().queues.get(key(chatId));
 	if (!queue || queue.length === 0) return;
 	const deliveredIds = new Set(persisted.map((m) => m.id).filter(Boolean));
 	const remaining: QueuedSteer[] = [];
@@ -416,9 +430,9 @@ export function settleSteers(chatId: string, persisted: { id?: string }[], faile
 			remaining.push(entry);
 		}
 	}
-	if (remaining.length === 0) state().queues.delete(chatId);
+	if (remaining.length === 0) state().queues.delete(key(chatId));
 	else {
-		state().queues.set(chatId, remaining);
+		state().queues.set(key(chatId), remaining);
 		void pump(chatId);
 	}
 }
@@ -486,24 +500,45 @@ function chatIdOf(steer: SteerMessage): string {
  * more to do here until settlement re-pumps); otherwise the IDLE WAKE
  * fires ONE turn carrying every pending marker as its input appends.
  */
+/**
+ * TENANCY (2026-11-16): the pump is long-lived and detached from any request,
+ * so it re-enters the owner scope of the cargo it delivers. The owner comes
+ * from the queue entry (captured at enqueue), never from ambient state. A
+ * queue whose entries carry no owner is unscoped legacy work.
+ */
+/**
+ * TENANCY (2026-11-16): the pump is long-lived and detached from any request,
+ * so it re-enters the owner scope of the cargo it delivers. The owner comes
+ * from the queue entry (captured at enqueue), never from ambient state.
+ *
+ * Callers pass a RAW chat id. The registry key is always derived inside the
+ * scope, so a caller that happens to be unscoped cannot produce a bare key
+ * for owned cargo.
+ */
 async function pump(chatId: string): Promise<void> {
+	const owner = state().queues.get(key(chatId))?.[0]?.owner;
+	if (owner === undefined) return await pumpInner(chatId);
+	return await runAsOwner(owner, () => pumpInner(chatId));
+}
+
+async function pumpInner(chatId: string): Promise<void> {
 	if (!chatId) return;
 	const s = state();
-	if (s.pumping.has(chatId)) return;
-	s.pumping.add(chatId);
+	if (s.pumping.has(key(chatId))) return;
+	s.pumping.add(key(chatId));
 	let parked = false;
 	try {
 		for (let attempt = 0; ; ) {
-			const queue = s.queues.get(chatId);
+			const queue = s.queues.get(key(chatId));
 			if (!queue || queue.length === 0) {
-				s.queues.delete(chatId);
+				s.queues.delete(key(chatId));
 				return;
 			}
 
 			// Gone chat: nothing to deliver into.
 			const record = stores.chatStore.getChat(chatId);
 			if (!record) {
-				s.queues.delete(chatId);
+				s.queues.delete(key(chatId));
 				for (const entry of queue) {
 					entry.reject(new Error(`chat ${chatId} not found — cannot deliver steer ${entry.steer.id}`));
 				}
@@ -514,9 +549,9 @@ async function pump(chatId: string): Promise<void> {
 			// (an in-run injection persisted, a wake completed, or a duplicate
 			// deliver raced in). Resolve and flip without re-firing anything.
 			noteSteersDurable(chatId, record.messages);
-			const stillPending = (s.queues.get(chatId) ?? []).filter((entry) => !entry.waking && !entry.deferred);
+			const stillPending = (s.queues.get(key(chatId)) ?? []).filter((entry) => !entry.waking && !entry.deferred);
 			if (stillPending.length === 0) { parked = true; return; }
-			if (!automaticFollowUpAllowed(chatId, s.liveAgents.get(chatId))) { parked = true; return; }
+			if (!automaticFollowUpAllowed(chatId, s.liveAgents.get(key(chatId)))) { parked = true; return; }
 
 			// VEHICLE 1 — THE LIVE RUN: pi's steering queue. The agent of the
 			// streaming turn takes every eligible marker; pi injects at the
@@ -524,7 +559,7 @@ async function pump(chatId: string): Promise<void> {
 			// between completed assistant+toolResult units) and continues the
 			// run. Delivery resolves at settlement (settleSteers). Nothing else
 			// to do in this loop iteration — the turn owns the delivery.
-			const live = s.liveAgents.get(chatId);
+			const live = s.liveAgents.get(key(chatId));
 			if (live && isTurnRunning(chatId)) {
 				handOffEligible(chatId, live);
 				const handable = stillPending.filter((e) => e.handedTo === live);
@@ -569,7 +604,7 @@ async function pump(chatId: string): Promise<void> {
 			// A live run may have delivered some markers while the gates were
 			// closed — re-check: only still-missing markers ride the wake.
 			noteSteersDurable(chatId, fresh.messages);
-			const fire = (s.queues.get(chatId) ?? []).filter((entry) => !entry.waking && !entry.deferred && !entry.handedTo);
+			const fire = (s.queues.get(key(chatId)) ?? []).filter((entry) => !entry.waking && !entry.deferred && !entry.handedTo);
 			if (fire.length === 0) return;
 
 			// THE DISMISSAL PAUSE (owner design 2026-10-03, "A2"): the record
@@ -600,7 +635,7 @@ async function pump(chatId: string): Promise<void> {
 			});
 			const saved = stores.chatStore.getChat(chatId);
 			if (saved) noteSteersDurable(chatId, saved.messages);
-			const owned = fire.filter((entry) => s.queues.get(chatId)?.includes(entry));
+			const owned = fire.filter((entry) => s.queues.get(key(chatId))?.includes(entry));
 			if (status === 403 || status === 409) {
 				for (const entry of owned) { entry.waking = false; entry.wakeAgent = undefined; }
 				if (status === 403) { parked = true; return; }
@@ -620,13 +655,13 @@ async function pump(chatId: string): Promise<void> {
 			}
 		}
 	} finally {
-		s.pumping.delete(chatId);
+		s.pumping.delete(key(chatId));
 		// A steer may have arrived between the last check and the finally —
 		// restart the pump rather than strand it. Entries already handed to
 		// a live run are NOT stragglers (settleSteers owns their resurrection)
 		// — restarting for them would just park in waitForIdle forever.
-		const q = state().queues.get(chatId) ?? [];
-		if (!parked && automaticFollowUpAllowed(chatId, state().liveAgents.get(chatId)) && q.some((e) => e.handedTo === undefined && !e.waking && !e.deferred)) void pump(chatId);
+		const q = state().queues.get(key(chatId)) ?? [];
+		if (!parked && automaticFollowUpAllowed(chatId, state().liveAgents.get(key(chatId))) && q.some((e) => e.handedTo === undefined && !e.waking && !e.deferred)) void pump(chatId);
 	}
 }
 
@@ -638,15 +673,17 @@ state().stopConnectionWatch = onSubscriptionChange(() => {
 	for (const [chatId, agent] of s.liveAgents) {
 		if (!isSubscriptionProvider(agent.state?.model?.provider) || automaticFollowUpAllowed(chatId, agent)) continue;
 		const consumed = new Set(agent.state.messages.map((m) => (m as { id?: string }).id));
-		const pending = (s.queues.get(chatId) ?? []).filter((entry) => entry.handedTo === agent && !consumed.has(entry.steer.id));
+		const pending = (s.queues.get(key(chatId)) ?? []).filter((entry) => entry.handedTo === agent && !consumed.has(entry.steer.id));
 		if (pending.length === 0) continue;
 		agent.clearSteeringQueue();
 		for (const entry of pending) entry.handedTo = undefined;
-		for (const entry of s.userSteers.get(chatId) ?? []) if (!consumed.has(entry.message.id)) entry.handedTo = undefined;
+		for (const entry of s.userSteers.get(key(chatId)) ?? []) if (!consumed.has(entry.message.id)) entry.handedTo = undefined;
 		handOffEligible(chatId, agent); // only unconsumed learner input; never replay consumed steers
 	}
-	for (const chatId of s.queues.keys()) {
-		if (automaticFollowUpAllowed(chatId, s.liveAgents.get(chatId))) void pump(chatId);
+	// Keys are `owner:chatId`; the entry carries the raw id back for pump().
+	for (const [composite, entries] of s.queues) {
+		const raw = entries[0]?.chatId;
+		if (raw !== undefined && automaticFollowUpAllowed(raw, s.liveAgents.get(composite))) void pump(raw);
 	}
 });
 
@@ -697,7 +734,7 @@ function restorePendingDeliveries(chatId: string): void {
 		// awaiting the author formatter. Do not deliver that fallback early
 		// while the live formatter still owns preparation; a restart has no
 		// registration and can restore it without replaying author code.
-		if (stored.kind === "plugin" && live && !(state().queues.get(chatId) ?? []).some((entry) => jobIdOf(entry.steer) === stored.id)) continue;
+		if (stored.kind === "plugin" && live && !(state().queues.get(key(chatId)) ?? []).some((entry) => jobIdOf(entry.steer) === stored.id)) continue;
 		const job = live ? stored : normalizeLegacyResult(stored);
 		if (job.delivery?.status !== "pending") continue;
 		const steer = job.delivery.kind === "abort" ? buildAbortSteer(job)
@@ -719,7 +756,7 @@ function restorePendingDeliveries(chatId: string): void {
 async function waitForIdle(chatId: string): Promise<void> {
 	for (;;) {
 		const record = stores.chatStore.getChat(chatId);
-		if (!record || !(state().queues.get(chatId) ?? []).some((entry) => !entry.waking && !entry.deferred && !entry.handedTo)) return;
+		if (!record || !(state().queues.get(key(chatId)) ?? []).some((entry) => !entry.waking && !entry.deferred && !entry.handedTo)) return;
 		const blocked = isTurnRunning(chatId) || hasUnresolvedQuestion(record.messages);
 		if (!blocked) {
 			await delay(GRACE_MS);
@@ -758,8 +795,15 @@ const SWEEP_THROTTLE_MS = 30_000;
 export function recoverStaleJobs(): void {
 	const s = state();
 	const now = Date.now();
-	if (now - s.lastSweepAt < SWEEP_THROTTLE_MS) return;
-	s.lastSweepAt = now;
+	// TENANCY: the sweep only sees the ACTIVE owner's chats, so the throttle
+	// is per owner — a global one would starve every other learner.
+	const owner = currentOwnerId() ?? "";
+	// Tolerate a legacy numeric value: fixtures reset the throttle by assigning
+	// 0, and a shape change must not break them.
+	const last = typeof s.lastSweepAt === "number" ? s.lastSweepAt : (s.lastSweepAt.get(owner) ?? 0);
+	if (now - last < SWEEP_THROTTLE_MS) return;
+	if (typeof s.lastSweepAt === "number") s.lastSweepAt = new Map();
+	s.lastSweepAt.set(owner, now);
 	try {
 		for (const chat of stores.chatStore.listChats()) {
 			for (const job of stores.jobStore.listJobs(chat.id)) {

@@ -1,4 +1,4 @@
-import { graphView } from "@/src/server";
+import { graphView, ownerScoped } from "@/src/server";
 
 /**
  * The home graph view's data endpoint (W4; vision §1 "Home page") — thin
@@ -8,6 +8,9 @@ import { graphView } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+async function GETHandler() {
 	return Response.json(graphView());
 }
+
+// Tenancy: the body runs inside the caller's owner scope.
+export const GET = ownerScoped(GETHandler);

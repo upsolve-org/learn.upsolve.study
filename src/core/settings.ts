@@ -32,6 +32,7 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { CacheRetention } from "@earendil-works/pi-ai";
 import { AUTH_PROVIDER_KEYS } from "./auth-keys.ts";
 import { CLAUDE_CODE_PROVIDER } from "./contracts/claude-code.ts";
+import { hostedDefault } from "./hosted-default.ts";
 import type { ModelRole } from "../../config.ts";
 import type { ChatSettings } from "./contracts/chat.ts";
 import { isSearchEngineId, type SearchEngineId } from "./search.ts";
@@ -315,8 +316,12 @@ export function customProviderUsable(
  *  to start chats until the user has actively picked all three slots —
  *  there ARE no defaults for 33 providers; a configured app is one whose
  *  models section carries a model in every slot. Thinking levels stay
- *  optional (absent = the resolved tier's budget). */
+ *  optional (absent = the resolved tier's budget).
+ *
+ *  HOSTED DEFAULT (2026-11-16): a hosted build supplies one, so an empty
+ *  slots section is already usable and the setup CTA does not ride. */
 export function slotsConfigured(models: ModelsSettings | undefined): boolean {
+	if (hostedDefault()) return true;
 	return Boolean(models?.strong?.model && models?.cheap?.model && models?.vision?.model);
 }
 

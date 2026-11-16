@@ -17,10 +17,13 @@
  * file, and `shadowedByEnv` explains why a saved key is not the live one
  * (env always wins).
  */
-import { keyStatuses, providerKeyList } from "@/src/server";
+import { keyStatuses, providerKeyList, ownerScoped } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+async function GETHandler() {
 	return Response.json({ keys: keyStatuses(), providers: providerKeyList() });
 }
+
+// Tenancy: the body runs inside the caller's owner scope.
+export const GET = ownerScoped(GETHandler);

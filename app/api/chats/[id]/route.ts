@@ -1,7 +1,7 @@
-import { compactionInFlight, deleteChatSession, getChat, isTurnRunning, sessionCoverage, sessionCost, stores, turnFailure, type ChatDeleteMode, pluginQuestionAvailabilityOf, reconcilePluginQuestionCompatibility, type QuestionTypeResolver, getPluginQuestionTypeResolver, getPluginHost, pluginProblemAvailabilityOf, type ProblemTypeResolver } from "@/src/server";
+import { compactionInFlight, deleteChatSession, getChat, isTurnRunning, sessionCoverage, sessionCost, stores, turnFailure, type ChatDeleteMode, pluginQuestionAvailabilityOf, reconcilePluginQuestionCompatibility, type QuestionTypeResolver, getPluginQuestionTypeResolver, getPluginHost, pluginProblemAvailabilityOf, type ProblemTypeResolver, ownerScoped } from "@/src/server";
 import { pendingPluginQuestionOf, activeProblemOf } from "@/src/core";
 
-export async function GET(_req: Request, { params }: { params: Promise<{ id: string }> }) {
+async function GETHandler(_req: Request, { params }: { params: Promise<{ id: string }> }) {
 	const { id } = await params;
 	await reconcilePluginQuestionCompatibility(stores.chatStore, id);
 	let chat = getChat(id);
@@ -52,7 +52,7 @@ export async function GET(_req: Request, { params }: { params: Promise<{ id: str
  * deliberately NOT bumped: a rename must not reorder the sidebar (same
  * rule as the settings PUT).
  */
-export async function PUT(req: Request, { params }: { params: Promise<{ id: string }> }) {
+async function PUTHandler(req: Request, { params }: { params: Promise<{ id: string }> }) {
 	const { id } = await params;
 	if (!getChat(id)) return Response.json({ error: "Not found" }, { status: 404 });
 	const body = (await req.json().catch(() => null)) as { title?: unknown } | null;
@@ -84,7 +84,7 @@ export async function PUT(req: Request, { params }: { params: Promise<{ id: stri
  * response carries what was removed plus the new graphRevision (the
  * version stamp the UI polls to refetch clusters/layout).
  */
-export async function DELETE(req: Request, { params }: { params: Promise<{ id: string }> }) {
+async function DELETEHandler(req: Request, { params }: { params: Promise<{ id: string }> }) {
 	const { id } = await params;
 	const mode = new URL(req.url).searchParams.get("mode");
 	if (mode !== "preserve-graph" && mode !== "delete-nodes") {
@@ -116,3 +116,7 @@ export async function DELETE(req: Request, { params }: { params: Promise<{ id: s
 	});
 }
 
+// Tenancy: the body runs inside the caller's owner scope.
+export const GET = ownerScoped(GETHandler);
+export const PUT = ownerScoped(PUTHandler);
+export const DELETE = ownerScoped(DELETEHandler);

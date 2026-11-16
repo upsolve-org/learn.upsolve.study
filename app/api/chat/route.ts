@@ -1,5 +1,8 @@
-import { handleChatRequest } from "@/src/server";
+import { handleChatRequest, ownerScoped } from "@/src/server";
 
-export async function POST(req: Request) {
+async function POSTHandler(req: Request) {
 	return handleChatRequest(req);
 }
+
+// Tenancy: the body runs inside the caller's owner scope.
+export const POST = ownerScoped(POSTHandler);

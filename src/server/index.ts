@@ -70,3 +70,18 @@ export { customProviderGet, customProviderMutation } from "./custom-provider-htt
 export * from "./supabase.ts";
 export { hostedFetch } from "../core/hosted-fetch.ts";
 export { cookieWrites } from "../core/hosted-cookies.ts";
+// Tenancy (2026-11-16): the request boundary that enters the owner's scope.
+export { ownerScoped, asRequestOwner, ownerOfRequest, OWNER_HEADER } from "./request-owner.ts";
+export * from "../core/owner-scope.ts";
+export {
+	admittedUser,
+	admittedEmails,
+	pendingSignups,
+	requestSignup,
+	approveSignup,
+	denySignup,
+	isOperator,
+	normalizeEmail,
+	type SignupRequest,
+	type SignupOutcome,
+} from "../core/hosted-admission.ts";

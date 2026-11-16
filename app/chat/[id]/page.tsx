@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import { Chat } from "@/components/chat";
 import { slotsConfigured } from "@/src/core";
-import { compactionInFlight, getChat, isTurnRunning, readSettingsRecord, turnFailure } from "@/src/server";
+import { asRequestOwner, compactionInFlight, getChat, isTurnRunning, readSettingsRecord, turnFailure } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
@@ -13,12 +13,27 @@ export default async function ChatPage({
 	searchParams: Promise<{ prompt?: string }>;
 }) {
 	const [{ id }, { prompt }] = await Promise.all([params, searchParams]);
-	const chat = getChat(id);
-	if (!chat) notFound();
-	// The persistent setup CTA's seed (BYOK, owner 2026-09-22): slotsConfigured
-	// over the settings record, server-read — the same gate home/new read. The
-	// server's 503 stays the truth; this only decides whether the pill rides.
-	const record = readSettingsRecord();
+	// Tenancy: the record, liveness and settings are all read inside the
+	// owner scope — another learner's chat id must not resolve here.
+	const view = await asRequestOwner(() => {
+		const chat = getChat(id);
+		if (!chat) return null;
+		// The persistent setup CTA's seed (BYOK, owner 2026-09-22): slotsConfigured
+		// over the settings record, server-read — the same gate home/new read. The
+		// server's 503 stays the truth; this only decides whether the pill rides.
+		const record = readSettingsRecord();
+		return {
+			chat,
+			configured: slotsConfigured(record?.models),
+			initialError: turnFailure(chat.id),
+			// A teacher turn that outlived its client: the remounted view must
+			// attach (busy shimmer + poll), never resurrect the stale record.
+			inFlight: isTurnRunning(chat.id),
+			compacting: compactionInFlight(chat.id),
+		};
+	});
+	if (!view) notFound();
+	const { chat } = view;
 	return (
 		<Chat
 			key={chat.id}
@@ -29,13 +44,11 @@ export default async function ChatPage({
 				// derived app-side (core/view.ts projectView; GET serves the same
 				// native messages).
 				initialMessages={chat.messages}
-			initialError={turnFailure(chat.id)}
-			initialConfigured={slotsConfigured(record?.models)}
+			initialError={view.initialError}
+			initialConfigured={view.configured}
 			initialPrompt={prompt}
-			// A teacher turn that outlived its client: the remounted view must
-			// attach (busy shimmer + poll), never resurrect the stale record.
-			initiallyInFlight={isTurnRunning(chat.id)}
-			initiallyCompacting={compactionInFlight(chat.id)}
+			initiallyInFlight={view.inFlight}
+			initiallyCompacting={view.compacting}
 		/>
 	);
 }

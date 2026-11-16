@@ -1,5 +1,6 @@
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { currentOwnerId } from "./src/core/owner-scope.ts";
 
 /** Repository root (this file is at <root>/config.ts). */
 export const ROOT = path.dirname(fileURLToPath(import.meta.url));
@@ -33,6 +34,53 @@ export const PATHS = {
 	 * raw provider stream recordings (src/agent/provider-events.ts). */
 	debug: path.join(/* turbopackIgnore: true */ DATA_ROOT, "debug"),
 } as const;
+
+/**
+ * TENANCY (2026-11-16): every MUTABLE learner record lives under one owner
+ * root, `<data>/hosted/<owner-uuid>/`. The segment is the canonical lowercase
+ * UUID from the verified session token (src/core/owner.ts), so a crafted `sub`
+ * cannot escape the jail.
+ *
+ * These are FUNCTIONS, not constants, because the active owner is request
+ * state (src/core/owner-scope.ts). A module-load constant would freeze
+ * whichever owner happened to be active when the module first evaluated.
+ *
+ * Outside any owner scope the same names resolve against the legacy unscoped
+ * data root, so the desktop shell and plain `npm run dev` are unchanged.
+ * Operator-level records (the auth/key store, the plugin catalog) stay on the
+ * unscoped root on purpose: they are not per-learner.
+ */
+export const HOSTED_DIR = path.join(/* turbopackIgnore: true */ DATA_ROOT, "hosted");
+
+/** The UNSCOPED data root — operator-level records (admissions, signups, the
+ *  auth/key store, the plugin catalog) live here regardless of any owner
+ *  scope, because they are not per-learner. */
+export function baseDataRoot(): string {
+	return DATA_ROOT;
+}
+
+/** The owner's data root: `<data>/hosted/<owner>`, or the legacy root when unscoped. */
+export function dataRoot(): string {
+	const owner = currentOwnerId();
+	return owner ? path.join(/* turbopackIgnore: true */ HOSTED_DIR, owner) : DATA_ROOT;
+}
+
+/** Every owner-scopable mutable path, resolved for the CURRENT scope. */
+export function ownerPaths() {
+	const root = dataRoot();
+	return {
+		data: root,
+		chats: path.join(/* turbopackIgnore: true */ root, "chats"),
+		graph: path.join(/* turbopackIgnore: true */ root, "graph"),
+		debug: path.join(/* turbopackIgnore: true */ root, "debug"),
+		settings: path.join(/* turbopackIgnore: true */ root, "settings.json"),
+		prompts: path.join(/* turbopackIgnore: true */ root, "prompts"),
+		themes: path.join(/* turbopackIgnore: true */ root, "themes"),
+		jobs: path.join(/* turbopackIgnore: true */ root, "jobs"),
+		corePluginData: path.join(/* turbopackIgnore: true */ root, "core-plugin-data"),
+		communityPlugins: path.join(/* turbopackIgnore: true */ root, "plugins"),
+	} as const;
+}
 
 // ─── Models ────────────────────────────────────────────────────────────────
 // BYOK ALL THE WAY DOWN (owner, 2026-09-22): there are NO factory default

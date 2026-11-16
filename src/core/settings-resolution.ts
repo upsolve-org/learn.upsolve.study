@@ -24,6 +24,8 @@
 
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { ModelRole } from "../../config.ts";
+import { CUSTOM_PROVIDER } from "./auth-keys.ts";
+import { hostedDefault } from "./hosted-default.ts";
 import type { ChatSettings } from "./contracts/chat.ts";
 import type { SearchEngineId } from "./search.ts";
 import {
@@ -147,9 +149,16 @@ export function resolveRoleSpec(role: ModelRole, record: UserSettings | null): E
 
 /** Resolve one slot to its configured view, or null when the tier holds
  *  no model (a thinkingLevel-only slot is inert — the level has nothing
- *  to ride without the factory floor). */
+ *  to ride without the factory floor).
+ *
+ *  HOSTED DEFAULT (2026-11-16): when hosted mode supplies one, it fills an
+ *  EMPTY slot. An explicit learner choice still wins, so this is a floor
+ *  under the chain, not a pin over it. */
 export function resolveSlot(slot: ModelSlot | undefined): EffectiveSlot | null {
-	if (!slot?.model) return null;
+	if (!slot?.model) {
+		const fallback = hostedDefault();
+		return fallback ? { provider: CUSTOM_PROVIDER.id, id: fallback.model } : null;
+	}
 	return {
 		provider: slot.model.provider, id: slot.model.id, thinkingLevel: slot.thinkingLevel,
 		...(slot.cacheRetention !== undefined ? { cacheRetention: slot.cacheRetention } : {}),
@@ -169,12 +178,14 @@ export function resolveModelSpec(
 ): EffectiveModelSpec | undefined {
 	const slotName = ROLE_SLOT[role] as ModelSlotName | undefined;
 	const slot = slotName ? slots?.[slotName] : undefined;
-	const model = override?.model ?? slot?.model;
+	// resolveSlot applies the hosted default, so the floor reaches every role.
+	const resolved = resolveSlot(slot);
+	const model = override?.model ?? (resolved ? { provider: resolved.provider, id: resolved.id } : undefined);
 	if (!model) return undefined;
 	return {
 		provider: model.provider,
 		id: model.id,
-		thinkingLevel: override?.thinkingLevel ?? slot?.thinkingLevel,
+		thinkingLevel: override?.thinkingLevel ?? resolved?.thinkingLevel,
 	};
 }
 

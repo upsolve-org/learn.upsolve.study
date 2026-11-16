@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import Link from "next/link";
 import { GlyphMark } from "@/components/ui/glyph-mark";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -77,6 +78,13 @@ export function LoginForm({ next, error, google }: { next: string; error?: strin
 						</form>
 					</>
 				) : null}
+
+				<p className="text-muted-foreground text-sm">
+					No account yet?{" "}
+					<Link href="/auth/signup" className="text-foreground underline underline-offset-2">
+						Request one
+					</Link>
+				</p>
 			</div>
 		</div>
 	);

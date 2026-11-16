@@ -13,9 +13,9 @@
  * /auth/grant (their docs, token-based auth FAQ) — plain read/transcribe
  * keys return FORBIDDEN here.
  */
-import { keyValue } from "@/src/server";
+import { keyValue, ownerScoped } from "@/src/server";
 
-export async function GET() {
+async function GETHandler() {
 	const key = keyValue("DEEPGRAM_API_KEY");
 	if (!key) {
 		return Response.json(
@@ -46,3 +46,6 @@ export async function GET() {
 		return Response.json({ message: "Deepgram unreachable" }, { status: 502 });
 	}
 }
+
+// Tenancy: the body runs inside the caller's owner scope.
+export const GET = ownerScoped(GETHandler);

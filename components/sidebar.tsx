@@ -12,6 +12,7 @@ import { CoverageMenuBlock } from "@/components/extraction-coverage";
 import { LhMark } from "@/components/lh-mark";
 import { BrailleSpinner } from "@/components/braille-spinner";
 import { KeyboardShortcuts } from "@/components/keyboard-shortcuts";
+import { AdminEntry } from "@/components/admin-entry";
 import { SettingsDialogProvider, useSettingsDialog } from "@/components/settings/settings-dialog.tsx";
 import { Hint } from "@/components/ui/hint";
 import { Button } from "@/components/ui/button";
@@ -909,6 +910,8 @@ function SessionsSidebar() {
 								Settings
 							</button>
 						</Hint>
+						{/* Operator only: renders nothing for ordinary learners. */}
+						<AdminEntry />
 					</div>
 				</div>
 

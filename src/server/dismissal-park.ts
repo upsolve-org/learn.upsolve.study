@@ -29,6 +29,7 @@ import { ChatInputError, dismissAppends, emit } from "../core";
 import { assertPluginQuestionInputAllowed } from "../core/input-events.ts";
 import { preparePluginQuestionDismissal, type PluginQuestionDismissInput } from "./plugin-questions.ts";
 import type { ChatStore } from "../core/ports.ts";
+import { currentOwnerId } from "../core/owner-scope.ts";
 
 /** The parked dismissal body — exactly the parsed input the dismiss route
  *  accepted ({type:"dismiss", toolCallId, answer} or
@@ -44,18 +45,24 @@ function registry(): Map<string, ParkedDismissal> {
 	return (g.__lhParkedDismissals ??= new Map<string, ParkedDismissal>());
 }
 
+/** TENANCY (2026-11-16): `owner:chatId`, same reason as turn-liveness.ts. */
+function key(chatId: string): string {
+	const owner = currentOwnerId();
+	return owner ? `${owner}:${chatId}` : chatId;
+}
+
 /** Park (or overwrite) the chat's dismissal intent. Called by the dismiss
  *  route when a turn owns the chat. */
 export function parkDismissal(chatId: string, input: ParkedDismissal): void {
-	registry().set(chatId, input);
+	registry().set(key(chatId), input);
 }
 
 /** Take the chat's parked dismissal (removes it). Returns null when
  *  nothing is parked. */
 export function takeParkedDismissal(chatId: string): ParkedDismissal | null {
-	const parked = registry().get(chatId);
+	const parked = registry().get(key(chatId));
 	if (parked === undefined) return null;
-	registry().delete(chatId);
+	registry().delete(key(chatId));
 	return parked;
 }
 

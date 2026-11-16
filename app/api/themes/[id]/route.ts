@@ -6,11 +6,11 @@
  */
 
 import { isBuiltinThemeId } from "@/src/core";
-import { readSettingsRecord, themeStore, writeSettingsRecord } from "@/src/server";
+import { readSettingsRecord, themeStore, writeSettingsRecord, ownerScoped } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export async function DELETE(_request: Request, ctx: { params: Promise<{ id: string }> }) {
+async function DELETEHandler(_request: Request, ctx: { params: Promise<{ id: string }> }) {
 	const { id } = await ctx.params;
 	if (isBuiltinThemeId(id)) return Response.json({ error: `"${id}" is a built-in theme` }, { status: 400 });
 	const theme = themeStore.readTheme(id);
@@ -22,3 +22,6 @@ export async function DELETE(_request: Request, ctx: { params: Promise<{ id: str
 	}
 	return Response.json({ theme });
 }
+
+// Tenancy: the body runs inside the caller's owner scope.
+export const DELETE = ownerScoped(DELETEHandler);

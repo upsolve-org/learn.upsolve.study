@@ -2,16 +2,22 @@ import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
 import { apiRequestRefusal } from "./src/server/desktop-access.ts";
 import { hostedConfig } from "./src/core/hosted.ts";
-import { documentEndpointExempt, loginPath, safeReturnPath, signInCallbackPath } from "./src/core/auth-routes.ts";
+import { deniedPath, documentEndpointExempt, loginPath, safeReturnPath, signInCallbackPath, signupPath } from "./src/core/auth-routes.ts";
 import { cookieWrites } from "./src/core/hosted-cookies.ts";
 import { hostedFetch } from "./src/core/hosted-fetch.ts";
-import { hostedRequestRefusal, pilotUserAllowed } from "./src/core/hosted-admission.ts";
+import { admittedUser, hostedIdentity } from "./src/core/hosted-admission.ts";
 
-/** Deskstop/browser-API gate. Protects API methods, including SSE and
+/**
+ * Deskstop/browser-API gate. Protects API methods, including SSE and
  * spending/settings routes. The one streamed document route enforces the
  * identical all-method request policy inside its handler, avoiding Next's
  * silently truncated Proxy body clone. No public callback or worker bypass:
- * legitimate self-HTTP still needs the capability. */
+ * legitimate self-HTTP still needs the capability.
+ *
+ * TENANCY: the API gate is the ONLY gate most routes ever see, so it must also
+ * forward the verified owner. Without this every API call would run unscoped
+ * and read the shared root while pages read the owner's.
+ */
 async function apiGate(request: NextRequest) {
 	const refusal = apiRequestRefusal(request);
 	if (refusal) {
@@ -20,7 +26,27 @@ async function apiGate(request: NextRequest) {
 			{ status: 403, headers: { "Cache-Control": "no-store" } },
 		);
 	}
-	return await hostedRequestRefusal(request) ?? NextResponse.next();
+	const identity = await hostedIdentity(request);
+	if ("refusal" in identity) return identity.refusal;
+	return NextResponse.next({ request: { headers: ownerHeaders(request, identity.owner) } });
+}
+
+/**
+ * The internal header carrying the VERIFIED owner id upstream. It is set here
+ * from the GoTrue-verified user and never trusted from the client: the Proxy
+ * overwrites it on every hosted request.
+ */
+const OWNER_HEADER = "x-lh-owner";
+
+/**
+ * Request headers with the verified owner set, or cleared when there is none.
+ * A client-supplied value is always dropped first, so only the Proxy decides.
+ */
+function ownerHeaders(request: NextRequest, owner: string | undefined): Headers {
+	const headers = new Headers(request.headers);
+	headers.delete(OWNER_HEADER);
+	if (owner) headers.set(OWNER_HEADER, owner.toLowerCase());
+	return headers;
 }
 
 /**
@@ -28,8 +54,9 @@ async function apiGate(request: NextRequest) {
  * traffic out. Returns the response whose cookies carry the refresh.
  *
  * Private pages verify the session against GoTrue over the internal
- * transport. Until owner-scoped stores ship, only the invited operator
- * account may access the shared workspace. Public auth pages skip this gate.
+ * transport. The verified id is forwarded as `x-lh-owner` so route handlers
+ * and server components can enter the owner's storage scope
+ * (src/core/owner-scope.ts) without another round trip.
  */
 async function sessionGate(request: NextRequest, config: NonNullable<ReturnType<typeof hostedConfig>>) {
 	const jar = cookieWrites();
@@ -44,14 +71,17 @@ async function sessionGate(request: NextRequest, config: NonNullable<ReturnType<
 		},
 	});
 	const { pathname, search } = request.nextUrl;
-	const publicPage = loginPath(pathname) || signInCallbackPath(pathname) || isPublicAsset(pathname);
+	const publicPage = loginPath(pathname) || signupPath(pathname) || deniedPath(pathname) || signInCallbackPath(pathname) || isPublicAsset(pathname);
 	const { data } = publicPage ? { data: { user: null } } : await supabase.auth.getUser();
 
 	// Built only now, so a refresh is already in the headers Next copies on.
-	const upstream = NextResponse.next({ request });
-	if ((data.user && pilotUserAllowed(data.user)) || publicPage) {
+	const admitted = Boolean(data.user && admittedUser(data.user));
+	const upstream = NextResponse.next({ request: { headers: ownerHeaders(request, admitted ? data.user!.id : undefined) } });
+	if (admitted || publicPage) {
 		return jar.landOn(upstream, upstream);
 	}
+	// Signed in but not admitted: explain rather than loop back to sign-in.
+	if (data.user) return jar.landOn(upstream, NextResponse.redirect(new URL("/auth/denied", request.url)));
 	const target = new URL("/auth/login", request.url);
 	const back = safeReturnPath(`${pathname}${search}`);
 	if (back !== "/") target.searchParams.set("next", back);

@@ -112,4 +112,11 @@ export * from "./plugin-agents.ts";
 
 // Hosted mode + session routing (webapp wave, 2026-11-15): pure, browser-safe.
 export * from "./hosted.ts";
+// The hosted default model (2026-11-16): pure, browser-safe. The KEY is only
+// read server-side; the shell sees the endpoint and model id.
+export * from "./hosted-default.ts";
+// Admission vocabulary (tenancy wave, 2026-11-16): pure and browser-safe.
+// The FILE-backed helpers (allowlist, signup queue) live in the server barrel.
+export * from "./admission.ts";
+export { SIGNUP_PATH, DENIED_PATH, signupPath, deniedPath } from "./auth-routes.ts";
 export * from "./auth-routes.ts";

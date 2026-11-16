@@ -14,11 +14,14 @@
  * (core/settings-resolution.ts resolveSettings — browser-safe).
  */
 
-import { settingsStore, fileAccessConfigurationError } from "@/src/server";
+import { settingsStore, fileAccessConfigurationError, ownerScoped } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+async function GETHandler() {
 	const fileAccessError = fileAccessConfigurationError();
 	return Response.json({ settings: settingsStore.readSettings(), ...(fileAccessError ? { fileAccessError } : {}) });
 }
+
+// Tenancy: the body runs inside the caller's owner scope.
+export const GET = ownerScoped(GETHandler);

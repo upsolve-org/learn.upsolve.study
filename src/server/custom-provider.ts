@@ -11,6 +11,7 @@ import { configureProviderSource, piModels } from "../agent/models.ts";
 import { readSettings } from "../store/settings.ts";
 import { CustomBodyLimitError, readBoundedJson } from "./custom-provider-body.ts";
 import { CUSTOM_PROVIDER } from "../core/auth-keys.ts";
+import { hostedDefault } from "../core/hosted-default.ts";
 import { customBindingMatches } from "../core/custom-provider-auth.ts";
 import { customAuthState, customKeyAuthorized } from "./custom-provider-auth.ts";
 import {
@@ -39,14 +40,26 @@ export function installCustomProviderSource(readAuth = customAuthState): void {
 		isCustom: (id) => id === CUSTOM_PROVIDER.id,
 		sync(models) {
 			const cp = readSettings()?.customProvider;
+			// HOSTED DEFAULT (2026-11-16): when the learner has no endpoint of
+			// their own, publish the operator's instead. The key comes from the
+			// environment and never enters the record.
+			const fallback = hostedDefault();
+			const useFallback = !customProviderUsable(cp) && fallback !== undefined;
+			const effective = useFallback
+				? { baseUrl: fallback.baseUrl, models: [{ id: fallback.model }], authMode: "apiKey" as const }
+				: cp;
 			// Validate the durable nonce/URL/mode before resolving ANY credential.
 			// Keyless reads only the nonsecret marker, never a file/env key.
-			const auth = readAuth(cp?.authMode === "apiKey", cp);
+			const auth = useFallback
+				? { readable: true, source: "env" as const, key: fallback.apiKey }
+				: readAuth(cp?.authMode === "apiKey", cp);
 			const key = auth.key;
-			const ready = customProviderUsable(cp) && auth.readable && customBindingMatches(cp, auth.binding) && (cp.authMode === "keyless" || customKeyAuthorized(cp, auth));
-			const next = JSON.stringify([cp, auth]); // Private in-memory fingerprint, never a public revision.
+			const ready = useFallback
+				? true
+				: customProviderUsable(cp) && auth.readable && customBindingMatches(cp, auth.binding) && (cp.authMode === "keyless" || customKeyAuthorized(cp, auth));
+			const next = JSON.stringify([effective, auth]); // Private in-memory fingerprint, never a public revision.
 			if (next === fingerprint) return;
-			if (ready) models.setProvider(buildOpenAiCompatibleProvider({ ...cp, baseUrl: cp.baseUrl, models: cp.models ?? [], apiKey: key }));
+			if (ready && effective?.baseUrl) models.setProvider(buildOpenAiCompatibleProvider({ ...effective, baseUrl: effective.baseUrl, models: effective.models ?? [], apiKey: key }));
 			else models.deleteProvider(CUSTOM_PROVIDER.id);
 			fingerprint = next;
 		},

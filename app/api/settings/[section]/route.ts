@@ -46,6 +46,7 @@ import {
 	validateModelsSettings,
 	writeSettingsRecord,
 	type SettingsBodyResult,
+	ownerScoped,
 } from "@/src/server";
 
 export const dynamic = "force-dynamic";
@@ -53,7 +54,7 @@ export const dynamic = "force-dynamic";
 /** One parser, result type erased to the common envelope. */
 type AnySectionParser = (body: unknown) => SettingsBodyResult<unknown>;
 
-export async function PUT(request: Request, ctx: { params: Promise<{ section: string }> }) {
+async function PUTHandler(request: Request, ctx: { params: Promise<{ section: string }> }) {
 	const { section } = await ctx.params;
 	const parser = (SETTINGS_SECTIONS as Record<string, AnySectionParser>)[section];
 	if (!parser) {
@@ -151,3 +152,6 @@ export async function PUT(request: Request, ctx: { params: Promise<{ section: st
 	const fileAccessError = fileAccessConfigurationError();
 	return Response.json({ settings: stored, ...(fileAccessError ? { fileAccessError } : {}) });
 }
+
+// Tenancy: the body runs inside the caller's owner scope.
+export const PUT = ownerScoped(PUTHandler);

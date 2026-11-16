@@ -9,7 +9,7 @@ import { ServerEventsProvider } from "@/components/server-events";
 import { AppearanceProvider } from "@/components/settings/appearance";
 import UpdateBanner from "@/components/update-banner";
 import { PluginsProvider } from "@/components/plugins";
-import { currentOwner, readThemeBoot } from "@/src/server";
+import { asRequestOwner, currentOwner, readThemeBoot } from "@/src/server";
 import { hostedMode } from "@/src/core";
 
 // Chrome = JetBrains Mono, teaching prose = Source Sans 3, titles = CMU
@@ -31,7 +31,9 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 	// record and the theme files are per-machine disk state — without it a
 	// prerendered route (settings) would bake the BUILD machine's record.
 	await connection();
-	const { appearance, theme, vars } = readThemeBoot();
+	// Tenancy: the boot theme is the OWNER's appearance record and theme
+	// files, so it is read inside the request's owner scope.
+	const { appearance, theme, vars } = await asRequestOwner(() => readThemeBoot());
 	const showApp = !hostedMode() || Boolean(await currentOwner());
 	return (
 		<html

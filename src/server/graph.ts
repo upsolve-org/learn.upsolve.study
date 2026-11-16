@@ -1,5 +1,5 @@
 import * as fs from "node:fs";
-import { LEDGER_FILES, POSITIONS_FILE } from "../../config.ts";
+import { ledgerFiles, positionsFile } from "../store/graph.ts";
 import type { GraphSnapshot } from "../core/contracts.ts";
 import type { GraphCostSummary } from "../core/cost-summary.ts";
 import { graphCostSummary } from "../core/cost-summary.ts";
@@ -56,12 +56,13 @@ export function graphCosts(): GraphCostSummary {
  *  must refetch — the "graph changed underneath me" signal. */
 export function graphRevision(): number {
 	let revision = 0;
+	const ledgers = ledgerFiles();
 	for (const file of [
-		LEDGER_FILES.nodes,
-		LEDGER_FILES.chains,
-		LEDGER_FILES.sessions,
-		LEDGER_FILES.coverage,
-		POSITIONS_FILE,
+		ledgers.nodes,
+		ledgers.chains,
+		ledgers.sessions,
+		ledgers.coverage,
+		positionsFile(),
 	]) {
 		try {
 			revision = Math.max(revision, fs.statSync(file).mtimeMs);

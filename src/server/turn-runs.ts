@@ -30,6 +30,13 @@
  */
 
 import type { PiTurnHandle } from "./pi/ui-stream.ts";
+import { currentOwnerId } from "../core/owner-scope.ts";
+
+/** TENANCY (2026-11-16): `owner:chatId`, same reason as turn-liveness.ts. */
+function key(chatId: string): string {
+	const owner = currentOwnerId();
+	return owner ? `${owner}:${chatId}` : chatId;
+}
 
 interface LhTurnRunsGlobal {
 	__lhTurnRuns?: Map<string, PiTurnHandle>;
@@ -49,41 +56,41 @@ function failures(): Map<string, string> {
 }
 
 export function rememberTurnFailure(chatId: string, errorText: string): void {
-	failures().set(chatId, errorText);
+	failures().set(key(chatId), errorText);
 }
 
 export function turnFailure(chatId: string): string | undefined {
-	return failures().get(chatId);
+	return failures().get(key(chatId));
 }
 
 export function clearTurnFailure(chatId: string): void {
-	failures().delete(chatId);
+	failures().delete(key(chatId));
 }
 
 /** Register the chat's running turn (chat-handler, right after the turn
  *  starts). One per chat by construction — the 409 guard. */
 export function registerTurn(chatId: string, handle: PiTurnHandle): void {
-	runs().set(chatId, handle);
+	runs().set(key(chatId), handle);
 }
 
 /** Unregister at settle — LAST (after endTurn). Preparation passes its
  * stable outer handle as a fence; ordinary callers retain the default. */
 export function unregisterTurn(chatId: string, ownerHandle?: PiTurnHandle): void {
-	if (ownerHandle && runs().get(chatId) !== ownerHandle) return;
-	runs().delete(chatId);
+	if (ownerHandle && runs().get(key(chatId)) !== ownerHandle) return;
+	runs().delete(key(chatId));
 }
 
 /** The live turn handle for a chat, or undefined — the subscribe endpoint's
  *  and the abort channel's resolution point. */
 export function runningTurn(chatId: string): PiTurnHandle | undefined {
-	return runs().get(chatId);
+	return runs().get(key(chatId));
 }
 
 /** The remote kill: any client (original sender, reattached viewer, future
  *  surfaces) may stop a running turn. not_running mirrors abortJob's
  *  honest 409 — there was nothing to abort, the caller refetches. */
 export function abortTurn(chatId: string): { ok: true } | { ok: false; reason: "not_running" } {
-	const handle = runs().get(chatId);
+	const handle = runs().get(key(chatId));
 	if (!handle) return { ok: false, reason: "not_running" };
 	handle.abort();
 	return { ok: true };

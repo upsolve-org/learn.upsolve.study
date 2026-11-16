@@ -17,9 +17,9 @@
  * Extraction abort is idempotent by design (aborting with nothing in
  * flight is success — the blob is gone either way) -> 200.
  */
-import { abortExtraction, abortJob, abortPluginWorkerActivity, abortTurn } from "@/src/server";
+import { abortExtraction, abortJob, abortPluginWorkerActivity, abortTurn, ownerScoped } from "@/src/server";
 
-export async function POST(req: Request) {
+async function POSTHandler(req: Request) {
 	let body: unknown;
 	try {
 		body = await req.json();
@@ -56,3 +56,6 @@ export async function POST(req: Request) {
 	abortExtraction(id);
 	return Response.json({ ok: true });
 }
+
+// Tenancy: the body runs inside the caller's owner scope.
+export const POST = ownerScoped(POSTHandler);

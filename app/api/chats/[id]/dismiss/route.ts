@@ -21,9 +21,9 @@
  * the current saved occurrence, then park and abort the owner here.
  */
 import { assertPluginQuestionInputAllowed, ChatInputError, dismissAppends, emit, parseDismissInput } from "@/src/core";
-import { abortTurn, getChat, isTurnRunning, parkDismissal, stores, preparePluginQuestionDismissal, reconcilePluginQuestionCompatibility } from "@/src/server";
+import { abortTurn, getChat, isTurnRunning, parkDismissal, stores, preparePluginQuestionDismissal, reconcilePluginQuestionCompatibility, ownerScoped } from "@/src/server";
 
-export async function POST(req: Request, ctx: { params: Promise<{ id: string }> }): Promise<Response> {
+async function POSTHandler(req: Request, ctx: { params: Promise<{ id: string }> }): Promise<Response> {
 	const { id } = await ctx.params;
 	await reconcilePluginQuestionCompatibility(stores.chatStore, id);
 	let chat = getChat(id);
@@ -80,3 +80,6 @@ export async function POST(req: Request, ctx: { params: Promise<{ id: string }> 
 	emit("record-changed", { chatId: id });
 	return Response.json({ ok: true });
 }
+
+// Tenancy: the body runs inside the caller's owner scope.
+export const POST = ownerScoped(POSTHandler);

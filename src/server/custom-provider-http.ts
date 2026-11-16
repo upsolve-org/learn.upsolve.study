@@ -1,10 +1,11 @@
 /** PR #62's connect/manual-model/offline-pin workflow, with host request,
  * credential-binding and optimistic-write boundaries. No secret reaches GET. */
 import { createHmac, randomBytes } from "node:crypto";
-import { normalizeBaseUrl, parseModelIds, sanitizeCustomModelOverrides, type CustomProviderSettings } from "../core/settings.ts";
+import { normalizeBaseUrl, parseModelIds, sanitizeCustomModelOverrides, customProviderUsable, type CustomProviderSettings } from "../core/settings.ts";
 import { readSettings, writeSettings } from "../store/settings.ts";
 import { readCustomAuth } from "../store/auth.ts";
 import { customAuthState, customKeyAuthorized, persistCustomAuth } from "./custom-provider-auth.ts";
+import { hostedDefault } from "../core/hosted-default.ts";
 import type { CustomAuthBinding } from "../core/custom-provider-auth.ts";
 import { desktopAPIAuthorized } from "./desktop-access.ts";
 import { subscriptionRequestOrigin } from "./web-subscription-http.ts";
@@ -39,11 +40,24 @@ export function customProviderGet(request: Request): Response {
 	const inspect = new URL(request.url).searchParams.get("authMode") === "apiKey";
 	const current = snapshot();
 	const s = snapshot(inspect || current.cp?.authMode === "apiKey");
+	// HOSTED DEFAULT: when the learner has none of their own, report the
+	// operator's endpoint so the picker can offer it. The key is never sent —
+	// only `keyPresent`, which is already true for the default.
+	const fallback = hostedDefault();
+	if (fallback && !customProviderUsable(s.cp)) {
+		return response({
+			baseUrl: fallback.baseUrl, authMode: "apiKey",
+			models: [{ id: fallback.model }], overrides: {}, manualModels: [fallback.model],
+			keyPresent: true, keySource: "env", keyReuseRequired: false,
+			hostedDefault: true,
+		});
+	}
 	return response({
 		baseUrl: s.cp?.baseUrl ?? "", authMode: s.cp?.authMode ?? "keyless",
 		models: s.cp?.models ?? [], overrides: s.cp?.overrides ?? {}, manualModels: s.cp?.manualModels ?? [],
 		keyPresent: Boolean(s.key), keySource: s.auth.source,
 		keyReuseRequired: Boolean(s.key) && !customKeyAuthorized(s.cp, s.auth),
+		hostedDefault: false,
 	});
 }
 

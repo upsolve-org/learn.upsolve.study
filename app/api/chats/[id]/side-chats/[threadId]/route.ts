@@ -3,11 +3,11 @@
  * after reload); PATCH changes window visibility. Closing never deletes it.
  */
 import { parseSideOpenInput, SideChatInputError } from "@/src/core";
-import { sideChats } from "@/src/server";
+import { sideChats, ownerScoped } from "@/src/server";
 
 type Ctx = { params: Promise<{ id: string; threadId: string }> };
 
-export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
+async function PATCHHandler(request: Request, ctx: Ctx): Promise<Response> {
 	const { id, threadId } = await ctx.params;
 	let open: boolean;
 	try {
@@ -22,7 +22,11 @@ export async function PATCH(request: Request, ctx: Ctx): Promise<Response> {
 	return Response.json({ thread: result });
 }
 
-export async function GET(_req: Request, ctx: Ctx): Promise<Response> {
+async function GETHandler(_req: Request, ctx: Ctx): Promise<Response> {
 	const { id, threadId } = await ctx.params;
 	return sideChats.watch(id, threadId);
 }
+
+// Tenancy: the body runs inside the caller's owner scope.
+export const PATCH = ownerScoped(PATCHHandler);
+export const GET = ownerScoped(GETHandler);

@@ -1,6 +1,8 @@
-import { subscriptionControlsResponse } from "@/src/server";
+import { subscriptionControlsResponse, ownerScoped } from "@/src/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
-export const GET = subscriptionControlsResponse;
-export const POST = subscriptionControlsResponse;
+
+// Tenancy: the body runs inside the caller's owner scope.
+export const GET = ownerScoped(subscriptionControlsResponse);
+export const POST = ownerScoped(subscriptionControlsResponse);

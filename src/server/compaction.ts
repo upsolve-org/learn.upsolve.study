@@ -46,6 +46,7 @@ import {
 	type LhMarkerMessage,
 } from "../core/index.ts";
 import { emit } from "../core/events.ts";
+import { currentOwnerId } from "../core/owner-scope.ts";
 import type { ChatStore } from "../core/ports.ts";
 import type { PiEngine } from "../agent/models.ts";
 import { runSubagent } from "../agent/subagents/pi-run.ts";
@@ -135,16 +136,22 @@ function state(): CompactionState {
 	return (g.__lhCompaction ??= { inFlight: new Map() });
 }
 
+/** TENANCY (2026-11-16): `owner:chatId`, same reason as turn-liveness.ts. */
+function key(chatId: string): string {
+	const owner = currentOwnerId();
+	return owner ? `${owner}:${chatId}` : chatId;
+}
+
 /** Is a compaction running for this chat? (The client status event's
  *  server-side twin — tests and the SSE emitter read it.) */
 export function compactionInFlight(chatId: string): boolean {
-	return state().inFlight.has(chatId);
+	return state().inFlight.has(key(chatId));
 }
 
 /** Await any in-flight compaction for the chat — the structural gate
  *  every model interaction for the chat passes through. */
 export async function awaitCompaction(chatId: string): Promise<void> {
-	const running = state().inFlight.get(chatId);
+	const running = state().inFlight.get(key(chatId));
 	if (running) await running;
 }
 
@@ -309,7 +316,7 @@ export async function ensureCompacted(deps: CompactionDeps, chatId: string): Pro
 	// Another fresh preflight may have started a summary after our initial
 	// structural check. Join it BEFORE any eligibility/threshold early exit:
 	// those checks govern new runs, never permission to bypass a live one.
-	const concurrent = state().inFlight.get(chatId);
+	const concurrent = state().inFlight.get(key(chatId));
 	if (concurrent) {
 		await concurrent;
 		return;
@@ -319,17 +326,17 @@ export async function ensureCompacted(deps: CompactionDeps, chatId: string): Pro
 	if (!record) return;
 	const model = deps.includeReasoning ? deps.engine.model : undefined;
 	if (projectedContextTokens(deps.projectMessages?.(record) ?? record.messages, deps.systemPromptTokens, model) <= deps.thresholdTokens) return;
-	const admitted = state().inFlight.get(chatId);
+	const admitted = state().inFlight.get(key(chatId));
 	if (admitted) {
 		await admitted;
 		return;
 	}
 	const run = compact(deps, chatId);
-	state().inFlight.set(chatId, run);
+	state().inFlight.set(key(chatId), run);
 	try {
 		await run;
 	} finally {
-		if (state().inFlight.get(chatId) === run) state().inFlight.delete(chatId);
+		if (state().inFlight.get(key(chatId)) === run) state().inFlight.delete(key(chatId));
 	}
 }
 
@@ -342,15 +349,15 @@ export async function ensureCompacted(deps: CompactionDeps, chatId: string): Pro
  * whatever this leaves running.
  */
 export function kickCompaction(buildDeps: () => CompactionDeps | null, chatId: string): void {
-	if (state().inFlight.has(chatId)) return;
+	if (state().inFlight.has(key(chatId))) return;
 	const deps = buildDeps();
 	if (!deps || deps.canStart?.() === false) return;
 	const record = deps.chatStore.getChat(chatId);
 	if (!record) return;
 	if (projectedContextTokens(record.messages, deps.systemPromptTokens, deps.includeReasoning ? deps.engine.model : undefined) <= deps.thresholdTokens) return;
 	const run = compact(deps, chatId);
-	state().inFlight.set(chatId, run);
+	state().inFlight.set(key(chatId), run);
 	void run.finally(() => {
-		if (state().inFlight.get(chatId) === run) state().inFlight.delete(chatId);
+		if (state().inFlight.get(key(chatId)) === run) state().inFlight.delete(key(chatId));
 	});
 }

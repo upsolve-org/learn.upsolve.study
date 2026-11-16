@@ -31,6 +31,7 @@ import {
 	promptOverrides,
 	readSettingsRecord,
 	writeSettingsRecord,
+	ownerScoped,
 } from "@/src/server";
 
 export const dynamic = "force-dynamic";
@@ -42,7 +43,7 @@ function segmentPathFrom(segments: string[]): string | null {
 	return isValidSegmentPath(joined) ? joined : null;
 }
 
-export async function PUT(request: Request, ctx: { params: Promise<{ segment: string[] }> }) {
+async function PUTHandler(request: Request, ctx: { params: Promise<{ segment: string[] }> }) {
 	const { segment } = await ctx.params;
 	const path = segmentPathFrom(segment);
 	if (!path) return Response.json({ error: "invalid segment path" }, { status: 400 });
@@ -60,7 +61,7 @@ export async function PUT(request: Request, ctx: { params: Promise<{ segment: st
 	return Response.json({ path, text: body.text });
 }
 
-export async function DELETE(_request: Request, ctx: { params: Promise<{ segment: string[] }> }) {
+async function DELETEHandler(_request: Request, ctx: { params: Promise<{ segment: string[] }> }) {
 	const { segment } = await ctx.params;
 	const path = segmentPathFrom(segment);
 	if (!path) return Response.json({ error: "invalid segment path" }, { status: 400 });
@@ -78,3 +79,7 @@ export async function DELETE(_request: Request, ctx: { params: Promise<{ segment
 	// (additive; the GET view derives the same truth from record+file).
 	return Response.json({ path, deleted: true, switchCleared: hadSwitch });
 }
+
+// Tenancy: the body runs inside the caller's owner scope.
+export const PUT = ownerScoped(PUTHandler);
+export const DELETE = ownerScoped(DELETEHandler);

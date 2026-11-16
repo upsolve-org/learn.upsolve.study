@@ -1,6 +1,9 @@
-import { claudeCodeInstallationResponse } from "@/src/server";
+import { claudeCodeInstallationResponse, ownerScoped } from "@/src/server";
 
 /** Installation/version only; never reads auth status or makes a model request. */
-export async function GET(request: Request) {
+async function GETHandler(request: Request) {
 	return claudeCodeInstallationResponse(request);
 }
+
+// Tenancy: the body runs inside the caller's owner scope.
+export const GET = ownerScoped(GETHandler);
