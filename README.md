@@ -117,6 +117,9 @@ LH_ALLOWED_HOSTS=localhost
 
 # --- operator ---
 ADMIN_EMAIL=you@example.com
+# Lets approving a request create the account and show you its password.
+# From your Supabase stack's .env, never committed.
+SUPABASE_SECRET_KEY=sb_secret_...
 ```
 
 `SUPABASE_DB_URL` is **required at boot but not yet used** — no Postgres adapter
@@ -175,8 +178,12 @@ Sign in at `/auth/login`. `/admin` (operator only) lists signup requests.
 
 `/auth/signup` is public and only **queues** an address into `data/signups.json` —
 it creates no account. You approve on `/admin` (reachable from the **Requests**
-row at the bottom of the sidebar, operator only). Approving writes the allowlist;
-you still create the GoTrue account and mail the credentials.
+row at the bottom of the sidebar, operator only).
+
+Approving does two things: it admits the address, and — when `SUPABASE_SECRET_KEY`
+is set — it creates the GoTrue account with a generated password and lists that
+password on the page. Send it, then press **Done**. Supabase keeps only a hash, so
+the page is the only place a password can be read; **Reset** issues a new one.
 
 A verified but unadmitted account lands on `/auth/denied` rather than looping back
 to sign-in.

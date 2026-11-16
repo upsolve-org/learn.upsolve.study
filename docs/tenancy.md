@@ -79,14 +79,23 @@ Two operator files, both outside any owner root:
 - `data/signups.json` — `{ version: 1, requests: [{ email, requestedAt }] }`, the queue
 
 `/auth/signup` only queues an address; it creates no account. `/admin` (gated by
-`ADMIN_EMAIL`, 404 for anyone else) approves or denies. Approving edits the allowlist
-only — the GoTrue account and the credential mail stay manual.
+`ADMIN_EMAIL`, 404 for anyone else) approves or denies.
+
+**Approving provisions the account.** With `SUPABASE_SECRET_KEY` set, the approve
+action creates the GoTrue user with a generated 14-character password, marks the
+address confirmed, and lists the password on the page under "Credentials to send".
+Send it, then press **Done** to drop it. Supabase stores only a bcrypt hash, so a
+password cannot be read back afterwards — **Reset** issues a new one.
+
+The plaintext lives in `data/issued-credentials.json` (operator-level, `0600`) because
+this is the only place it can survive. Without the secret key, approving admits the
+address only and the page says so.
 
 **Where requests appear:** the operator opens `/admin` — reachable from the **Requests**
 row pinned at the bottom of the sidebar, which renders only for the operator (it asks
-`GET /api/admin/status`). The page lists pending addresses with Approve/Deny, and the
-current allowlist below. Pending requests also sit in `data/signups.json` if you prefer
-the file.
+`GET /api/admin/status`). The page lists pending addresses with Approve/Deny, the
+credentials to send, and the current allowlist. Pending requests also sit in
+`data/signups.json` if you prefer the file.
 
 A verified but unadmitted account is sent to `/auth/denied` rather than back to
 sign-in, which would loop because the session is valid.

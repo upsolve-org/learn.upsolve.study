@@ -85,3 +85,14 @@ export {
 	type SignupRequest,
 	type SignupOutcome,
 } from "../core/hosted-admission.ts";
+// Account provisioning (2026-11-17): creates the GoTrue account on approval and
+// keeps the plaintext password, which Supabase itself cannot return.
+export {
+	provisionAccount,
+	issuedCredentials,
+	forgetIssued,
+	provisioningAvailable,
+	generatePassword,
+	type IssuedCredential,
+	type ProvisionResult,
+} from "../core/hosted-credentials.ts";
