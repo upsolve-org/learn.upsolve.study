@@ -51,6 +51,7 @@ import type {
 import type { EffectiveModelSpec, EffectiveSlot } from "../core/settings-resolution.ts";
 import { AUTH_PROVIDER_KEYS, CUSTOM_PROVIDER } from "../core/auth-keys.ts";
 import { claudeCodeAvailable } from "./claude-code-config.ts";
+import { hostedDefault } from "../core/hosted-default.ts";
 import { CLAUDE_CODE_PROVIDER } from "../agent/claude-code/constants.ts";
 import {
 	BACKGROUND_MODEL_ROLES,
@@ -148,6 +149,10 @@ export function catalogSlots(): SlotPins {
  *  saving a key immediately federates the provider into the picker. */
 export function catalogProviders(): CatalogProvider[] {
 	piModels();
+	// HOSTED DEFAULT (2026-11-16): the operator's endpoint is offered exactly
+	// like a configured one, so the picker and the zero-keys gate see it. The
+	// key stays server-side; `keyPresent` is true because it is present there.
+	const fallback = hostedDefault();
 	return AUTH_PROVIDER_KEYS.map((p) => ({
 		id: p.id,
 		envVar: p.envVar,
@@ -158,7 +163,7 @@ export function catalogProviders(): CatalogProvider[] {
 		...NATIVE_SUBSCRIPTIONS.map((p) => ({ id: p.logicalId, envVar: "", keyPresent: nativeSubscriptionConnected(p.providerId) })),
 		// The custom endpoint: a row only when usable (base URL set). keyPresent
 		// reflects usability, not key presence (keyless local servers are allowed).
-		...(customProviderUsable(effectiveSettings().customProvider)
+		...(customProviderUsable(effectiveSettings().customProvider) || fallback
 			? [{ id: CUSTOM_PROVIDER.id, envVar: CUSTOM_PROVIDER.envVar, keyPresent: customProviderAvailable() }]
 			: []),
 	]).sort((a, b) => a.id.localeCompare(b.id));
