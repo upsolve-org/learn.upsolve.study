@@ -5,7 +5,7 @@ const { hostedDefault, isHostedDefaultUrl } = await import("../src/core/hosted-d
 const { resolveSettings, resolveSlot, resolveRoleSpec, resolveConversationSpec } = await import("../src/core/settings-resolution.ts");
 const { slotsConfigured } = await import("../src/core/settings.ts");
 
-const KEYS = ["HOSTED_MODE", "HOSTED_DEFAULT_BASE_URL", "HOSTED_DEFAULT_MODEL", "HOSTED_DEFAULT_API_KEY"] as const;
+const KEYS = ["HOSTED_MODE", "HOSTED_DEFAULT_BASE_URL", "HOSTED_DEFAULT_MODEL", "HOSTED_DEFAULT_API_KEY", "HOSTED_DEFAULT_CONTEXT_WINDOW", "HOSTED_DEFAULT_MAX_TOKENS"] as const;
 const saved: Record<string, string | undefined> = {};
 const complete = {
 	HOSTED_MODE: "on",
@@ -48,9 +48,31 @@ describe("hosted default", () => {
 
 	it("returns the configured endpoint when complete", () => {
 		env(complete);
-		assert.deepEqual(hostedDefault(), { baseUrl: "https://gateway.example/v1", model: "auto", apiKey: "sk-secret" });
+		assert.deepEqual(hostedDefault(), {
+			baseUrl: "https://gateway.example/v1", model: "auto", apiKey: "sk-secret",
+			contextWindow: 1_000_000, maxTokens: 1_000_000,
+		});
 		assert.equal(isHostedDefaultUrl("https://gateway.example/v1"), true);
 		assert.equal(isHostedDefaultUrl("https://other.example/v1"), false);
+	});
+
+	// REGRESSION (live report 2026-11-18): the default supplied no limits, so the
+	// model fell back to 8192/4096. With a 16k compaction reserve that clamped
+	// replies to a token or two ("Photos", "I", "Let").
+	it("always carries limits big enough for the compaction reserve", () => {
+		env(complete);
+		const fallback = hostedDefault()!;
+		assert.ok(fallback.contextWindow > 16_384, "context must exceed the reserve");
+		assert.ok(fallback.maxTokens > 1_000, "output must not be clamped to nothing");
+	});
+
+	it("lets the limits be overridden and rejects junk", () => {
+		env({ ...complete, HOSTED_DEFAULT_CONTEXT_WINDOW: "200000", HOSTED_DEFAULT_MAX_TOKENS: "8000" });
+		assert.equal(hostedDefault()?.contextWindow, 200_000);
+		assert.equal(hostedDefault()?.maxTokens, 8_000);
+		env({ ...complete, HOSTED_DEFAULT_CONTEXT_WINDOW: "abc", HOSTED_DEFAULT_MAX_TOKENS: "-5" });
+		assert.equal(hostedDefault()?.contextWindow, 1_000_000, "junk falls back");
+		assert.equal(hostedDefault()?.maxTokens, 1_000_000);
 	});
 });
 

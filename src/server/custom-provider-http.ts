@@ -47,7 +47,8 @@ export function customProviderGet(request: Request): Response {
 	if (fallback && !customProviderUsable(s.cp)) {
 		return response({
 			baseUrl: fallback.baseUrl, authMode: "apiKey",
-			models: [{ id: fallback.model }], overrides: {}, manualModels: [fallback.model],
+			models: [{ id: fallback.model, context: fallback.contextWindow, maxTokens: fallback.maxTokens }],
+			overrides: {}, manualModels: [fallback.model],
 			keyPresent: true, keySource: "env", keyReuseRequired: false,
 			hostedDefault: true,
 		});

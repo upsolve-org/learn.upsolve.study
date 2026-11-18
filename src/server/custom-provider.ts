@@ -46,7 +46,15 @@ export function installCustomProviderSource(readAuth = customAuthState): void {
 			const fallback = hostedDefault();
 			const useFallback = !customProviderUsable(cp) && fallback !== undefined;
 			const effective = useFallback
-				? { baseUrl: fallback.baseUrl, models: [{ id: fallback.model }], authMode: "apiKey" as const }
+				? {
+						baseUrl: fallback.baseUrl,
+						// The default's model carries REAL limits. Without them the
+						// compiled 8192/4096 custom-endpoint defaults apply, and a 16k
+						// compaction reserve leaves almost no output — replies get
+						// clamped to a token or two.
+						models: [{ id: fallback.model, context: fallback.contextWindow, maxTokens: fallback.maxTokens }],
+						authMode: "apiKey" as const,
+					}
 				: cp;
 			// Validate the durable nonce/URL/mode before resolving ANY credential.
 			// Keyless reads only the nonsecret marker, never a file/env key.
