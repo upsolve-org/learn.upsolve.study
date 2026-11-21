@@ -18,10 +18,15 @@ export function SignupForm() {
 	if (state.outcome) {
 		return (
 			<div className="flex min-h-dvh items-center justify-center bg-background px-6 py-12">
-				<div className="flex w-full max-w-sm flex-col gap-4">
-					<GlyphMark kind="check" className="size-8" />
-					<h1 className="text-lg font-semibold tracking-tight">Request received</h1>
-					<p className="text-muted-foreground text-sm">
+				<div className="panel-enter flex w-full max-w-md flex-col gap-4 border border-border border-t-2 border-t-[var(--lh-accent)] bg-well p-8 shadow-[var(--shadow-lift)]">
+					<div className="flex items-center gap-2.5">
+						<GlyphMark kind="check" className="size-7 text-[var(--lh-accent)]" />
+						<span className="font-ui text-xs font-semibold uppercase tracking-[0.12em] text-[var(--lh-accent)]">
+							UPsolve // Learn
+						</span>
+					</div>
+					<h1 className="font-title text-3xl uppercase tracking-tight text-foreground">Request received</h1>
+					<p className="font-prose text-sm text-muted-foreground">
 						{state.outcome === "already-admitted"
 							? "That address already has access. Sign in and you are in."
 							: state.outcome === "already-pending"
@@ -38,20 +43,25 @@ export function SignupForm() {
 
 	return (
 		<div className="flex min-h-dvh items-center justify-center bg-background px-6 py-12">
-			<div className="flex w-full max-w-sm flex-col gap-6">
+			<div className="panel-enter flex w-full max-w-md flex-col gap-6 border border-border border-t-2 border-t-[var(--lh-accent)] bg-well p-8 shadow-[var(--shadow-lift)]">
 				<div className="flex flex-col items-start gap-3">
-					<GlyphMark kind="check" className="size-8" />
+					<div className="flex items-center gap-2.5">
+						<GlyphMark kind="check" className="size-7 text-[var(--lh-accent)]" />
+						<span className="font-ui text-xs font-semibold uppercase tracking-[0.12em] text-[var(--lh-accent)]">
+							UPsolve // Learn
+						</span>
+					</div>
 					<div>
-						<h1 className="text-lg font-semibold tracking-tight">Request an account</h1>
-						<p className="text-muted-foreground text-sm">
+						<h1 className="font-title text-3xl uppercase tracking-tight text-foreground">Request an account</h1>
+						<p className="mt-1 font-prose text-sm text-muted-foreground">
 							UPsolve Learn is invitation-only. Leave your email and we will send your sign-in details.
 						</p>
 					</div>
 				</div>
 
-				<form action={action} className="flex flex-col gap-3">
+				<form action={action} className="flex flex-col gap-4">
 					<label className="flex flex-col gap-1.5">
-						<span className="text-sm font-medium">Email</span>
+						<span className="font-ui text-xs uppercase tracking-[0.09em] text-muted-foreground">Email</span>
 						<Input
 							name="email"
 							type="email"
@@ -63,7 +73,7 @@ export function SignupForm() {
 						/>
 					</label>
 					{state.error ? (
-						<p role="alert" className="text-destructive text-sm">
+						<p role="alert" className="border-l-2 border-destructive bg-destructive/10 px-3 py-2 text-xs text-destructive">
 							{state.error}
 						</p>
 					) : null}
@@ -72,9 +82,9 @@ export function SignupForm() {
 					</Button>
 				</form>
 
-				<p className="text-muted-foreground text-sm">
+				<p className="border-t border-border pt-4 font-prose text-sm text-muted-foreground">
 					Already have an account?{" "}
-					<Link href="/auth/login" className="text-foreground underline underline-offset-2">
+					<Link href="/auth/login" className="font-ui text-xs uppercase tracking-[0.08em] text-[var(--lh-accent)] underline underline-offset-4 hover:text-foreground">
 						Sign in
 					</Link>
 				</p>

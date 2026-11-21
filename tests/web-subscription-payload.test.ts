@@ -11,14 +11,16 @@ for (const name of ["chatgpt-credentials.json", "github-copilot-credentials.json
 		const root = mkdtempSync(path.join(tmpdir(), "lh-sub-payload-"));
 		try {
 			mkdirSync(path.join(root, "scripts")); mkdirSync(path.join(root, ".next", "standalone"), { recursive: true }); mkdirSync(path.join(root, ".next", "static"));
-			copyFileSync(new URL("../scripts/build-server.mjs", import.meta.url), path.join(root, "scripts", "build-server.mjs"));
+			// The secret guard fires after static copies but before the optional
+			// asset checks and the plugin-authoring build, so those stay unbuilt.
+			copyFileSync(new URL("../scripts/postbuild.mjs", import.meta.url), path.join(root, "scripts", "postbuild.mjs"));
 			copyFileSync(new URL("../scripts/build-core-plugins.mjs", import.meta.url), path.join(root, "scripts", "build-core-plugins.mjs"));
 			copyFileSync(new URL("../scripts/build-plugin-authoring.mjs", import.meta.url), path.join(root, "scripts", "build-plugin-authoring.mjs"));
 			mkdirSync(path.join(root, "src", "core"), { recursive: true });
 			copyFileSync(new URL("../src/core/plugins.ts", import.meta.url), path.join(root, "src", "core", "plugins.ts"));
 			writeFileSync(path.join(root, ".next", "standalone", "server.js"), "// fixture");
 			writeFileSync(path.join(root, ".next", "standalone", secret), "fixture-not-real-credentials", { mode: 0o600 });
-			const result = spawnSync(process.execPath, [path.join(root, "scripts", "build-server.mjs")], { encoding: "utf8", env: process.env });
+			const result = spawnSync(process.execPath, [path.join(root, "scripts", "postbuild.mjs")], { encoding: "utf8", env: process.env });
 			assert.equal(result.status, 1); assert(result.stderr.includes(`REFUSING: standalone contains ${secret}`));
 		} finally { rmSync(root, { recursive: true, force: true }); }
 	});

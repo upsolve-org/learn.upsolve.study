@@ -9,9 +9,9 @@ import { githubCopilotProvider } from "@earendil-works/pi-ai/providers/github-co
 import { xaiProvider } from "@earendil-works/pi-ai/providers/xai";
 import type { NativeSubscriptionScope } from "../src/core/contracts/subscriptions.ts";
 const require = createRequire(import.meta.url);
-const { createSubscriptions, loadSubscriptionSDK, validEndpoint, publicError } = require("../electron/subscriptions.cjs");
-const { fileStore, validateState } = require("../electron/subscription-store.cjs");
-const { subscriptionControl } = require("../electron/subscription-ipc.cjs");
+const { createSubscriptions, loadSubscriptionSDK, validEndpoint, publicError } = require("../src/server/subscription-core/subscriptions.cjs");
+const { fileStore, validateState } = require("../src/server/subscription-core/subscription-store.cjs");
+const { subscriptionControl } = require("../src/server/subscription-core/subscription-ipc.cjs");
 const ids = ["github-copilot", "xai"] as const;
 const credential = (id: string, expires = Date.now() + 3600000): OAuthCredential => ({ type: "oauth", access: id === "xai" ? "fixture-xai-access" : "tid=fixture;proxy-ep=proxy.individual.githubcopilot.com;", refresh: "fixture-refresh", expires, ...(id === "github-copilot" ? { availableModelIds: [githubCopilotProvider().getModels()[0]!.id] } : {}) });
 function deferred<T>() { let resolve!: (value: T) => void; const promise = new Promise<T>((done) => { resolve = done; }); return { resolve, promise }; }
@@ -48,7 +48,9 @@ for (const id of ids) test(`${id}: independent default-ON file, restart, explici
 		await f.controller.login(id, false);
 		const saved = JSON.parse(await fs.readFile(path.join(f.directory, `${id}-credentials.json`), "utf8"));
 		assert.equal(saved.version, 1); assert.equal(saved.credential.type, "oauth"); assert.equal(saved.allowBackgroundUse, false);
-		assert.equal((await fs.stat(path.join(f.directory, `${id}-credentials.json`))).mode & 0o777, 0o600);
+		// Windows exposes no POSIX mode bits for regular files; the store proves
+		// what the platform can (see the store's own access checks).
+		assert.equal((await fs.stat(path.join(f.directory, `${id}-credentials.json`))).mode & 0o777, process.platform === "win32" ? 0o666 : 0o600);
 		const publicState = JSON.stringify(await f.controller.snapshot());
 		assert(!publicState.includes(saved.credential.access)); assert(!publicState.includes(saved.credential.refresh));
 		const scope = await f.scope(id), result = await f.controller.lease(scope, false);

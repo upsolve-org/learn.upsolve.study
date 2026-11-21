@@ -55,7 +55,6 @@ const STORAGE_KEY = "lh:sidebar-open";
  * Mirrors SIDEBAR_AUTOCLOSE in electron/main.cjs — keep in sync.
  */
 import type { ChatGPTControlBridge, NativeSubscriptionControlBridge } from "@/src/core";
-import type { UpdateState } from "@/components/settings/update-settings.tsx";
 import { FilePathDropZone } from "@/components/file-path-drop-zone";
 const SIDEBAR_AUTOCLOSE = 928;
 
@@ -84,12 +83,6 @@ declare global {
 			/** The zoom truth (owner round 7): subscribes to "lh:zoom" pushes; returns unsubscribe. */
 			onZoom?: (cb: (factor: number) => void) => () => void;
 			getZoom?: () => Promise<number>;
-			/** Observational update events and a snapshot for late subscribers. */
-			onUpdateStatus?: (cb: (status: UpdateState) => void) => () => void;
-			getUpdateState?: () => Promise<UpdateState>;
-			/** Explicit manual check also downloads and stages available updates. */
-			checkForUpdates?: () => Promise<void>;
-			installUpdate?: () => void;
 			onOpenSettings?: (cb: (section: string) => void) => () => void;
 		};
 	}
@@ -323,8 +316,8 @@ export function SessionRow({
 			onContextMenu={onContextMenu}
 			data-testid={kbdSelected ? "session-row-kbd" : "session-row"}
 			className={cn(
-				"relative mb-0.5 flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left transition-colors hover:bg-accent",
-				active && "bg-accent",
+				"relative mb-0.5 flex w-full items-center gap-2 rounded-none border-l-2 border-transparent px-3 py-2 text-left transition-[background-color,border-color,color,padding-left] duration-150 ease-[var(--ease-arrival)] hover:bg-accent/70 hover:pl-4",
+				active && "border-l-[var(--lh-accent)] bg-success/12 text-foreground",
 				kbdSelected && !active && "bg-accent/60 ring-1 ring-border",
 			)}
 		>
@@ -664,10 +657,10 @@ function SessionsSidebar() {
 
 	return (
 		<aside
-			className={cn("sidebar-motion shrink-0 overflow-hidden duration-200", open ? "w-72" : "w-0")}
+			className={cn("sidebar-motion shrink-0 overflow-hidden duration-250 ease-[var(--ease-arrival)]", open ? "w-72" : "w-0")}
 			aria-hidden={!open}
 		>
-			<div className="flex h-full w-72 flex-col border-r bg-background">
+			<div className="flex h-full w-72 flex-col border-r border-border bg-well">
 				{/* LH wordmark — the owner's header; close toggle sits at the edge.
 				    Merged chrome (2026-09-17): in Electron this band is the
 				    window's drag surface and starts after the traffic lights
@@ -722,11 +715,11 @@ function SessionsSidebar() {
 						data-testid="new-session"
 						title="Teaching (Socratic Tutor)"
 						onClick={() => void newSession()}
-						className="flex min-w-0 w-full items-center gap-1.5 rounded-md border border-success/35 bg-success/10 px-2.5 py-1.5 text-xs font-medium uppercase tracking-wider text-success transition-colors hover:bg-success/20"
+						className="flex min-w-0 w-full items-center gap-1.5 rounded-none border border-success/45 bg-success/10 px-2.5 py-2 text-xs font-medium uppercase tracking-wider text-success transition-[background-color,border-color,transform,box-shadow] duration-150 ease-[var(--ease-arrival)] hover:-translate-y-px hover:border-success hover:bg-success/20 hover:shadow-[var(--shadow-lift)] active:translate-y-0"
 					>
 						<PlusIcon className="size-3.5 shrink-0" />
 						<span className="min-w-0 flex-1 truncate text-left">Teaching</span>
-						<span className="rounded bg-success/20 px-1.5 py-0.5 text-[9px] font-semibold tracking-widest text-success">
+						<span className="rounded-none border border-success/35 bg-success/20 px-1.5 py-0.5 text-[9px] font-semibold tracking-widest text-success">
 							SOCRATIC
 						</span>
 						<span className="sr-only">create a new teaching session</span>
@@ -736,11 +729,11 @@ function SessionsSidebar() {
 						data-testid="new-session-practice"
 						title="Practice"
 						onClick={() => router.push("/chat/new?mode=practice")}
-						className="flex min-w-0 w-full items-center gap-1.5 rounded-md border border-error/35 bg-error/10 px-2.5 py-1.5 text-xs font-medium uppercase tracking-wider text-error transition-colors hover:bg-error/20"
+						className="flex min-w-0 w-full items-center gap-1.5 rounded-none border border-error/45 bg-error/10 px-2.5 py-2 text-xs font-medium uppercase tracking-wider text-error transition-[background-color,border-color,transform,box-shadow] duration-150 ease-[var(--ease-arrival)] hover:-translate-y-px hover:border-error hover:bg-error/20 hover:shadow-[var(--shadow-lift)] active:translate-y-0"
 					>
 						<DumbbellIcon className="size-3.5 shrink-0" />
 						<span className="min-w-0 flex-1 truncate text-left">Practice</span>
-						<span className="rounded bg-error/20 px-1.5 py-0.5 text-[9px] font-semibold tracking-widest text-error">
+						<span className="rounded-none border border-error/35 bg-error/20 px-1.5 py-0.5 text-[9px] font-semibold tracking-widest text-error">
 							DRILL
 						</span>
 						<span className="sr-only">create a new practice session</span>
@@ -751,11 +744,11 @@ function SessionsSidebar() {
 							data-testid="open-flashcards-fallback"
 							title="Flashcards (PDF & FSRS-6)"
 							onClick={() => router.push("/plugins/flashcards/library")}
-							className="flex min-w-0 w-full items-center gap-1.5 rounded-md border border-success/30 bg-card px-2.5 py-1.5 text-xs font-medium uppercase tracking-wider text-foreground transition-colors hover:border-success/55 hover:bg-accent"
+							className="flex min-w-0 w-full items-center gap-1.5 rounded-none border border-success/35 bg-card px-2.5 py-2 text-xs font-medium uppercase tracking-wider text-foreground transition-[background-color,border-color,transform,box-shadow] duration-150 ease-[var(--ease-arrival)] hover:-translate-y-px hover:border-success hover:bg-accent hover:shadow-[var(--shadow-lift)] active:translate-y-0"
 						>
 							<LayersIcon className="size-3.5 shrink-0 text-success" />
 							<span className="min-w-0 flex-1 truncate text-left">Flashcards</span>
-							<span className="rounded border border-error/35 bg-error/15 px-1.5 py-0.5 text-[9px] font-semibold tracking-widest text-error">
+							<span className="rounded-none border border-error/40 bg-error/15 px-1.5 py-0.5 text-[9px] font-semibold tracking-widest text-error">
 								PDF + FSRS
 							</span>
 						</button>

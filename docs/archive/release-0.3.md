@@ -2,7 +2,7 @@
 
 > **Historical planning notes (2026-10-06), not the current release checklist.**
 > The original ideas and statuses below may be superseded or unimplemented.
-> See [Desktop builds and releases](../desktop-release.md) for the current release
+> See [Building and deploying](desktop-release.md) for the current release
 > procedure, and [Architecture](../architecture.md) / [Development](../development.md)
 > for the current system and development guidance. See also the [archive index](README.md).
 

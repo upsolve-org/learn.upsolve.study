@@ -48,4 +48,4 @@ See [architecture](../../../docs/architecture.md#teaching-and-practice) for runt
 - Put agent-specific doctrine in that agent's directory. Use `shared/` only for guidance appropriate to every agent that composes it; check practice's explicit allowlist.
 - Match tool names and input fields to the actual schemas in `src/agent/tools.ts` and `src/agent/tools/`. Agents share history, not identical toolsets: prober `probe`/`recall` and teacher `quiz`/`explain` deliberately differ. Do not imply a tool is available merely because another phase uses it.
 - Keep always-in-context text concise. Avoid duplicating the base, other fragments, tool schemas or runtime reference documentation.
-- Verify composition/override behavior against `tests/prompt-overrides.test.ts` and the agent-flow tests when changing loader behavior. Prompt assets must remain included in standalone packaging (`scripts/build-server.mjs`).
+- Verify composition/override behavior against `tests/prompt-overrides.test.ts` and the agent-flow tests when changing loader behavior. Prompt assets must remain included in standalone packaging (`scripts/postbuild.mjs`).

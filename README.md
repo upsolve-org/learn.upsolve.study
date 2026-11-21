@@ -106,6 +106,9 @@ minimum is below.
 HOSTED_MODE=on
 NEXT_PUBLIC_SUPABASE_URL=https://learn.upsolve.study
 NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+
+# --- optional ---
+# Not read by the app yet: no Postgres adapter ships.
 SUPABASE_DB_URL=postgresql://learn_webapp:...@127.0.0.1:5432/postgres
 
 # --- strongly recommended locally ---
@@ -122,8 +125,8 @@ ADMIN_EMAIL=you@example.com
 SUPABASE_SECRET_KEY=sb_secret_...
 ```
 
-`SUPABASE_DB_URL` is **required at boot but not yet used** — no Postgres adapter
-ships. Any syntactically valid DSN satisfies it.
+`SUPABASE_DB_URL` is no longer required at boot — no Postgres adapter ships, so
+nothing reads it. Any syntactically valid DSN is harmless.
 
 ### 2. Create the operator account
 

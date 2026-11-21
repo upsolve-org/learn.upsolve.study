@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { JetBrains_Mono, Source_Sans_3 } from "next/font/google";
+import { Barlow_Condensed, JetBrains_Mono, Source_Sans_3 } from "next/font/google";
 import { connection } from "next/server";
 import "katex/dist/katex.min.css";
 import "./globals.css";
@@ -7,15 +7,15 @@ import { AppShell, SidebarProvider } from "@/components/sidebar";
 import { ActivityProvider } from "@/components/activity-dock";
 import { ServerEventsProvider } from "@/components/server-events";
 import { AppearanceProvider } from "@/components/settings/appearance";
-import UpdateBanner from "@/components/update-banner";
 import { PluginsProvider } from "@/components/plugins";
 import { asRequestOwner, currentOwner, readThemeBoot } from "@/src/server";
 import { hostedMode } from "@/src/core";
 
-// Chrome = JetBrains Mono, teaching prose = Source Sans 3, titles = CMU
-// Serif (the bundled lh-cmu @font-face in globals.css — no CDN).
+// Chrome = JetBrains Mono, teaching prose = Source Sans 3, titles = Barlow
+// Condensed (matching www.upsolve.study & comprog.upsolve.study).
 const ui = JetBrains_Mono({ subsets: ["latin"], variable: "--font-jetbrains" });
 const prose = Source_Sans_3({ subsets: ["latin"], variable: "--font-sans3" });
+const display = Barlow_Condensed({ subsets: ["latin"], weight: ["600", "700"], variable: "--font-barlow" });
 
 export const metadata: Metadata = {
 	title: "UPsolve Learn — Socratic AI Tutor & Flashcards",
@@ -38,7 +38,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 	return (
 		<html
 			lang="en"
-			className={`${theme.mode} ${ui.variable} ${prose.variable}`}
+			className={`${theme.mode} ${ui.variable} ${prose.variable} ${display.variable}`}
 			style={vars as React.CSSProperties}
 			suppressHydrationWarning
 		>
@@ -57,8 +57,6 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 					</AppearanceProvider>
 				</PluginsProvider>
 			</ServerEventsProvider>
-			{/* Auto-update banner (Wave C): fixed card, Electron-only pushes. */}
-			<UpdateBanner />
 			</> : children}
 		</body>
 		</html>

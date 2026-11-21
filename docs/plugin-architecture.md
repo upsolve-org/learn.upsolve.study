@@ -40,7 +40,7 @@ source management in the knowledge picker is not a programmable graph-write API.
 | Chrome/controlled UI/settings | `components/plugin-chrome.tsx`, `plugin-ui-host.tsx`, `plugin-settings-rows.tsx` |
 | Surface identity and body coverage | `components/plugin-surface-targets.ts`, `plugin-surfaces.tsx`, `plugin-surface-shell.tsx` |
 | View-local snapshot readers | `components/chat.tsx`, `session-view-readers.ts`, native/custom dock owners |
-| Authoring payload/types | `scripts/build-server.mjs`, `build-plugin-types.mjs` |
+| Authoring payload/types | `scripts/postbuild.mjs`, `build-plugin-types.mjs` |
 
 Bare filenames in a row share the preceding directory. These are implementation seams,
 not supported runtime imports for plugin code.
@@ -66,7 +66,7 @@ Code/data locations are explicit:
 `plugins:build-core` builds/stages those packages, assets and licenses before supported
 web/desktop dev and production builds. UI Showcase stays a developer example. Staging
 validates before replacing old generated output; failed builds preserve the previous
-staged tree. `build-server.mjs` requires the exact catalog, copies built core packages
+staged tree. `postbuild.mjs` requires the exact catalog, copies built core packages
 and removes the exact traced standalone-root `plugins/` authoring tree. It never removes
 runtime modules using broad `plugins`/`dist` globs.
 
@@ -260,8 +260,8 @@ needs a clean-checkout build, curated standalone/privacy audit and isolated pack
 runtime/browser checks; passing component fixtures is not packaged-app proof. Use
 throwaway learner/auth directories and loopback providers rather than live accounts or
 replacing the installed app. Relevant tools include `build-plugin-types.mjs`,
-`build-server.mjs`, `smoke-plugin-runtime.mjs`, `smoke-plugin-browser.mjs` and
-`smoke-server.mjs` under `scripts/`.
+`postbuild.mjs`, `smoke-plugin-runtime.mjs`, `smoke-plugin-browser.mjs` under
+`scripts/`.
 
 ### Maintaining the authoring reference
 

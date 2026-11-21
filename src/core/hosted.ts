@@ -9,12 +9,11 @@
  * loopback trust of browser-only mode (src/server/desktop-access.ts).
  *
  * The Supabase URL and publishable key are NEXT_PUBLIC_*, because the
- * browser client needs them too. The database DSN is server-only.
+ * browser client needs them too.
  */
 export type HostedConfig = {
 	url: string;
 	publishableKey: string;
-	dbUrl: string;
 	/** Public app origin, for redirects (APP_ORIGIN). */
 	origin: string;
 };
@@ -30,7 +29,6 @@ export function hostedMode(env: Env = process.env): boolean {
 const REQUIRED = [
 	"NEXT_PUBLIC_SUPABASE_URL",
 	"NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
-	"SUPABASE_DB_URL",
 ] as const;
 
 /** One message listing every missing name, or null when hosted mode is sound. */
@@ -57,7 +55,6 @@ export function hostedConfig(env: Env = process.env): HostedConfig | null {
 	return {
 		url: env.NEXT_PUBLIC_SUPABASE_URL!.trim().replace(/\/+$/, ""),
 		publishableKey: env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!.trim(),
-		dbUrl: env.SUPABASE_DB_URL!.trim(),
 		origin: (env.APP_ORIGIN ?? "http://localhost:3000").trim().replace(/\/+$/, ""),
 	};
 }

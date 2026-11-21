@@ -217,7 +217,7 @@ export function Composer({
 						type="submit"
 						data-testid="next-problem-button"
 						aria-label="Next problem"
-						className="flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-[10px] bg-success px-4 font-ui text-xs font-medium uppercase tracking-wide text-background transition-colors hover:bg-success/85"
+						className="flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-none border border-[#46c94c] bg-[#157a1a] px-4 font-ui text-xs font-medium uppercase tracking-[0.08em] text-white transition-[background-color,border-color,transform,box-shadow] duration-150 ease-[var(--ease-arrival)] hover:-translate-y-px hover:border-[#6ee773] hover:bg-[#1b9221] hover:shadow-[var(--shadow-lift)] active:translate-y-0"
 					>
 						Next problem
 						<ArrowRightIcon className="size-4" />
@@ -228,10 +228,10 @@ export function Composer({
 						aria-label={busy && !canSend ? "Stop" : "Send"}
 						disabled={!busy && !canSend}
 						className={cn(
-							"flex size-10 shrink-0 items-center justify-center rounded-[10px] transition-colors",
+							"flex size-10 shrink-0 items-center justify-center rounded-none border transition-[background-color,border-color,transform,box-shadow,opacity] duration-150 ease-[var(--ease-arrival)] hover:-translate-y-px hover:shadow-[var(--shadow-lift)] active:translate-y-0 disabled:translate-y-0 disabled:shadow-none",
 							busy && !canSend
-								? "bg-error/20 text-error border border-error/40 hover:bg-error/30"
-								: "bg-success text-background hover:opacity-90 disabled:opacity-40",
+								? "border-[#f26b61] bg-[#a62418] text-white hover:bg-[#b82c20]"
+								: "border-[#46c94c] bg-[#157a1a] text-white hover:border-[#6ee773] hover:bg-[#1b9221] disabled:opacity-40",
 						)}
 					>
 						{busy && !canSend ? <SquareIcon className="size-4" /> : <CornerDownLeftIcon className="size-5" />}

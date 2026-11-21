@@ -405,26 +405,24 @@ it("Settings ACK authority survives close/reopen and protects the live appearanc
 it("a newer nonappearance acknowledgement applies its full canonical live appearance", async () => fixture(async f => {
 	const { SettingsDialogProvider, useSettingsDialog } = await import("../components/settings/settings-dialog.tsx");
 	const { AppearanceProvider, useAppearance } = await import("../components/settings/appearance.tsx");
-	const appearanceSave = deferred<Response>(), generalSave = deferred<Response>();
+	const appearanceSave = deferred<Response>(), graphSave = deferred<Response>();
 	let settings!: ReturnType<typeof useSettingsDialog>, liveSize = 0;
 	let stored: UserSettings = { version: 1, appearance: { proseFontSize: 12 } };
-	Object.defineProperty(window, "lh", { configurable: true, value: {
-		getUpdateState: async () => ({ status: "idle", version: null, revision: 1 }), onUpdateStatus: () => () => {},
-	} });
 	f.setFetch(async (url, init) => {
 		if (init?.method !== "PUT") return Response.json({ settings: stored });
 		const section = String(url).split("/").at(-1)!;
 		stored = { ...stored, [section]: JSON.parse(String(init.body)) };
-		return section === "appearance" ? appearanceSave.promise : generalSave.promise;
+		return section === "appearance" ? appearanceSave.promise : graphSave.promise;
 	});
 	function Probe() { settings = useSettingsDialog(); liveSize = useAppearance().appearance.proseFontSize; return null; }
 	await f.render(<AppearanceProvider initialAppearance={stored.appearance} initialTheme={DEFAULT_THEME}><SettingsDialogProvider><Probe /></SettingsDialogProvider></AppearanceProvider>);
 	await act(async () => settings.open("appearance"));
 	const input = f.input('[data-testid="input-prose-size"]');
 	await f.type(input, "16"); await f.key(input, "Escape");
-	await act(async () => settings.open("general"));
-	await act(async () => document.querySelector<HTMLButtonElement>('[data-testid="toggle-auto-update"]')!.click());
-	await act(async () => generalSave.resolve(Response.json({ settings: stored })));
+	await act(async () => settings.open("graph"));
+	const chunkInput = f.input('[data-testid="input-chunk-tokens"]');
+	await f.type(chunkInput, "600"); await f.key(chunkInput, "Escape");
+	await act(async () => graphSave.resolve(Response.json({ settings: stored })));
 	assert.equal(liveSize, 16, "the authoritative full snapshot includes the earlier saved appearance");
 	await act(async () => appearanceSave.resolve(Response.json({ settings: { version: 1, appearance: { proseFontSize: 16 } } })));
 	await act(async () => settings.open("appearance"));

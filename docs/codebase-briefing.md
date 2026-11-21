@@ -13,8 +13,9 @@ import, then a README rewrite. Working tree clean; `main` only.
 ## 1. What this is
 
 A **fork of LearnHarness** (`amosblomqvist/learnharness`, AGPL-3.0), an AI tutoring
-harness. Upstream is a **desktop-first Electron app**: a private Next.js child
-process on loopback, BYOK model keys, all state in JSON files under `LH_DATA_DIR`.
+harness. Upstream is a **desktop-first Electron app**; this fork removed the
+`electron/` shell and serves Next.js directly. Upstream kept a private Next.js child
+process on loopback, BYOK model keys, and all state in JSON files under `LH_DATA_DIR`.
 
 This fork turns it into a **hosted web app** at `learn.upsolve.study` for UPB
 students, and changes plugin defaults so the shipped plugins come up on their own.
@@ -47,7 +48,7 @@ src/core/     pure, browser-safe: contracts, projections, domain algorithms
 src/agent/    agent construction, tools, prompts, provider streams, subagents
 src/server/   composition, admission, liveness, HTTP-facing services
 src/store/    filesystem adapters (chats, graph, jobs, settings, auth, themes)
-electron/     desktop shell (main.cjs, preload, updater, credential transport)
+src/server/subscription-core/  provider credential/subscription core (.cjs)
 plugins/      4 core plugin *sources* + ui-showcase example
 core-plugins/ generated build output (gitignored) — what the host actually loads
 ```
@@ -155,7 +156,7 @@ path segment.
 - `verifyAccessToken` is **not called by any request path.** `currentOwner()` uses
   `supabase.auth.getUser()`, a network round trip per request. The JWKS verifier is
   currently test-only surface.
-- `hostedConfig().dbUrl` (`SUPABASE_DB_URL`) is **required at boot but unused** —
+- Hosted mode no longer requires `SUPABASE_DB_URL`: it is not checked at boot and
   nothing opens Postgres. Stores are still `src/store/*` over `data/`.
 - **No sign-out UI.** `signOutAction` exists with zero references from any component.
 - **The Google button is dead.** `login-form.tsx:71` posts `intent=google` to
@@ -194,7 +195,7 @@ and `scripts/smoke-core-plugins.mjs:31-34` (asserts `enabled === false` and that
 `app/layout.tsx` metadata, `src/agent/system-prompt.md`, `practice/00-base.md`,
 `app/globals.css` (green/crimson top rule, dark radial wash, flashcards action
 styling), `components/lh-mark.tsx` → `/logo-mark.png`, login copy. `package.json`
-name/author/homepage, `electron-builder.yml` appId/productName, `SECURITY.md`,
+name/author/homepage, `SECURITY.md`,
 `CONTRIBUTING.md`, and the `skills/` guides are **still upstream**.
 
 ---
@@ -271,7 +272,7 @@ re-enforces the identical policy inside its own handler.
 6. `HANDOFF.md` documents an intermittent loopback-TLS fault and a `307`-on-`/`
    investigation; the recovery doc supersedes parts of it. Treat `HANDOFF.md` as
    history, `docs/deployment-recovery-2026-11-15.md` as the current operational record.
-7. Branding is half-migrated; `electron-builder.yml`, `package.json`, `SECURITY.md`,
+7. Branding is half-migrated; `package.json`, `SECURITY.md`,
    `CONTRIBUTING.md` and `skills/` still say LearnHarness.
 8. `data/`, `core-plugins/`, `dist/` and `auth.json` are gitignored, so a fresh clone
    has no plugins until `plugins:setup` + a dev/build run.

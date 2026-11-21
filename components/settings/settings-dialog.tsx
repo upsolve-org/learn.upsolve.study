@@ -46,7 +46,6 @@ import {
 } from "@/src/core";
 import { useAppearance } from "./appearance.tsx";
 import { SettingsSection } from "./controls.tsx";
-import { UpdateSettings } from "./update-settings.tsx";
 import { AgentSection } from "./agent-section.tsx";
 import type { ModelsSettings } from "@/src/core";
 import { MENU_CLOSE_EVENT, MENU_OPEN_EVENT } from "@/components/menu-shell";
@@ -348,12 +347,12 @@ export function SettingsDialogBody({
 			aria-modal="true"
 			aria-label="Settings"
 			data-testid="settings-dialog"
-			className="settings-dialog-pop flex h-[620px] max-h-[85vh] w-[920px] max-w-[90vw] flex-col overflow-hidden rounded-md border border-border bg-card shadow-xl"
+			className="settings-dialog-pop flex h-[620px] max-h-[85vh] w-[920px] max-w-[90vw] flex-col overflow-hidden rounded-none border border-border bg-card shadow-[var(--shadow-lift)]"
 			onClick={(e) => e.stopPropagation()}
 		>
-			{/* Header — the app's quiet CMU title language. */}
-			<header className="flex h-15 shrink-0 items-center gap-3 border-b border-border px-5">
-				<h2 className="font-title text-2xl tracking-tight">Settings</h2>
+			{/* Header — UPsolve dark well + condensed display title. */}
+			<header className="flex h-15 shrink-0 items-center gap-3 border-b border-border bg-well px-5">
+				<h2 className="font-title text-2xl uppercase tracking-tight">Settings</h2>
 				<Hint
 						// Esc closes through the shared interaction owner.
 						label="Close"
@@ -386,7 +385,7 @@ export function SettingsDialogBody({
 				<nav
 					aria-label="Settings sections"
 					data-testid="settings-nav"
-					className="flex min-h-0 w-48 shrink-0 flex-col gap-1 overflow-y-auto border-r border-border p-2"
+					className="flex min-h-0 w-48 shrink-0 flex-col gap-1 overflow-y-auto border-r border-border bg-well p-2"
 				>
 					{navSections.map((s, index) => (
 						<div key={s.id} className="shrink-0">
@@ -395,10 +394,10 @@ export function SettingsDialogBody({
 								type="button"
 								data-testid={`settings-nav-${s.id}`}
 								aria-current={selected === s.id}
-								className={`flex w-full items-center gap-2 break-words rounded-sm px-3 py-1.5 text-left font-ui text-sm transition-colors ${
+								className={`flex w-full items-center gap-2 break-words rounded-none border-l-2 px-3 py-1.5 text-left font-ui text-xs uppercase tracking-[0.06em] transition-[background-color,border-color,color,padding-left] duration-150 ease-[var(--ease-arrival)] ${
 									selected === s.id
-										? "bg-accent text-foreground"
-										: "text-muted-foreground hover:bg-accent hover:text-foreground"
+										? "border-l-[var(--lh-accent)] bg-success/12 text-foreground"
+										: "border-l-transparent text-muted-foreground hover:bg-accent/70 hover:pl-3.5 hover:text-foreground"
 								}`}
 								onClick={() => setActive(s.id)}
 							>
@@ -443,19 +442,6 @@ export function SettingsDialogBody({
 						</p>
 					) : (
 						<div>
-							{active === "general" && (
-								<SettingsSection
-									title="General"
-									testid="section-general"
-								>
-									<UpdateSettings
-										autoUpdate={record.general?.autoUpdate ?? true}
-										onAutoUpdateChange={(on) =>
-											void write("general", { ...record.general, autoUpdate: on })
-										}
-									/>
-								</SettingsSection>
-							)}
 							{active === "keys" && (
 								<SettingsSection title="Providers" testid="section-keys">
 									<KeysSection initialRow={initialRow ?? undefined} />
@@ -519,6 +505,14 @@ export function SettingsDialogBody({
 									<KeyboardSection />
 								</SettingsSection>
 							)}
+							{active === "general" && (
+								<SettingsSection
+									title="General"
+									testid="section-general"
+								>
+									<GeneralSection />
+								</SettingsSection>
+							)}
 						</div>
 					)}
 				</div>
@@ -526,4 +520,27 @@ export function SettingsDialogBody({
 		</div>
 	);
 	return renderFrame ? renderFrame(frame) : frame;
+}
+
+/** General: the build identity. Update rows went with the desktop shell;
+ *  what is left is the version and the link to its release notes. */
+function GeneralSection() {
+	const version = process.env.LH_VERSION;
+	const homepage = process.env.LH_HOMEPAGE;
+	return (
+		<div data-testid="row-version" className="flex flex-col gap-1 text-sm">
+			{version ? (
+				<>
+					<span>Version {version}</span>
+					{homepage && (
+						<a className="text-xs text-muted-foreground underline" href={`${homepage}/releases/tag/v${version}`}>
+							Release notes
+						</a>
+					)}
+				</>
+			) : (
+				<span>Version unknown</span>
+			)}
+		</div>
+	);
 }

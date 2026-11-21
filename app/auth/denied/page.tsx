@@ -16,20 +16,25 @@ export default async function DeniedPage() {
 	const email = await currentAccountEmail();
 	return (
 		<div className="flex min-h-dvh items-center justify-center bg-background px-6 py-12">
-			<div className="flex w-full max-w-sm flex-col gap-4">
-				<GlyphMark kind="check" className="size-8" />
-				<h1 className="text-lg font-semibold tracking-tight">Not on the list yet</h1>
-				<p className="text-muted-foreground text-sm">
+			<div className="panel-enter flex w-full max-w-md flex-col gap-4 border border-border border-t-2 border-t-destructive bg-well p-8 shadow-[var(--shadow-lift)]">
+				<div className="flex items-center gap-2.5">
+					<GlyphMark kind="check" className="size-7 text-destructive" />
+					<span className="font-ui text-xs font-semibold uppercase tracking-[0.12em] text-destructive">
+						UPsolve // Access Required
+					</span>
+				</div>
+				<h1 className="font-title text-3xl uppercase tracking-tight text-foreground">Not on the list yet</h1>
+				<p className="font-prose text-sm text-muted-foreground">
 					{email ? (
 						<>
-							You are signed in as <span className="text-foreground">{email}</span>, but that address has not been
+							You are signed in as <span className="font-ui text-foreground">{email}</span>, but that address has not been
 							approved for UPsolve Learn.
 						</>
 					) : (
 						"That account has not been approved for UPsolve Learn."
 					)}
 				</p>
-				<p className="text-muted-foreground text-sm">
+				<p className="font-prose text-sm text-muted-foreground">
 					Request access and we will email your sign-in details once it is approved.
 				</p>
 				<Button asChild size="lg" className="mt-1 w-full">

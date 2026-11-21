@@ -245,10 +245,10 @@ export function Home({
 					<form
 						data-attachment-composer=""
 						className={
-							"flex items-end gap-1.5 rounded-2xl border bg-card p-1.5 shadow-lg transition-colors " +
+							"flex items-end gap-1.5 rounded-none border bg-card p-1.5 shadow-[var(--shadow-lift)] transition-[border-color,box-shadow] duration-150 ease-[var(--ease-smooth)] " +
 							(mode === "practice"
-								? "border-error/40 focus-within:border-error/70"
-								: "border-success/40 focus-within:border-success/70")
+								? "border-error/45 focus-within:border-error"
+								: "border-success/45 focus-within:border-success")
 						}
 					onSubmit={(e) => {
 						e.preventDefault();
@@ -292,10 +292,10 @@ export function Home({
 						aria-label="Start session"
 						disabled={(!topic.trim() && !dictation.active) || busy}
 						className={
-							"flex size-10 shrink-0 items-center justify-center rounded-[10px] transition-colors hover:opacity-90 disabled:opacity-40 " +
+							"flex size-10 shrink-0 items-center justify-center rounded-none border transition-[background-color,border-color,transform,box-shadow,opacity] duration-150 ease-[var(--ease-arrival)] hover:-translate-y-px hover:shadow-[var(--shadow-lift)] active:translate-y-0 disabled:translate-y-0 disabled:opacity-40 disabled:shadow-none " +
 							(mode === "practice"
-								? "bg-error text-background"
-								: "bg-success text-background")
+								? "border-[#f26b61] bg-[#a62418] text-white hover:bg-[#b82c20]"
+								: "border-[#46c94c] bg-[#157a1a] text-white hover:bg-[#1b9221]")
 						}
 					>
 						<CornerDownLeftIcon className="size-5" />

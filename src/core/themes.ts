@@ -148,7 +148,7 @@ export const BUILTIN_THEMES: readonly Theme[] = [
 		mode: "dark",
 		builtin: true,
 		colors: {
-			background: "#141414", surface: "#1c1c1c", border: "#434343", text: "#e6e6e6", textMuted: "#8d8d8d",
+			background: "#202020", surface: "#262626", border: "#333333", text: "#f2f2f2", textMuted: "#a1a1aa",
 			accent: "#46c94c", bold: "#46c94c", italic: "#f26b61", code: "#46c94c",
 			error: "#f26b61", success: "#46c94c", warning: "#f59e0b",
 		},
@@ -273,6 +273,9 @@ export function themeVars(c: ThemeColors, mode: ThemeMode): Record<string, strin
 		"--input": c.border,
 		"--ring": c.accent,
 		"--lh-accent": c.accent,
+		// The UPsolve "dark well" (masthead, sidebar, auth panels): one step
+		// below the page — #202020 → #141414 on Default.
+		"--lh-well": shiftHex(c.background, mode === "dark" ? -12 : -8),
 		"--lh-line-strong": c.text,
 		"--lh-ink-strong": c.bold,
 		"--lh-ink-italic": c.italic,

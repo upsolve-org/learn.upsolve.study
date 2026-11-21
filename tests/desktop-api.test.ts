@@ -7,10 +7,9 @@ import { NextRequest } from "next/server";
 import { unstable_doesMiddlewareMatch as unstable_doesProxyMatch } from "next/experimental/testing/server";
 import { desktopAPIAuthorized } from "../src/server/desktop-access.ts";
 import { proxy, config } from "../proxy.ts";
-import { browserServiceSpawnEnv } from "../src/agent/subagents/headless.ts";
 const require = createRequire(import.meta.url);
-const { desktopAPIHeaders, HEADER } = require("../electron/desktop-api.cjs");
-const { trustedSender, chatGPTControl } = require("../electron/chatgpt-ipc.cjs");
+const { HEADER } = require("../src/server/subscription-core/desktop-api.cjs");
+const { trustedSender, chatGPTControl } = require("../src/server/subscription-core/chatgpt-ipc.cjs");
 const secret = "a".repeat(64);
 const origin = "http://127.0.0.1:12345";
 
@@ -18,33 +17,8 @@ function fixture() {
 	const mainFrame = { url: `${origin}/chat/new` };
 	const contents = { id: 5, mainFrame, isDestroyed: () => false };
 	const win = { webContents: contents, isDestroyed: () => false };
-	const details = { url: `${origin}/api/settings`, webContentsId: contents.id, webContents: contents, frame: mainFrame, initiatorOrigin: origin, requestHeaders: { Accept: "application/json" } };
-	return { mainFrame, contents, win, details };
+	return { mainFrame, contents, win };
 }
-
-test("desktop capability injects only trusted app mainframe exact-origin API requests and strips every other case", () => {
-	const { details, win, mainFrame, contents } = fixture();
-	assert.equal(desktopAPIHeaders(details, origin, secret, [win])[HEADER], secret);
-	for (const mutation of [
-		{ url: "https://thirdparty.invalid/api/settings" },
-		{ url: "http://127.0.0.1:12346/api/settings" },
-		{ url: `${origin}/chat/new` },
-		{ frame: { url: `${origin}/chat/new` } }, // forged frame identity
-		{ frame: { url: "about:srcdoc", parent: mainFrame } },
-		{ frame: null },
-		{ webContentsId: 6 },
-		{ webContents: { ...contents } },
-		{ initiatorOrigin: "https://thirdparty.invalid" },
-		{ initiatorOrigin: "null" },
-	]) {
-		const result = desktopAPIHeaders({ ...details, ...mutation, requestHeaders: { "X-LearnHarness-Desktop": secret } }, origin, secret, [win]);
-		assert(!Object.keys(result).some((key) => key.toLowerCase() === HEADER), JSON.stringify(mutation));
-	}
-	assert.equal(desktopAPIHeaders(details, origin, secret, [])[HEADER], undefined, "other WebContents are not app windows");
-	mainFrame.url = "https://thirdparty.invalid/after-navigation";
-	assert.equal(desktopAPIHeaders(details, origin, secret, [win])[HEADER], undefined, "navigation revokes trust even for the same native frame");
-	assert.equal(desktopAPIHeaders(details, origin, null, [win])[HEADER], undefined, "externally launched desktop dev receives no packaged capability");
-});
 
 test("all methods fail closed for desktop missing/wrong secret; API-only matcher covers SSE/settings/spending", async () => {
 	assert(desktopAPIAuthorized(new Headers(), {}), "browser-only API-key mode unchanged");
@@ -95,5 +69,4 @@ test("renderer controls have no lease or general token bridge, and require the t
 	assert(!trustedSender({ sender: contents, senderFrame: { url: mainFrame.url } }, origin, BrowserWindow));
 	mainFrame.url = "https://thirdparty.invalid/";
 	assert(!trustedSender({ sender: contents, senderFrame: mainFrame }, origin, BrowserWindow));
-	assert.equal(browserServiceSpawnEnv({ LH_DESKTOP_API_SECRET: secret, LH_DESKTOP_SERVER: "1" }).LH_DESKTOP_API_SECRET, undefined);
 });

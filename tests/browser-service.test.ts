@@ -1,42 +1,52 @@
 /**
- * Wave E stage 3 (owner 2026-10-10): demos run in the app's own Chromium
- * via a --browser-service helper (main.cjs boots a hidden window with a CDP
- * port), system Chrome as fallback. These pin the pure halves of that
- * chain: the handshake line parser and the spawn-env sanitizer. The live
- * chain (spawn → connect → pages() → run) is exercised on dev machines,
- * not in the suite.
+ * Demos run in system Chrome/Chromium via puppeteer-core (the Electron
+ * browser-service helper is gone). These pin what is left as a pure seam:
+ * Chrome resolution and the availability gate. The live chain (launch →
+ * pages() → run) is exercised on dev machines, not in the suite.
  */
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { browserServiceSpawnEnv, parseBrowserServiceLine } from "../src/agent/subagents/headless.ts";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { describe, it, afterEach } from "node:test";
+import { resolveChromeExecutablePath, realHeadless } from "../src/agent/subagents/headless.ts";
 
-describe("browser-service helper (pure halves)", () => {
-	it("parses the handshake line into a port", () => {
-		assert.equal(parseBrowserServiceLine("BROWSER_SERVICE_CDP 54321"), 54321);
+const saved = { CHROME_PATH: process.env.CHROME_PATH };
+afterEach(() => {
+	for (const [key, value] of Object.entries(saved)) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+});
+
+describe("system Chrome resolution", () => {
+	it("prefers an existing CHROME_PATH", () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lh-chrome-"));
+		const binary = path.join(dir, "chrome");
+		fs.writeFileSync(binary, "");
+		try {
+			process.env.CHROME_PATH = binary;
+			assert.equal(resolveChromeExecutablePath(), binary);
+		} finally {
+			fs.rmSync(dir, { recursive: true, force: true });
+		}
 	});
 
-	it("rejects non-handshake lines", () => {
-		assert.equal(parseBrowserServiceLine("DevTools listening on ws://127.0.0.1:57983/devtools/browser/x"), null);
-		assert.equal(parseBrowserServiceLine(""), null);
-		assert.equal(parseBrowserServiceLine("BROWSER_SERVICE_CDP 0"), null);
-		assert.equal(parseBrowserServiceLine("BROWSER_SERVICE_CDP 99999"), null);
+	it("ignores a CHROME_PATH that does not exist", () => {
+		process.env.CHROME_PATH = path.join(os.tmpdir(), "lh-no-such-chrome-binary");
+		assert.notEqual(resolveChromeExecutablePath(), process.env.CHROME_PATH);
 	});
 
-	it("spawn env strips ELECTRON_RUN_AS_NODE — the helper must be a full app", () => {
-		const env = browserServiceSpawnEnv({
-			ELECTRON_RUN_AS_NODE: "1",
-			LH_DEV_URL: "http://localhost:3000",
-			PATH: "/usr/bin",
-		});
-		assert.equal("ELECTRON_RUN_AS_NODE" in env, false);
-		assert.equal("LH_DEV_URL" in env, false);
-		assert.equal(env.PATH, "/usr/bin");
+	it("ignores an empty CHROME_PATH", () => {
+		process.env.CHROME_PATH = "";
+		assert.notEqual(resolveChromeExecutablePath(), "");
 	});
+});
 
-	it("spawn env never mutates the caller's env object", () => {
-		const original = { ELECTRON_RUN_AS_NODE: "1", KEEP: "yes" };
-		browserServiceSpawnEnv(original);
-		assert.equal(original.ELECTRON_RUN_AS_NODE, "1");
-		assert.equal(original.KEEP, "yes");
+describe("availability gate", () => {
+	it("is available exactly when a Chrome executable resolves", () => {
+		assert.equal(realHeadless.available(), resolveChromeExecutablePath() !== null);
+		assert.equal(realHeadless.unavailableReason() === null, realHeadless.available());
+		if (!realHeadless.available()) assert.match(realHeadless.unavailableReason() ?? "", /CHROME_PATH/);
 	});
 });

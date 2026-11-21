@@ -9,7 +9,6 @@ const sound = {
 	HOSTED_MODE: "on",
 	NEXT_PUBLIC_SUPABASE_URL: "http://127.0.0.1:8000/",
 	NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_x",
-	SUPABASE_DB_URL: "postgresql://learn_webapp:pw@127.0.0.1:5432/postgres",
 };
 
 describe("hosted mode", () => {
@@ -28,9 +27,8 @@ describe("hosted mode", () => {
 		const error = hostedConfigurationError({ HOSTED_MODE: "on" });
 		assert.match(error ?? "", /NEXT_PUBLIC_SUPABASE_URL/);
 		assert.match(error ?? "", /NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY/);
-		assert.match(error ?? "", /SUPABASE_DB_URL/);
-		assert.equal(hostedConfigurationError({ ...sound, SUPABASE_DB_URL: "  " }), hostedConfigurationError({ ...sound, SUPABASE_DB_URL: "" }), "blank counts as missing");
-		assert.match(hostedConfigurationError({ ...sound, SUPABASE_DB_URL: "" }) ?? "", /^HOSTED_MODE=on is missing SUPABASE_DB_URL/);
+		assert.equal(hostedConfigurationError({ ...sound, NEXT_PUBLIC_SUPABASE_URL: "  " }), hostedConfigurationError({ ...sound, NEXT_PUBLIC_SUPABASE_URL: "" }), "blank counts as missing");
+		assert.match(hostedConfigurationError({ ...sound, NEXT_PUBLIC_SUPABASE_URL: "" }) ?? "", /^HOSTED_MODE=on is missing NEXT_PUBLIC_SUPABASE_URL/);
 	});
 
 	it("trims the trailing slash off the URL and defaults the origin", () => {

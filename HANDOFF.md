@@ -1,6 +1,51 @@
 # Handoff: deployment recovery update
 
-## Current state — 15 November 2026
+## Current state — 19 November 2026 (read this first)
+
+**The public hostname currently reaches the wrong server.** `learn.upsolve.study`
+alternates between `66.181.46.15` (this box) and Vercel `216.198.79.x` /
+`64.29.17.x`. The Vercel answers accept TCP and then kill the TLS handshake
+(`unexpected eof while reading`) on every port, so roughly every other request —
+and every cold load that gets such an answer — fails before it reaches Caddy.
+On the box itself, `getent ahostsv4 learn.upsolve.study` now returns only the
+Vercel addresses. Nothing on the server can fix this; it needs a DNS decision:
+remove the Vercel answers for `learn`, or move the record to something that
+resolves deterministically.
+
+Fresh measurements, 19 Nov:
+
+| path | result |
+| --- | --- |
+| workstation, pinned to 66.181.46.15 | login `200`, home `307`, `/api/models` `401` |
+| workstation, 8 concurrent Node fetches pinned | 0 / 8 fail |
+| workstation, 8 concurrent Node fetches on live DNS | 8 / 8 `ECONNRESET` (Vercel answers) |
+| server, `openssl -connect 66.181.46.15:443` | handshake OK, correct LE cert, every time |
+| server, `openssl -connect <any Vercel answer>:443` | `Cipher is NONE`, every time |
+
+Second, separate fault: the box loses handshakes addressed to its **own public
+IP** (copious ACKs of the ClientHello, no ServerHello — the kernel stack, not
+Caddy). `curl --resolve` against 66.181.46.15 works; `curl https://66.181.46.15`
+and loopback-by-IP reset. Increasing the socket buffers (`/etc/sysctl.d/99-learn-tls.conf`,
+8 MB) took eth0 from ~half failing to 0 / 50. It was re-measured twice: with
+buffers back at the defaults, 10 / 10 requests fail. The Caddyfile's
+`keepalive_idle 10s` was ruled out by direct A/B. Loopback-by-IP still fails.
+
+Third, an unrelated observation at 15:49 UTC: Caddy's live config lost the whole
+`apps.tls` block (`/config/apps/tls` → `null`, no TLS connection policies) and
+every handshake failed until a restart rebuilt it. It has not recurred in the
+five restarts since, but it is unexplained.
+
+Backups made: `/etc/caddy/Caddyfile.before-restart-*`, `*.ka-*`,
+`*.before-tls-*`; the `hosts` entry added during probing was removed.
+
+Deployment state: `/srv/learn` is not a git checkout. Its source matches `HEAD`
+except CRLF-vs-LF line endings, and the running build (`.next`, 18 Nov 13:25)
+contains the current tenancy/admin/credentials code. `learn.service` and `caddy`
+are active; the GoTrue container is `inactive`, yet `/auth/v1` from loopback
+still answered at the time of writing — worth checking before the next login test.
+Model invocation past the first diagnostic question is still unverified.
+
+## Previous state — 15 November 2026
 
 Model follow-up: configured the supplied gateway key through the authenticated
 custom-provider API, with `auto` in strong/cheap/vision slots. The key is in the
