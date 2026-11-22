@@ -4,8 +4,14 @@
  * reconnect; notifications are not a durable replay log. The plugin-message
  * channel additionally carries plugin-scoped JSON data, with the same
  * live-only delivery limitation.
+ *
+ * Browser-safe: reads the server's globalThis.__lhOwnerScope AsyncLocalStorage
+ * without importing node:async_hooks so client components can import
+ * SERVER_EVENT_TYPES from @/src/core cleanly.
  */
-import { currentOwnerId } from "./owner-scope.ts";
+function activeEventOwner(): string | undefined {
+	return (globalThis as { __lhOwnerScope?: { getStore(): string | undefined } }).__lhOwnerScope?.getStore();
+}
 
 /** The core event vocabulary plus the namespaced plugin extension channel. */
 export interface ServerEvents {
@@ -111,7 +117,7 @@ export function subscribe(listener: ServerEventListener, options?: { owner?: str
 export function emit<K extends ServerEventType>(type: K, payload: ServerEvents[K]): void {
 	// The emitter's scope is the event's ownership. Captured ONCE so an
 	// async listener cannot observe a different scope than its neighbours.
-	const eventOwner = currentOwnerId();
+	const eventOwner = activeEventOwner();
 	// Snapshot: a listener that unsubscribes (or subscribes) mid-emit must
 	// not mutate the set under iteration.
 	for (const subscriber of [...listeners()]) {
