@@ -21,10 +21,20 @@ import { themeStore } from "../store/themes.ts";
 import { resolveSettings, type EffectiveSettings } from "../core/settings-resolution.ts";
 import { FACTORY_SETTINGS, type UserSettings } from "../core/settings.ts";
 import { runAsOwner, currentOwnerId } from "../core/owner-scope.ts";
+import { hostedMode } from "../core/hosted.ts";
+import { hasDatabaseUrl } from "./db.ts";
 import { syncCustomProvider } from "./custom-provider.ts";
 import { configureWorkerRequestAdmission } from "../agent/worker-request-admission.ts";
-/** The wired adapters. Satisfies core/graph.ts's GraphDeps structurally. */
-export const stores = {
+export interface Stores {
+	chatStore: typeof chatStore;
+	graphStore: typeof graphStore;
+	sourceOrganizationStore: typeof sourceOrganizationStore;
+	jobStore: typeof jobStore;
+	settingsStore: typeof settingsStore;
+	themeStore: typeof themeStore;
+}
+
+const active: Stores = {
 	chatStore,
 	graphStore,
 	sourceOrganizationStore,
@@ -33,7 +43,62 @@ export const stores = {
 	themeStore,
 };
 
-export type Stores = typeof stores;
+const liveProxies = new WeakSet<object>();
+
+/**
+ * Each store on `stores` is a live delegating Proxy over `active[key]`.
+ * Several composition roots (`jobRunner`, `extraction`, `sideChats`, plugins)
+ * capture `stores.chatStore` / `{ ...stores }` at module-import time, BEFORE
+ * `instrumentation.ts` or `scripts/worker.ts` calls `configureStores(...)`.
+ * Delegating through a stable proxy ensures every captured reference swaps
+ * cleanly onto PostgreSQL (or test doubles) without re-initializing singletons.
+ */
+function liveStore<K extends keyof Stores>(key: K): Stores[K] {
+	const proxy = new Proxy({} as Stores[K], {
+		get(_target, prop) {
+			const target = active[key] as unknown as Record<PropertyKey, unknown>;
+			const value = Reflect.get(target, prop, target);
+			return typeof value === "function" ? value.bind(target) : value;
+		},
+		set(_target, prop, value) {
+			return Reflect.set(active[key] as unknown as Record<PropertyKey, unknown>, prop, value);
+		},
+		has(_target, prop) {
+			return prop in (active[key] as object);
+		},
+		ownKeys() {
+			return Reflect.ownKeys(active[key] as object);
+		},
+		getOwnPropertyDescriptor(_target, prop) {
+			const desc = Reflect.getOwnPropertyDescriptor(active[key] as object, prop);
+			return desc ? { ...desc, configurable: true } : undefined;
+		},
+	});
+	liveProxies.add(proxy as object);
+	return proxy;
+}
+
+/** The wired adapters. Satisfies core/graph.ts's GraphDeps structurally. */
+export const stores: Stores = {
+	chatStore: liveStore("chatStore"),
+	graphStore: liveStore("graphStore"),
+	sourceOrganizationStore: liveStore("sourceOrganizationStore"),
+	jobStore: liveStore("jobStore"),
+	settingsStore: liveStore("settingsStore"),
+	themeStore: liveStore("themeStore"),
+};
+
+/**
+ * Which storage backend this process uses (PR 5). Explicit `postgres` opts
+ * in; hosted mode with a database opts in by default; an explicit `fs` is
+ * always honored (tests and local dev). Kept here — the composition root —
+ * because both boot (instrumentation.ts) and the job queue need the SAME
+ * answer, and it must be a pure function of env so tests can pin it.
+ */
+export function postgresStorageEnabled(env: Record<string, string | undefined> = process.env): boolean {
+	return env.STORAGE_BACKEND === "postgres"
+		|| (hostedMode(env) && hasDatabaseUrl(env) && env.STORAGE_BACKEND !== "fs");
+}
 
 /**
  * Run `fn` with `owner` active. Everything it awaits or calls synchronously
@@ -138,10 +203,25 @@ export function invalidateCachedSettings(): void {
 	settingsByOwner.delete(settingsCacheKey());
 }
 
-/** Swap one or more adapters (PR 5 Postgres wiring / tests). The object stays
- *  identity-stable — every consumer reads through `stores` at call time. */
-export function configureStores(next: Partial<Stores>): void {
-	Object.assign(stores, next);
+/** Swap one or more adapters (PR 5 Postgres wiring / tests). Because every
+ *  entry on `stores` is a live Proxy over `active`, callers that captured
+ *  `stores.chatStore` at module-import time (like `jobRunner` and `extraction`)
+ *  also see the swap immediately. Returns a restore callback for tests. */
+export function configureStores(next: Partial<Stores>): () => void {
+	const previous: Partial<Stores> = {};
+	for (const key of Object.keys(active) as Array<keyof Stores>) {
+		const value = next[key];
+		if (!value || liveProxies.has(value as object)) continue;
+		(previous as Record<keyof Stores, unknown>)[key] = active[key];
+		(active as Record<keyof Stores, unknown>)[key] = value;
+	}
+	settingsByOwner.clear();
+	settingsAsync = false;
+	return () => {
+		Object.assign(active, previous);
+		settingsByOwner.clear();
+		settingsAsync = false;
+	};
 }
 
 // Runtime policy is supplied at the composition root, never imported by agents.

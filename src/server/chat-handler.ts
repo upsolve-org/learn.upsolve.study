@@ -113,7 +113,9 @@ function settlementErrorText(error: unknown): string {
 	return error instanceof TurnPersistenceError ? error.message : "An error occurred.";
 }
 
-const jobRunner = createJobRunner({
+/** Exported for the standalone pg-boss worker (scripts/worker.ts): it runs
+ *  the SAME job loop as an in-process spawn, just inside withOwner(owner). */
+export const jobRunner = createJobRunner({
 	chatStore: stores.chatStore,
 	jobStore: stores.jobStore,
 	deliver: deliverJobResult,
