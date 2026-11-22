@@ -15,7 +15,7 @@ import { currentOwnerId, runAsOwner } from "../core/owner-scope.ts";
 
 /** Host observability only: never project prompts, inputs, transcripts or results. */
 export type PluginWorkerActivityMetadata = Pick<PluginTaskRecord,
-	"id" | "definitionId" | "status" | "createdAt" | "updatedAt" | "activity" | "model" | "usage">;
+	"id" | "definitionId" | "status" | "createdAt" | "updatedAt" | "activity" | "model" | "usage" | "owner">;
 
 export interface PluginWorkerServiceDeps {
 	store: PluginTaskRecordStore;
@@ -94,8 +94,11 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 		wake(t);
 		if (!disposed && t.activityRecord !== t.record) {
 			t.activityRecord = t.record;
-			const { id, definitionId, status, createdAt, updatedAt, activity, model, usage } = t.record;
-			try { deps.onChange?.(clone({ id, definitionId, status, createdAt, updatedAt, activity, model, usage })); } catch { /* Observe only. */ }
+			const { id, definitionId, status, createdAt, updatedAt, activity, model, usage, owner } = t.record;
+			// The owner travels with the live metadata so the activity feed can
+			// filter rows by tenant. Unscoped records omit the key entirely,
+			// preserving the desktop metadata shape byte-for-byte.
+			try { deps.onChange?.(clone({ id, definitionId, status, createdAt, updatedAt, activity, model, usage, ...(owner === undefined ? {} : { owner }) })); } catch { /* Observe only. */ }
 		}
 		if (disposed || t.notifying) return;
 		t.notifying = true;

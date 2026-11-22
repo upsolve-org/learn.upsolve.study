@@ -56,7 +56,8 @@ function answerWith(status: number, statusText: string, body?: unknown): void {
 	globalThis.fetch = (async () => (body === undefined ? new Response("nope", { status, statusText }) : Response.json(body))) as typeof fetch;
 }
 
-function post(payload: unknown): Promise<Response> {
+// operatorOnly may refuse synchronously with a 403 before the async handler.
+function post(payload: unknown): Promise<Response> | Response {
 	return route.POST(
 		new Request("http://localhost/api/custom-provider", {
 			method: "POST",

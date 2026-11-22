@@ -5,6 +5,7 @@
  * channel additionally carries plugin-scoped JSON data, with the same
  * live-only delivery limitation.
  */
+import { currentOwnerId } from "./owner-scope.ts";
 
 /** The core event vocabulary plus the namespaced plugin extension channel. */
 export interface ServerEvents {
@@ -70,24 +71,37 @@ export type ServerEvent<K extends ServerEventType = ServerEventType> = {
 
 export type ServerEventListener = (event: ServerEvent) => void;
 
+/** A listener plus the owner it is scoped to. `owner === undefined` is the
+ *  legacy unscoped subscriber (desktop/local/tests): it sees EVERY event,
+ *  whatever scope the emitter ran in. A scoped subscriber sees only its
+ *  owner's events — never another tenant's, never an unscoped tenant event. */
+interface Subscriber {
+	listener: ServerEventListener;
+	owner?: string;
+}
+
 interface LhEventsGlobal {
-	__lhEventBus?: Set<ServerEventListener>;
+	__lhEventBus?: Set<Subscriber>;
 }
 
 /** The shared listener set — globalThis-backed so every Next module entry
  *  (and every layer) sees ONE bus. Ephemeral by design: a process restart
  *  drops the listeners with their connections; emitters never queue. */
-function listeners(): Set<ServerEventListener> {
+function listeners(): Set<Subscriber> {
 	const g = globalThis as typeof globalThis & LhEventsGlobal;
 	return (g.__lhEventBus ??= new Set());
 }
 
 /** Listen. Returns the unsubscribe function — the SSE route's cancel and
- *  any test cleanup call it; a dropped listener leaks nothing. */
-export function subscribe(listener: ServerEventListener): () => void {
+ *  any test cleanup call it; a dropped listener leaks nothing.
+ *
+ *  `options.owner` is the VERIFIED owner of the SSE connection. Pass it on
+ *  hosted requests so this window cannot be fed another tenant's frames. */
+export function subscribe(listener: ServerEventListener, options?: { owner?: string }): () => void {
 	const set = listeners();
-	set.add(listener);
-	return () => set.delete(listener);
+	const subscriber: Subscriber = options?.owner === undefined ? { listener } : { listener, owner: options.owner };
+	set.add(subscriber);
+	return () => set.delete(subscriber);
 }
 
 /** Notify every listener. Zero subscribers is a no-op (no window open —
@@ -95,11 +109,20 @@ export function subscribe(listener: ServerEventListener): () => void {
  *  listener throwing must never break the others or the emitter: each
  *  call is isolated, the failure logged, the loop continues. */
 export function emit<K extends ServerEventType>(type: K, payload: ServerEvents[K]): void {
+	// The emitter's scope is the event's ownership. Captured ONCE so an
+	// async listener cannot observe a different scope than its neighbours.
+	const eventOwner = currentOwnerId();
 	// Snapshot: a listener that unsubscribes (or subscribes) mid-emit must
 	// not mutate the set under iteration.
-	for (const listener of [...listeners()]) {
+	for (const subscriber of [...listeners()]) {
+		if (subscriber.owner !== undefined) {
+			const sameOwner = eventOwner === subscriber.owner;
+			// Boot/plugin availability can be announced before a tenant scope
+			// exists; that ONE channel is safe (it carries no tenant data).
+			if (!sameOwner && !(eventOwner === undefined && type === "plugins-changed")) continue;
+		}
 		try {
-			listener({ type, ...payload } as ServerEvent);
+			subscriber.listener({ type, ...payload } as ServerEvent);
 		} catch (err) {
 			console.error(`[events] listener failed on ${type}:`, err);
 		}

@@ -25,7 +25,7 @@ import { baseDataRoot } from "../../config.ts";
 import { hostedConfig } from "./hosted.ts";
 import { hostedFetch } from "./hosted-fetch.ts";
 import { isOwnerId } from "./owner.ts";
-import { normalizeEmail, type SignupOutcome, type SignupRequest } from "./admission.ts";
+import { isOperator, normalizeEmail, type SignupOutcome, type SignupRequest } from "./admission.ts";
 
 export { normalizeEmail, isOperator, type SignupOutcome, type SignupRequest } from "./admission.ts";
 
@@ -151,11 +151,12 @@ export function denySignup(rawEmail: unknown): boolean {
  */
 export async function hostedIdentity(
 	request: Request,
-): Promise<{ owner: string } | { refusal: Response }> {
+): Promise<{ owner: string; operator: boolean } | { refusal: Response }> {
 	const config = hostedConfig();
 	// Hosted mode off (desktop, plain dev): no owner, and NOT a refusal — the
-	// caller's own desktop/browser gate already decided.
-	if (!config) return { owner: "" };
+	// caller's own desktop/browser gate already decided. No operator either:
+	// the operator gates are hosted-only.
+	if (!config) return { owner: "", operator: false };
 	const cookies = parseCookieHeader(request.headers.get("cookie") ?? "");
 	const client = createServerClient(config.url, config.publishableKey, {
 		global: { fetch: hostedFetch(config.url) },
@@ -163,7 +164,9 @@ export async function hostedIdentity(
 	});
 	try {
 		const { data, error } = await client.auth.getUser();
-		if (!error && data.user && admittedUser(data.user)) return { owner: data.user.id.toLowerCase() };
+		if (!error && data.user && admittedUser(data.user)) {
+			return { owner: data.user.id.toLowerCase(), operator: isOperator(data.user.email) };
+		}
 		return { refusal: Response.json({ error: "Sign in with an admitted account." }, { status: data.user ? 403 : 401, headers: { "Cache-Control": "no-store" } }) };
 	} catch {
 		return { refusal: Response.json({ error: "Authentication is temporarily unavailable." }, { status: 503, headers: { "Cache-Control": "no-store" } }) };

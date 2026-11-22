@@ -1,6 +1,7 @@
 /** Live metadata only. Never read task history to render the activity feed. */
 import type { PluginWorkerActivityMetadata } from "../agent/plugin-workers.ts";
 import { emit } from "../core/events.ts";
+import { currentOwnerId } from "../core/owner-scope.ts";
 
 export interface PluginWorkerActivity extends Omit<PluginWorkerActivityMetadata, "id" | "status"> {
 	status: "queued" | "running";
@@ -59,7 +60,10 @@ export function registerPluginWorkerActivity(deps: {
 
 /** Read-only projection across active services; no filesystem or task subscriptions. */
 export function pluginWorkerActivities(): PluginWorkerActivity[] {
-	return [...registry().values()].flatMap(activation => [...activation.rows.values()].map(row => structuredClone(row)));
+	const owner = currentOwnerId();
+	return [...registry().values()].flatMap(activation => [...activation.rows.values()]
+		.filter(row => owner === undefined || row.owner === owner)
+		.map(row => structuredClone(row)));
 }
 
 /** Only the currently active service may receive END. Storage/cancellation errors propagate. */
@@ -68,7 +72,13 @@ export function abortPluginWorkerActivity(id: string): boolean {
 	if (separator < 1) return false;
 	const activation = registry().get(id.slice(0, separator));
 	const taskId = id.slice(separator + 1);
-	if (!activation?.rows.has(taskId)) return false;
+	if (!activation) return false;
+	const row = activation.rows.get(taskId);
+	if (!row) return false;
+	// A scoped request may only cancel its OWN tenant's worker. The id is
+	// opaque but guessable, so identity must come from the row, not the name.
+	const owner = currentOwnerId();
+	if (owner !== undefined && row.owner !== owner) return false;
 	activation.cancel(taskId);
 	return true;
 }

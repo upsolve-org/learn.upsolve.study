@@ -1,4 +1,4 @@
-import { pluginTransport, ownerScoped } from "@/src/server";
+import { pluginTransport, operatorOnly } from "@/src/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -6,5 +6,6 @@ async function PUTHandler(request: Request, context: { params: Promise<{ id: str
 	return pluginTransport.setEnabled((await context.params).id, request);
 }
 
-// Tenancy: the body runs inside the caller's owner scope.
-export const PUT = ownerScoped(PUTHandler);
+// Tenancy + operator gate: enabling/disabling a plugin is an operator
+// capability in hosted mode; the body otherwise runs in the caller's scope.
+export const PUT = operatorOnly(PUTHandler);

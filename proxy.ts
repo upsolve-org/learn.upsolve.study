@@ -5,7 +5,7 @@ import { hostedConfig } from "./src/core/hosted.ts";
 import { deniedPath, documentEndpointExempt, loginPath, safeReturnPath, signInCallbackPath, signupPath } from "./src/core/auth-routes.ts";
 import { cookieWrites } from "./src/core/hosted-cookies.ts";
 import { hostedFetch } from "./src/core/hosted-fetch.ts";
-import { admittedUser, hostedIdentity } from "./src/core/hosted-admission.ts";
+import { admittedUser, hostedIdentity, isOperator } from "./src/core/hosted-admission.ts";
 
 /**
  * Deskstop/browser-API gate. Protects API methods, including SSE and
@@ -28,7 +28,7 @@ async function apiGate(request: NextRequest) {
 	}
 	const identity = await hostedIdentity(request);
 	if ("refusal" in identity) return identity.refusal;
-	return NextResponse.next({ request: { headers: ownerHeaders(request, identity.owner) } });
+	return NextResponse.next({ request: { headers: ownerHeaders(request, identity.owner, identity.operator) } });
 }
 
 /**
@@ -37,15 +37,21 @@ async function apiGate(request: NextRequest) {
  * overwrites it on every hosted request.
  */
 const OWNER_HEADER = "x-lh-owner";
+/** Internal capability header: "1" ONLY for the operator. Never client-set. */
+const OPERATOR_HEADER = "x-lh-operator";
 
 /**
- * Request headers with the verified owner set, or cleared when there is none.
- * A client-supplied value is always dropped first, so only the Proxy decides.
+ * Request headers with the verified owner/operator set, or cleared when there
+ * is none. A client-supplied value is always dropped FIRST, so only the Proxy
+ * decides — a learner cannot grant itself operator access by sending the
+ * header (Next deletes any header not in this forwarded set downstream).
  */
-function ownerHeaders(request: NextRequest, owner: string | undefined): Headers {
+function ownerHeaders(request: NextRequest, owner: string | undefined, operator = false): Headers {
 	const headers = new Headers(request.headers);
 	headers.delete(OWNER_HEADER);
+	headers.delete(OPERATOR_HEADER);
 	if (owner) headers.set(OWNER_HEADER, owner.toLowerCase());
+	if (operator) headers.set(OPERATOR_HEADER, "1");
 	return headers;
 }
 
@@ -76,7 +82,7 @@ async function sessionGate(request: NextRequest, config: NonNullable<ReturnType<
 
 	// Built only now, so a refresh is already in the headers Next copies on.
 	const admitted = Boolean(data.user && admittedUser(data.user));
-	const upstream = NextResponse.next({ request: { headers: ownerHeaders(request, admitted ? data.user!.id : undefined) } });
+	const upstream = NextResponse.next({ request: { headers: ownerHeaders(request, admitted ? data.user!.id : undefined, admitted && isOperator(data.user?.email)) } });
 	if (admitted || publicPage) {
 		return jar.landOn(upstream, upstream);
 	}

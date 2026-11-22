@@ -72,7 +72,16 @@ export { approveAccount, sendApprovalEmail } from "./approval-email.ts";
 export { hostedFetch } from "../core/hosted-fetch.ts";
 export { cookieWrites } from "../core/hosted-cookies.ts";
 // Tenancy (2026-11-16): the request boundary that enters the owner's scope.
-export { ownerScoped, asRequestOwner, ownerOfRequest, OWNER_HEADER } from "./request-owner.ts";
+export {
+	ownerScoped,
+	asRequestOwner,
+	ownerOfRequest,
+	OWNER_HEADER,
+	OPERATOR_HEADER,
+	isOperatorRequest,
+	operatorRefusal,
+	operatorOnly,
+} from "./request-owner.ts";
 export * from "../core/owner-scope.ts";
 export {
 	admittedUser,

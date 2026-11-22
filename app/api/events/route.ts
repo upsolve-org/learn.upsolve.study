@@ -10,7 +10,7 @@ import { eventsResponse, ownerScoped } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-function GETHandler(): Response {
+function GETHandler(_request?: Request): Response {
 	return eventsResponse();
 }
 
