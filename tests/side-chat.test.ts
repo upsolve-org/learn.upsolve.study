@@ -88,21 +88,21 @@ function answeredQuiz(): QuestionAnswerData {
 describe("side ask input", () => {
 	const anchor: SideChatAnchor = { messageId: "msg_1", partId: "msg_1-t0", blockIndex: 2, blockText: "A paragraph." };
 
-	it("accepts a first question with an anchor and trims/clips", () => {
+	it("accepts a first question with an anchor and trims/clips", async () => {
 		const input = parseSideAskInput({ anchor, text: "  why?  ", quotes: ["  q1 ", ""] });
 		assert.equal(input.text, "why?");
 		assert.deepEqual(input.quotes, ["q1"]);
 		assert.equal(input.anchor?.blockIndex, 2);
 	});
 
-	it("accepts a follow-up and a retry by thread id", () => {
+	it("accepts a follow-up and a retry by thread id", async () => {
 		assert.equal(parseSideAskInput({ threadId: "side_x", text: "more" }).threadId, "side_x");
 		const retry = parseSideAskInput({ threadId: "side_x", retry: true });
 		assert.equal(retry.retry, true);
 		assert.equal(retry.text, "");
 	});
 
-	it("refuses bad shapes", () => {
+	it("refuses bad shapes", async () => {
 		for (const bad of [
 			null,
 			{ text: "" , anchor },
@@ -124,7 +124,7 @@ describe("side ask input", () => {
 // ── the lesson document ─────────────────────────────────────────────────────
 
 describe("side lesson document", () => {
-	it("renders prose, learner text and answered checks in full", () => {
+	it("renders prose, learner text and answered checks in full", async () => {
 		const doc = sideChatLessonDocument([
 			newUserMessage("I want to learn arithmetic"),
 			assistant([text("Addition combines counts."), call("q1", "quiz", { ...QUIZ_ARGS, question: "What is 2+2?" })]),
@@ -141,7 +141,7 @@ describe("side lesson document", () => {
 		assert.match(doc, /I counted wrong/);
 	});
 
-	it("shows the OPEN check without its key, explanation or committed answer", () => {
+	it("shows the OPEN check without its key, explanation or committed answer", async () => {
 		const doc = sideChatLessonDocument([
 			assistant([text("Derivatives measure change."), call("q2", "quiz", QUIZ_ARGS), call("q3", "explain", { type: "check", nodeId: "n", question: "Explain the slope.", correctAnswer: "SECRET-COMMITTED" })]),
 		]);
@@ -154,7 +154,7 @@ describe("side lesson document", () => {
 		assert.doesNotMatch(doc, /correctAnswer|"dq"/);
 	});
 
-	it("hides the ACTIVE problem's solution, reveals concluded ones", () => {
+	it("hides the ACTIVE problem's solution, reveals concluded ones", async () => {
 		const active = sideChatLessonDocument([
 			assistant([text("Try this."), call("p1", "problem", { statement: "Integrate x dx.", modelSolution: "SECRET-SOLUTION x^2/2" })]),
 			result("p1", "problem", null),
@@ -175,7 +175,7 @@ describe("side lesson document", () => {
 		assert.match(concluded, /REVEALED x\^2\/2/);
 	});
 
-	it("honors the active compaction cut without disclosing a model-private summary", () => {
+	it("honors the active compaction cut without disclosing a model-private summary", async () => {
 		const old = newUserMessage("OLD-CONTENT");
 		const kept = newUserMessage("KEPT-CONTENT");
 		const marker = newCompactionMarker("SUMMARY-TEXT", { firstKeptMessageId: kept.id, tokensBefore: 1, at: new Date().toISOString() });
@@ -186,7 +186,7 @@ describe("side lesson document", () => {
 		assert.doesNotMatch(doc, /OLD-CONTENT/);
 	});
 
-	it("validates anchors against the record's projectView numbering", () => {
+	it("validates anchors against the record's projectView numbering", async () => {
 		const msg = assistant([text(""), text("Second part."), call("s1", "send_to_user", { message: "Delivered prose." })]);
 		const messages = [msg, result("s1", "send_to_user", null)];
 		const at = (n: number) => ({ messageId: msg.id, partId: `${msg.id}-t${n}`, blockIndex: 0, blockText: "x" });
@@ -198,7 +198,7 @@ describe("side lesson document", () => {
 		assert.equal(anchorPointsAtProse([streaming], { messageId: streaming.id, partId: `${streaming.id}-t0`, blockIndex: 0, blockText: "x" }), false);
 	});
 
-	it("puts the lesson + passage in the first turn and replays answers with notes", () => {
+	it("puts the lesson + passage in the first turn and replays answers with notes", async () => {
 		const thread: SideChatThread = {
 			id: "side_t",
 			anchor: { messageId: "m", partId: "m-t0", blockIndex: 0, blockText: "THE-PASSAGE" },
@@ -223,7 +223,7 @@ describe("side lesson document", () => {
 // ── instructions ────────────────────────────────────────────────────────────
 
 describe("side instructions", () => {
-	it("compose the side base with the shared voice/accuracy/formatting appendix", () => {
+	it("compose the side base with the shared voice/accuracy/formatting appendix", async () => {
 		const prompt = composeSideChatInstructions();
 		assert.match(prompt, /## Side questions/);
 		assert.match(prompt, /OPEN question/);
@@ -254,22 +254,22 @@ describe("side instructions", () => {
 // ── store ───────────────────────────────────────────────────────────────────
 
 describe("side store seam", () => {
-	it("updates threads without touching messages, and the list omits them", () => {
-		const chat = chatStore.createChat("store");
-		chatStore.saveMessages(chat.id, [newUserMessage("hello")]);
+	it("updates threads without touching messages, and the list omits them", async () => {
+		const chat = (await chatStore.createChat("store"));
+		(await chatStore.saveMessages(chat.id, [newUserMessage("hello")]));
 		const thread: SideChatThread = { id: "side_a", anchor: { messageId: "m", partId: "m-t0", blockIndex: 0, blockText: "b" }, open: true, createdAt: "", messages: [] };
-		assert.equal(chatStore.updateSideChats(chat.id, (t) => [...t, thread])?.length, 1);
+		assert.equal((await chatStore.updateSideChats(chat.id, (t) => [...t, thread]))?.length, 1);
 		// A concurrent turn persist re-reads the record: the thread survives.
-		chatStore.saveMessages(chat.id, [newUserMessage("hello"), newUserMessage("again")]);
-		const record = chatStore.getChat(chat.id)!;
+		(await chatStore.saveMessages(chat.id, [newUserMessage("hello"), newUserMessage("again")]));
+		const record = (await chatStore.getChat(chat.id))!;
 		assert.equal(record.sideChats?.length, 1);
 		assert.equal(record.messages.length, 2);
-		const summary = chatStore.listChats().find((c) => c.id === chat.id) as unknown as Record<string, unknown>;
+		const summary = (await chatStore.listChats()).find((c) => c.id === chat.id) as unknown as Record<string, unknown>;
 		assert.equal(summary.sideChats, undefined);
 		// Emptying drops the field; unknown chats answer null.
-		chatStore.updateSideChats(chat.id, () => []);
-		assert.equal(chatStore.getChat(chat.id)!.sideChats, undefined);
-		assert.equal(chatStore.updateSideChats("chat_missing", (t) => t), null);
+		(await chatStore.updateSideChats(chat.id, () => []));
+		assert.equal((await chatStore.getChat(chat.id))!.sideChats, undefined);
+		assert.equal((await chatStore.updateSideChats("chat_missing", (t) => t)), null);
 	});
 });
 
@@ -290,7 +290,7 @@ async function readAll(res: Response): Promise<Ndjson[]> {
 		.map((l) => JSON.parse(l) as Ndjson);
 }
 
-function setup(opts: { tokensPerSecond?: number } = {}) {
+async function setup(opts: { tokensPerSecond?: number } = {}) {
 	const faux = createFauxCore({ tokensPerSecond: opts.tokensPerSecond });
 	const engine: PiEngine = { model: faux.getModel(), streamFn: faux.streamSimple };
 	const contexts: TranscriptContext[] = [];
@@ -300,9 +300,9 @@ function setup(opts: { tokensPerSecond?: number } = {}) {
 		engineFor: async () => refusal ?? engine,
 		instructions: () => "SIDE-INSTRUCTIONS",
 	});
-	const chat = chatStore.createChat("side");
+	const chat = (await chatStore.createChat("side"));
 	const prose = assistant([text("First paragraph.\n\nSecond paragraph."), call("q9", "quiz", QUIZ_ARGS)]);
-	chatStore.saveMessages(chat.id, [newUserMessage("teach me"), prose]);
+	(await chatStore.saveMessages(chat.id, [newUserMessage("teach me"), prose]));
 	const anchor: SideChatAnchor = { messageId: prose.id, partId: `${prose.id}-t0`, blockIndex: 1, blockText: "Second paragraph." };
 	const answer = (reply: string | AssistantMessage) =>
 		faux.appendResponses([
@@ -316,13 +316,13 @@ function setup(opts: { tokensPerSecond?: number } = {}) {
 
 describe("side chat service", () => {
 	it("answers a first question: NDJSON wire, saved thread, usage, events, untouched messages", async () => {
-		const { service, chatId, anchor, answer, contexts } = setup();
+		const { service, chatId, anchor, answer, contexts } = await setup();
 		const events: string[] = [];
 		const off = subscribe((e) => {
 			if ("chatId" in e && e.chatId === chatId) events.push(e.type);
 		});
 		answer("Because the limit never evaluates at zero.");
-		const before = chatStore.getChat(chatId)!.messages;
+		const before = (await chatStore.getChat(chatId))!.messages;
 		const lines = await readAll(await service.ask(chatId, { anchor, text: "why h→0?", quotes: ["the limit"] }));
 		off();
 		assert.equal(lines[0]!.type, "thread");
@@ -332,7 +332,7 @@ describe("side chat service", () => {
 		assert.equal(done.type, "done");
 		assert.equal(done.thread!.messages[1]!.text, "Because the limit never evaluates at zero.");
 
-		const record = chatStore.getChat(chatId)!;
+		const record = (await chatStore.getChat(chatId))!;
 		assert.deepEqual(record.messages, before, "the teaching record never changes");
 		const thread = record.sideChats![0]!;
 		assert.equal(thread.open, true);
@@ -354,11 +354,11 @@ describe("side chat service", () => {
 		assert.match(firstUser, /Second paragraph\./);
 		assert.match(firstUser, /OPEN question/);
 		assert.doesNotMatch(firstUser, /SECRET-EXPLANATION/);
-		assert.equal(service.list(chatId)!.threads.length, 1);
+		assert.equal((await service.list(chatId))!.threads.length, 1);
 	});
 
 	it("two selections and follow-ups in the same teaching segment share one conversation", async () => {
-		const { service, chatId, anchor, answer, contexts } = setup();
+		const { service, chatId, anchor, answer, contexts } = await setup();
 		answer("one");
 		const first = (await readAll(await service.ask(chatId, { anchor, text: "q1", quotes: ["first selection"] }))).at(-1)!.thread!;
 		answer("two");
@@ -366,7 +366,7 @@ describe("side chat service", () => {
 		assert.equal(second.id, first.id, "same segment, same conversation");
 		answer("three");
 		await readAll(await service.ask(chatId, { threadId: first.id, text: "q3", quotes: [] }));
-		const threads = chatStore.getChat(chatId)!.sideChats!;
+		const threads = (await chatStore.getChat(chatId))!.sideChats!;
 		assert.deepEqual(threads.map((t) => t.id), [first.id]);
 		assert.deepEqual(threads[0]!.messages.map((m) => m.text), ["q1", "one", "q2", "two", "q3", "three"]);
 		assert.deepEqual(contexts.at(-1)!.messages.map((m) => m.role), ["system", "user", "assistant", "user", "assistant", "user"]);
@@ -375,14 +375,14 @@ describe("side chat service", () => {
 	});
 
 	it("refuses bad anchors, unknown threads and a busy thread; refusals save nothing", async () => {
-		const { service, chatId, anchor, answer, refuse, faux } = setup();
+		const { service, chatId, anchor, answer, refuse, faux } = await setup();
 		assert.equal((await service.ask(chatId, { anchor: { ...anchor, messageId: "msg_missing", partId: "msg_missing-t0" }, text: "q", quotes: [] })).status, 400);
 		assert.equal((await service.ask(chatId, { threadId: "side_nope", text: "q", quotes: [] })).status, 404);
 		assert.equal((await service.ask("chat_nope", { anchor, text: "q", quotes: [] })).status, 404);
 
 		refuse(Response.json({ error: "No model configured" }, { status: 503 }));
 		assert.equal((await service.ask(chatId, { anchor, text: "q", quotes: [] })).status, 503);
-		assert.equal(chatStore.getChat(chatId)!.sideChats, undefined, "no orphan question");
+		assert.equal((await chatStore.getChat(chatId))!.sideChats, undefined, "no orphan question");
 		refuse(null);
 
 		// Hold the answer open, then ask again on the same thread.
@@ -390,27 +390,27 @@ describe("side chat service", () => {
 		const gate = new Promise<void>((r) => (release = r));
 		faux.appendResponses([async () => (await gate, fauxAssistantMessage("held"))]);
 		const res = await service.ask(chatId, { anchor, text: "q", quotes: [] });
-		const threadId = chatStore.getChat(chatId)!.sideChats![0]!.id;
-		assert.equal(service.list(chatId)!.answering[threadId], "");
+		const threadId = (await chatStore.getChat(chatId))!.sideChats![0]!.id;
+		assert.equal((await service.list(chatId))!.answering[threadId], "");
 		assert.equal((await service.ask(chatId, { threadId, text: "again", quotes: [] })).status, 409);
 		release();
 		await readAll(res);
-		assert.deepEqual(service.list(chatId)!.answering, {});
+		assert.deepEqual((await service.list(chatId))!.answering, {});
 		answer("unused");
 	});
 
 	it("stop keeps the partial answer as stopped", async () => {
-		const { service, chatId, anchor, faux } = setup({ tokensPerSecond: 40 });
+		const { service, chatId, anchor, faux } = await setup({ tokensPerSecond: 40 });
 		faux.appendResponses([fauxAssistantMessage("word ".repeat(400))]);
 		const res = await service.ask(chatId, { anchor, text: "long?", quotes: [] });
-		const threadId = chatStore.getChat(chatId)!.sideChats![0]!.id;
+		const threadId = (await chatStore.getChat(chatId))!.sideChats![0]!.id;
 		const reader = res.body!.getReader();
 		const decoder = new TextDecoder();
 		let seen = "";
 		while (!seen.includes('word')) seen += decoder.decode((await reader.read()).value);
 		assert.equal(service.stop(chatId, threadId), true);
 		await service.settled(chatId, threadId);
-		const last = chatStore.getChat(chatId)!.sideChats![0]!.messages.at(-1)!;
+		const last = (await chatStore.getChat(chatId))!.sideChats![0]!.messages.at(-1)!;
 		assert.equal(last.role, "assistant");
 		assert.equal(last.stopped, true);
 		assert.ok(last.text.length > 0 && last.text.length < "word ".repeat(400).length);
@@ -419,56 +419,56 @@ describe("side chat service", () => {
 	});
 
 	it("saves a failed answer and retry re-answers the same question", async () => {
-		const { service, chatId, anchor, answer } = setup();
+		const { service, chatId, anchor, answer } = await setup();
 		answer(fauxAssistantMessage("", { stopReason: "error", errorMessage: "upstream 500" }));
 		await readAll(await service.ask(chatId, { anchor, text: "q", quotes: [] }));
-		let thread = chatStore.getChat(chatId)!.sideChats![0]!;
+		let thread = (await chatStore.getChat(chatId))!.sideChats![0]!;
 		assert.equal(thread.messages.at(-1)!.error, "upstream 500");
 
 		answer("recovered");
 		await readAll(await service.ask(chatId, { threadId: thread.id, text: "", quotes: [], retry: true }));
-		thread = chatStore.getChat(chatId)!.sideChats![0]!;
+		thread = (await chatStore.getChat(chatId))!.sideChats![0]!;
 		assert.deepEqual(thread.messages.map((m) => [m.role, m.text, m.error]), [["user", "q", undefined], ["assistant", "", "upstream 500"], ["assistant", "recovered", undefined]]);
 		assert.equal((await service.ask(chatId, { threadId: thread.id, text: "", quotes: [], retry: true })).status, 409, "nothing to retry");
 	});
 
 	it("closing keeps messages and generation; deleting the whole session never resurrects it", async () => {
-		const { service, chatId, anchor, answer, faux } = setup();
+		const { service, chatId, anchor, answer, faux } = await setup();
 		answer("a");
 		const thread = (await readAll(await service.ask(chatId, { anchor, text: "q", quotes: [] }))).at(-1)!.thread!;
-		const closed = service.setOpen(chatId, thread.id, false);
+		const closed = (await service.setOpen(chatId, thread.id, false));
 		assert.equal(typeof closed === "object" && closed.open, false);
-		assert.equal(chatStore.getChat(chatId)!.sideChats![0]!.open, false);
-		assert.equal(service.setOpen(chatId, "side_nope", true), "unknown-thread");
+		assert.equal((await chatStore.getChat(chatId))!.sideChats![0]!.open, false);
+		assert.equal((await service.setOpen(chatId, "side_nope", true)), "unknown-thread");
 
 		// A follow-up reopens the window.
 		answer("b");
 		await readAll(await service.ask(chatId, { threadId: thread.id, text: "q2", quotes: [] }));
-		assert.equal(chatStore.getChat(chatId)!.sideChats![0]!.open, true);
+		assert.equal((await chatStore.getChat(chatId))!.sideChats![0]!.open, true);
 
 		let release!: () => void;
 		const gate = new Promise<void>((r) => (release = r));
 		faux.appendResponses([async () => (await gate, fauxAssistantMessage("late"))]);
 		const res = await service.ask(chatId, { threadId: thread.id, text: "q3", quotes: [] });
-		service.setOpen(chatId, thread.id, false);
+		(await service.setOpen(chatId, thread.id, false));
 		release();
 		await readAll(res);
 		await service.settled(chatId, thread.id);
-		assert.equal(chatStore.getChat(chatId)!.sideChats![0]!.messages.at(-1)!.text, "late");
-		assert.equal(chatStore.getChat(chatId)!.sideChats![0]!.open, false);
+		assert.equal((await chatStore.getChat(chatId))!.sideChats![0]!.messages.at(-1)!.text, "late");
+		assert.equal((await chatStore.getChat(chatId))!.sideChats![0]!.open, false);
 
 		// Session deleted while answering: the settle has nowhere to land.
 		answer("x");
-		const other = setup();
+		const other = await setup();
 		let release2!: () => void;
 		const gate2 = new Promise<void>((r) => (release2 = r));
 		other.faux.appendResponses([async () => (await gate2, fauxAssistantMessage("orphan"))]);
 		const res2 = await other.service.ask(other.chatId, { anchor: other.anchor, text: "q", quotes: [] });
-		chatStore.deleteChat(other.chatId);
+		(await chatStore.deleteChat(other.chatId));
 		other.service.stopAll(other.chatId);
 		release2();
 		const lines = await readAll(res2);
 		assert.equal(lines.at(-1)!.type, "error");
-		assert.equal(chatStore.getChat(other.chatId), null);
+		assert.equal((await chatStore.getChat(other.chatId)), null);
 	});
 });

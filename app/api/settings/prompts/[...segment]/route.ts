@@ -27,6 +27,7 @@
 
 import {
 	allSegmentPaths,
+	invalidateCachedSettings,
 	isValidSegmentPath,
 	promptOverrides,
 	readSettingsRecord,
@@ -73,6 +74,8 @@ async function DELETEHandler(_request: Request, ctx: { params: Promise<{ segment
 		const prompts = { ...record.agent.prompts };
 		delete prompts[path];
 		writeSettingsRecord({ ...record, agent: { ...record.agent, prompts } });
+		// The record changed — drop the per-owner snapshot the sync seams read.
+		invalidateCachedSettings();
 	}
 	promptOverrides.deleteOverride(path);
 	// switchCleared tells the caller their on-switch went off WITH the file

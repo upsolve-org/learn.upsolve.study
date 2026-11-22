@@ -73,10 +73,10 @@ export function takeParkedDismissal(chatId: string): ParkedDismissal | null {
  *  ChatInputError means the dismissed thing never materialized — the park
  *  is dropped, silence is the correct outcome. Emits "record-changed"
  *  exactly when something was written. */
-export function applyParkedDismissal(chatStore: ChatStore, chatId: string): void {
+export async function applyParkedDismissal(chatStore: ChatStore, chatId: string): Promise<void> {
 	const input = takeParkedDismissal(chatId);
 	if (input === null) return;
-	const record = chatStore.getChat(chatId);
+	const record = await chatStore.getChat(chatId);
 	if (!record) return;
 	try {
 		assertPluginQuestionInputAllowed(record.messages, input as { type: string });
@@ -85,7 +85,7 @@ export function applyParkedDismissal(chatStore: ChatStore, chatId: string): void
 			: dismissAppends(record, input as Parameters<typeof dismissAppends>[1]);
 		// Settlement/dismissal does not run another model call. Keep new
 		// side exchanges pending until that call's context-budget gate.
-		chatStore.saveMessages(chatId, [...record.messages, ...appends]);
+		await chatStore.saveMessages(chatId, [...record.messages, ...appends]);
 		emit("record-changed", { chatId });
 	} catch (err) {
 		if (err instanceof ChatInputError) return; // never materialized — drop

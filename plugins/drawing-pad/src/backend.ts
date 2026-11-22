@@ -19,12 +19,12 @@ export function activate(ctx: PluginBackendContext): () => void {
     if (disposed || ctx.signal.aborted) throw new Error("Drawing Pad is disabled.");
   };
   const get = ctx.handle("get-settings", () => { assertActive(); return { ...settings }; });
-  const poses = ctx.handle("get-session-poses", input => {
+  const poses = ctx.handle("get-session-poses", async input => {
     assertActive();
     if (!input || typeof input !== "object" || Array.isArray(input) || Object.keys(input).length !== 1 ||
       !("sessionId" in input) || typeof input.sessionId !== "string" || !/^[A-Za-z0-9_-]+$/.test(input.sessionId))
       throw new Error("Expected a valid sessionId.");
-    const record = ctx.learning.getSession(input.sessionId);
+    const record = await ctx.learning.getSession(input.sessionId);
     return { sessionId: input.sessionId, poses: record?.kind === "practice" ? acceptedPoseKeys(record.messages) : [] };
   });
   const persist = (change: Partial<Pick<Settings, "darkInkColor" | "lightInkColor" | "imageScale">>) => {

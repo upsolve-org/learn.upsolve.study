@@ -20,7 +20,7 @@ async function PUTHandler(request: Request) {
 	} catch {
 		return Response.json({ error: "invalid JSON body" }, { status: 400 });
 	}
-	return Response.json({ positions: commitPositions(body) });
+	return Response.json({ positions: await commitPositions(body) });
 }
 
 // Tenancy: the body runs inside the caller's owner scope.

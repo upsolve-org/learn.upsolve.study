@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentEvent, AgentTool } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import type { PluginTaskRecordStore } from "../core/ports.ts";
+import { expectSync, type PluginTaskRecordStore } from "../core/ports.ts";
 import type { PluginCallPurpose, PluginModelSpec } from "../core/plugin-agents.ts";
 import type { PluginInferenceOptions } from "../core/plugins.ts";
 import type { PluginTaskError, PluginTaskOutcome, PluginTaskRecord, PluginTaskSnapshot, PluginWorkerContext, PluginWorkerDefinition, PluginWorkerService, PluginWorkerStartOptions } from "../core/plugin-workers.ts";
@@ -112,7 +112,7 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 		if (disposed || t.closed) throw new Error("Task writer is closed");
 		if (t.poisoned) throw t.poisoned;
 		const next = clone({ ...record, updatedAt: new Date().toISOString() });
-		try { deps.store.save(next); }
+		try { expectSync(deps.store.save(next), "Plugin task save"); }
 		catch (error) {
 			t.poisoned = new Error(`Plugin task storage failed: ${text(error)}`);
 			t.controller.abort();
@@ -120,11 +120,11 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 			// a later checkpoint failure. Otherwise try to durably expose failure.
 			let uncertainSuccess = false;
 			if (next.status === "succeeded") {
-				try { uncertainSuccess = deps.store.get(next.id)?.status === "succeeded"; } catch { uncertainSuccess = true; }
+				try { uncertainSuccess = expectSync(deps.store.get(next.id), "Plugin task get")?.status === "succeeded"; } catch { uncertainSuccess = true; }
 			}
 			if (!terminal(t.record) && !uncertainSuccess) {
 				const failed: PluginTaskRecord = { ...t.record, status: "failed", completedAt: new Date().toISOString(), error: { code: "storage_error", message: t.poisoned.message } };
-				try { deps.store.save(clone(failed)); t.record = failed; } catch { /* wait rejects, rather than inventing a durable terminal state. */ }
+				try { expectSync(deps.store.save(clone(failed)), "Plugin task failure save"); t.record = failed; } catch { /* wait rejects, rather than inventing a durable terminal state. */ }
 			}
 			notify(t); throw t.poisoned;
 		}
@@ -137,7 +137,7 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 		commit(t, { ...t.record, status, error, completedAt: new Date().toISOString() });
 		t.controller.abort(); t.partial = undefined;
 	};
-	for (const loaded of deps.store.list()) {
+	for (const loaded of expectSync(deps.store.list(), "Plugin task list")) {
 		id(loaded.id, "task id"); id(loaded.definitionId, "worker id");
 		if (typeof loaded.requestId !== "string" || !loaded.requestId.length) throw new Error("Invalid persisted worker requestId");
 		if (tasks.has(loaded.id) || [...tasks.values()].some(t => t.record.requestId === loaded.requestId)) throw new Error("Duplicate persisted task identity");
@@ -286,7 +286,7 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 			if (owner !== undefined) record.owner = owner;
 			// A post-rename fsync failure has an uncertain durable outcome. Stop
 			// further acceptance rather than risking duplicate request identities.
-			try { deps.store.save(clone(record)); }
+			try { expectSync(deps.store.save(clone(record)), "Plugin task acceptance save"); }
 			catch (error) { acceptanceError = new Error(`Plugin task acceptance storage failed: ${text(error)}`); throw acceptanceError; }
 			const t: Task = { record, controller: new AbortController(), listeners: new Set(), waiters: new Set() }; tasks.set(record.id, t);
 			if (options.timeoutMs !== undefined) {

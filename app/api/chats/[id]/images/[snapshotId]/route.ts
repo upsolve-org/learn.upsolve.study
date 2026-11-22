@@ -4,7 +4,7 @@ import { getChat, ownerScoped } from "@/src/server";
 async function GETHandler(_req: Request, { params }: { params: Promise<{ id: string; snapshotId: string }> }) {
 	const { id, snapshotId } = await params;
 	if (!/^[a-f0-9]{64}$/.test(snapshotId)) return Response.json({ error: "Not found" }, { status: 404 });
-	const image = getChat(id)?.imageSnapshots?.[snapshotId];
+	const image = (await getChat(id))?.imageSnapshots?.[snapshotId];
 	if (!image) return Response.json({ error: "Not found" }, { status: 404 });
 	return Response.json(image, { headers: { "Cache-Control": "private, no-store" } });
 }

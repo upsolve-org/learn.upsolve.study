@@ -56,11 +56,11 @@ function question(protocolVersion: 1 | 2 = 1) {
 	const input = { type: "dismiss-plugin-question" as const, questionId: snapshot.questionId, occurrence };
 	return { snapshot, message, input };
 }
-function fixture(t: TestContext, protocolVersion: 1 | 2 = 1) {
-	const q = question(protocolVersion), chat = chatStore.createChat("Plugin dismissal route");
-	chatStore.saveMessages(chat.id, [q.message]);
+async function fixture(t: TestContext, protocolVersion: 1 | 2 = 1) {
+	const q = question(protocolVersion), chat = (await chatStore.createChat("Plugin dismissal route"));
+	(await chatStore.saveMessages(chat.id, [q.message]));
 	t.after(() => { takeParkedDismissal(chat.id); });
-	return { ...q, id: chat.id, saved: () => chatStore.getChat(chat.id)! };
+	return { ...q, id: chat.id, saved: async () => (await chatStore.getChat(chat.id))! };
 }
 function claim(t: TestContext, id: string) {
 	const owner = claimPreparingTurn(id);
@@ -83,7 +83,7 @@ function answer(messages: LhMessage[], snapshot: PluginQuestionSnapshot): LhMess
 }
 
 test("valid owned plugin dismissal parks before synchronously aborting, without writing until settlement", async t => {
-	const f = fixture(t), owner = claim(t, f.id);
+	const f = await fixture(t), owner = claim(t, f.id);
 	let aborts = 0, parkedOnAbort: unknown;
 	owner.signal.addEventListener("abort", () => {
 		aborts++;
@@ -98,55 +98,55 @@ test("valid owned plugin dismissal parks before synchronously aborting, without 
 	assert.equal(owner.signal.aborted, true);
 	assert.equal(isTurnRunning(f.id), true);
 	assert.ok(runningTurn(f.id));
-	assert.equal(f.saved().messages.length, 1);
-	applyParkedDismissal(chatStore, f.id);
+	assert.equal((await f.saved()).messages.length, 1);
+	await applyParkedDismissal(chatStore, f.id);
 	owner.finish();
-	assert.equal(pendingPluginQuestionOf(f.saved().messages), undefined);
-	assert.equal((f.saved().messages.at(-1) as any).details.reason, "dismissed");
+	assert.equal(pendingPluginQuestionOf((await f.saved()).messages), undefined);
+	assert.equal(((await f.saved()).messages.at(-1) as any).details.reason, "dismissed");
 	assert.equal(takeParkedDismissal(f.id), null);
 });
 
 for (const mismatch of ["questionId", "messageId", "contentIndex", "toolCallId", "toolName", "answered", "different-current"] as const) {
 	test(`owned stale plugin target (${mismatch}) neither parks nor aborts`, async t => {
-		const f = fixture(t), owner = claim(t, f.id);
+		const f = await fixture(t), owner = claim(t, f.id);
 		let input = structuredClone(f.input);
 		if (mismatch === "questionId") input.questionId = "stale-question";
 		else if (mismatch === "contentIndex") input.occurrence.contentIndex++;
-		else if (mismatch === "answered") chatStore.saveMessages(f.id, [f.message, ...answer([f.message], f.snapshot)]);
-		else if (mismatch === "different-current") chatStore.saveMessages(f.id, [question().message]);
+		else if (mismatch === "answered") (await chatStore.saveMessages(f.id, [f.message, ...answer([f.message], f.snapshot)]));
+		else if (mismatch === "different-current") (await chatStore.saveMessages(f.id, [question().message]));
 		else input.occurrence[mismatch] = "stale-occurrence";
-		const before = f.saved().messages;
+		const before = (await f.saved()).messages;
 		assert.equal((await post(f.id, input)).status, 400);
 		assert.equal(owner.signal.aborted, false);
 		assert.equal(takeParkedDismissal(f.id), null);
-		assert.deepEqual(f.saved().messages, before);
+		assert.deepEqual((await f.saved()).messages, before);
 	});
 }
 
 for (const mutation of ["answered", "successor", "deleted", "unreadable-rebound"] as const) {
 	test(`body-await race (${mutation}) validates current truth and cannot stop the successor`, async t => {
-		const f = fixture(t), oldOwner = claim(t, f.id);
+		const f = await fixture(t), oldOwner = claim(t, f.id);
 		const pending = delayedPost(f.id, f.input);
 		t.after(pending.release);
 		await pending.started;
 		oldOwner.finish();
-		if (mutation === "answered") chatStore.saveMessages(f.id, [f.message, ...answer([f.message], f.snapshot)]);
-		else if (mutation === "successor") chatStore.saveMessages(f.id, [f.message, ...answer([f.message], f.snapshot), question().message]);
-		else if (mutation === "deleted") chatStore.deleteChat(f.id);
-		else chatStore.saveMessages(f.id, [{ ...f.message, lhQuestions: { "0": { ...f.snapshot, protocolVersion: 99, questionId: "replacement-binding" } } } as unknown as LhMessage]);
+		if (mutation === "answered") (await chatStore.saveMessages(f.id, [f.message, ...answer([f.message], f.snapshot)]));
+		else if (mutation === "successor") (await chatStore.saveMessages(f.id, [f.message, ...answer([f.message], f.snapshot), question().message]));
+		else if (mutation === "deleted") (await chatStore.deleteChat(f.id));
+		else (await chatStore.saveMessages(f.id, [{ ...f.message, lhQuestions: { "0": { ...f.snapshot, protocolVersion: 99, questionId: "replacement-binding" } } } as unknown as LhMessage]));
 		const successor = claim(t, f.id);
-		const before = chatStore.getChat(f.id)?.messages;
+		const before = (await chatStore.getChat(f.id))?.messages;
 		pending.release();
 		assert.equal((await pending.response).status, mutation === "deleted" ? 404 : 400);
 		assert.equal(successor.signal.aborted, false);
 		assert.equal(takeParkedDismissal(f.id), null);
-		assert.deepEqual(chatStore.getChat(f.id)?.messages, before);
+		assert.deepEqual((await chatStore.getChat(f.id))?.messages, before);
 	});
 }
 
 test("idle plugin dismissal persists exact cancellation and notifies once, with no lifecycle or generation", async t => {
-	const f = fixture(t), events: string[] = [];
-	const off = subscribe(event => { if ("chatId" in event && event.chatId === f.id) events.push(event.type); });
+	const f = await fixture(t), events: string[] = [];
+	const off = subscribe(async event => { if ("chatId" in event && event.chatId === f.id) events.push(event.type); });
 	t.after(off);
 	const response = await post(f.id, f.input);
 	assert.equal(response.status, 200);
@@ -155,63 +155,63 @@ test("idle plugin dismissal persists exact cancellation and notifies once, with 
 	assert.equal(isTurnRunning(f.id), false);
 	assert.equal(runningTurn(f.id), undefined);
 	assert.equal(takeParkedDismissal(f.id), null);
-	const result = f.saved().messages.at(-1) as any;
+	const result = (await f.saved()).messages.at(-1) as any;
 	assert.deepEqual(result.lhQuestionOccurrence, f.input.occurrence);
 	assert.deepEqual(result.details, { kind: "plugin-question-cancelled", questionId: f.input.questionId, occurrence: f.input.occurrence, reason: "dismissed" });
-	assert.equal(pendingPluginQuestionOf(f.saved().messages), undefined);
+	assert.equal(pendingPluginQuestionOf((await f.saved()).messages), undefined);
 });
 
 test("idle body-await dismissal preserves current canonical appends rather than overwriting captured history", async t => {
-	const f = fixture(t), pending = delayedPost(f.id, f.input);
+	const f = await fixture(t), pending = delayedPost(f.id, f.input);
 	t.after(pending.release);
 	await pending.started;
 	const concurrent = newUserMessage("Concurrent canonical annotation");
-	chatStore.saveMessages(f.id, [f.message, concurrent]);
+	(await chatStore.saveMessages(f.id, [f.message, concurrent]));
 	pending.release();
 	assert.equal((await pending.response).status, 200);
-	assert.equal(f.saved().messages[1]!.id, concurrent.id);
-	assert.equal(f.saved().messages.length, 3);
+	assert.equal((await f.saved()).messages[1]!.id, concurrent.id);
+	assert.equal((await f.saved()).messages.length, 3);
 });
 
 test("idle target answered while the body is pending is refused without duplicate cancellation", async t => {
-	const f = fixture(t), pending = delayedPost(f.id, f.input);
+	const f = await fixture(t), pending = delayedPost(f.id, f.input);
 	t.after(pending.release);
 	await pending.started;
 	const messages = [f.message, ...answer([f.message], f.snapshot)];
-	chatStore.saveMessages(f.id, messages);
+	(await chatStore.saveMessages(f.id, messages));
 	pending.release();
 	assert.equal((await pending.response).status, 400);
-	assert.deepEqual(f.saved().messages, messages);
+	assert.deepEqual((await f.saved()).messages, messages);
 	assert.equal(takeParkedDismissal(f.id), null);
 });
 
 for (const mismatch of [false, true]) test(`unreadable bound plugin target ${mismatch ? "rejects a mismatched questionId without stopping" : "can still be explicitly dismissed"}`, async t => {
-	const f = fixture(t), owner = claim(t, f.id);
-	chatStore.saveMessages(f.id, [{ ...f.message, lhQuestions: { "0": { ...f.snapshot, protocolVersion: 99 } } } as unknown as LhMessage]);
+	const f = await fixture(t), owner = claim(t, f.id);
+	(await chatStore.saveMessages(f.id, [{ ...f.message, lhQuestions: { "0": { ...f.snapshot, protocolVersion: 99 } } } as unknown as LhMessage]));
 	const input = { ...f.input, ...(mismatch ? { questionId: "other-question" } : {}) };
 	assert.equal((await post(f.id, input)).status, mismatch ? 400 : 202);
 	assert.equal(owner.signal.aborted, !mismatch);
 	if (mismatch) assert.equal(takeParkedDismissal(f.id), null);
 	else {
-		applyParkedDismissal(chatStore, f.id);
-		assert.deepEqual((f.saved().messages.at(-1) as any).details, { kind: "plugin-question-cancelled", questionId: f.input.questionId, occurrence: f.input.occurrence, reason: "dismissed" });
+		await applyParkedDismissal(chatStore, f.id);
+		assert.deepEqual(((await f.saved()).messages.at(-1) as any).details, { kind: "plugin-question-cancelled", questionId: f.input.questionId, occurrence: f.input.occurrence, reason: "dismissed" });
 	}
 });
 
 for (const busy of [false, true]) test(`malformed unreadable plugin map permits exact occurrence-only dismissal (${busy ? "owned" : "idle"})`, async t => {
-	const f = fixture(t), owner = busy ? claim(t, f.id) : undefined;
-	chatStore.saveMessages(f.id, [{ ...f.message, lhQuestions: null } as unknown as LhMessage]);
+	const f = await fixture(t), owner = busy ? claim(t, f.id) : undefined;
+	(await chatStore.saveMessages(f.id, [{ ...f.message, lhQuestions: null } as unknown as LhMessage]));
 	const input = { type: "dismiss-plugin-question", occurrence: f.input.occurrence };
 	assert.equal((await post(f.id, input)).status, busy ? 202 : 200);
 	if (owner) {
 		assert.equal(owner.signal.aborted, true);
-		applyParkedDismissal(chatStore, f.id);
+		await applyParkedDismissal(chatStore, f.id);
 	}
-	assert.deepEqual((f.saved().messages.at(-1) as any).details, { kind: "plugin-question-cancelled", occurrence: f.input.occurrence, reason: "dismissed" });
+	assert.deepEqual(((await f.saved()).messages.at(-1) as any).details, { kind: "plugin-question-cancelled", occurrence: f.input.occurrence, reason: "dismissed" });
 });
 
 for (const kind of ["question", "problem"] as const) test(`builtin busy ${kind} still only parks, even before its native call materializes`, async t => {
-	const id = chatStore.createChat("Builtin busy dismissal").id, owner = claim(t, id);
+	const id = (await chatStore.createChat("Builtin busy dismissal")).id, owner = claim(t, id);
 	t.after(() => takeParkedDismissal(id));
 	const input = kind === "question" ? { type: "dismiss", toolCallId: "future-quiz", answer: dismissedAnswer("quiz", "What?") }
 		: { type: "dismiss-problem", problemCallId: "future-problem" };
@@ -221,29 +221,29 @@ for (const kind of ["question", "problem"] as const) test(`builtin busy ${kind} 
 	assert.equal(owner.signal.aborted, false, "builtin dismissal must not server-abort its owner");
 	assert.equal(isTurnRunning(id), true);
 	assert.deepEqual(takeParkedDismissal(id), input);
-	assert.equal(chatStore.getChat(id)!.messages.length, 0);
+	assert.equal((await chatStore.getChat(id))!.messages.length, 0);
 });
 
 for (const kind of ["question", "problem"] as const) test(`builtin idle ${kind} still writes its native dismissal`, async () => {
-	const id = chatStore.createChat("Builtin idle dismissal").id;
+	const id = (await chatStore.createChat("Builtin idle dismissal")).id;
 	const call = kind === "question" ? fauxToolCall("quiz", { question: "What?", options: [{ label: "Yes" }, { label: "No" }], correctAnswer: "Yes", explanation: "Because" }, { id: "builtin-quiz" })
 		: fauxToolCall("problem", { statement: "Prove it", mode: "recall" }, { id: "builtin-problem" });
-	chatStore.saveMessages(id, [
+	(await chatStore.saveMessages(id, [
 		{ ...fauxAssistantMessage([call], { stopReason: "toolUse" }), id: `builtin-${kind}-pose` } as LhMessage,
 		...(kind === "problem" ? [{ id: "builtin-problem-ack", role: "toolResult", toolCallId: "builtin-problem", toolName: "problem", content: [{ type: "text", text: "Problem posed" }], details: {}, isError: false, timestamp: Date.now() } as LhMessage] : []),
-	]);
+	]));
 	const input = kind === "question" ? { type: "dismiss", toolCallId: "builtin-quiz", answer: dismissedAnswer("quiz", "What?") }
 		: { type: "dismiss-problem", problemCallId: "builtin-problem" };
 	assert.equal((await post(id, input)).status, 200);
 	assert.equal(isTurnRunning(id), false);
-	if (kind === "question") assert.equal(danglingQuestionOf(chatStore.getChat(id)!.messages), null);
-	else assert.equal(activeProblemOf(chatStore.getChat(id)!.messages), null);
+	if (kind === "question") assert.equal(danglingQuestionOf((await chatStore.getChat(id))!.messages), null);
+	else assert.equal(activeProblemOf((await chatStore.getChat(id))!.messages), null);
 });
 
 test("route cancellation waits for the actual cooperative grader cleanup; handler finally applies the park before releasing ownership", { timeout: 10000 }, async t => {
-	const f = fixture(t, 2), started = deferred<void>(), aborted = deferred<void>(), cleanup = deferred<void>();
+	const f = await fixture(t, 2), started = deferred<void>(), aborted = deferred<void>(), cleanup = deferred<void>();
 	t.after(() => { abortTurn(f.id); cleanup.resolve(); });
-	chatStore.saveSettings(f.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } });
+	(await chatStore.saveSettings(f.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } }));
 	let gradingSignal!: AbortSignal, grades = 0, factories = 0, callbackSettled = false;
 	const definition = {
 		id: "code", contractVersion: 1,
@@ -259,12 +259,12 @@ test("route cancellation waits for the actual cooperative grader cleanup; handle
 	t.after(() => { resolveQuestion = () => ({ status: "unavailable" }); });
 	const events: string[] = [];
 	let settledAfterCleanup = false, cancellationAtSettlement: unknown;
-	const off = subscribe(event => {
+	const off = subscribe(async event => {
 		if (!("chatId" in event) || event.chatId !== f.id) return;
 		events.push(event.type);
 		if (event.type === "turn-settled") {
 			settledAfterCleanup = callbackSettled;
-			cancellationAtSettlement = (f.saved().messages.at(-1) as any)?.details?.reason;
+			cancellationAtSettlement = ((await f.saved()).messages.at(-1) as any)?.details?.reason;
 		}
 	});
 	t.after(off);
@@ -281,7 +281,7 @@ test("route cancellation waits for the actual cooperative grader cleanup; handle
 	assert.equal(answerSettled, false);
 	assert.equal(isTurnRunning(f.id), true);
 	assert.equal(runningTurn(f.id), handle);
-	assert.equal(f.saved().messages.length, 1, "the park is not applied ahead of callback cleanup");
+	assert.equal((await f.saved()).messages.length, 1, "the park is not applied ahead of callback cleanup");
 	assert.equal(claimPreparingTurn(f.id), null, "cannot admit another writer during callback cleanup");
 	cleanup.resolve();
 	assert.notEqual((await answerResponse).status, 200);
@@ -293,7 +293,7 @@ test("route cancellation waits for the actual cooperative grader cleanup; handle
 	assert.equal(isTurnRunning(f.id), false);
 	assert.equal(runningTurn(f.id), undefined);
 	assert.equal(takeParkedDismissal(f.id), null);
-	assert.equal(pendingPluginQuestionOf(f.saved().messages), undefined);
-	assert.equal((f.saved().messages.at(-1) as any).details.kind, "plugin-question-cancelled");
-	assert.equal(f.saved().messages.some(message => message.role === "toolResult" && (message.details as any)?.kind === "plugin-question"), false, "late grading must not accept the abandoned answer");
+	assert.equal(pendingPluginQuestionOf((await f.saved()).messages), undefined);
+	assert.equal(((await f.saved()).messages.at(-1) as any).details.kind, "plugin-question-cancelled");
+	assert.equal((await f.saved()).messages.some(message => message.role === "toolResult" && (message.details as any)?.kind === "plugin-question"), false, "late grading must not accept the abandoned answer");
 });

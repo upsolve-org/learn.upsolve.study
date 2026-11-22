@@ -34,8 +34,8 @@ import { deliverJobResult, registerLiveAgent, setTurnRunner, steerLiveChat, unre
 import { SessionModel } from "../components/session-core.ts";
 import { buildSubagentSteer } from "../src/core/contracts.ts";
 import { abortTurn, runningTurn, settledTurnResponse } from "../src/server/turn-runs.ts";
-import { chatStore } from "../src/store/chats.ts";
-import { jobStore } from "../src/store/jobs.ts";
+import { chatStore as _chatStore } from "../src/store/chats.ts";
+import { jobStore as _jobStore } from "../src/store/jobs.ts";
 import { buildAnswer, dismissedAnswer, normalizeOptions, resolveCorrect, type QuestionData } from "../src/core/question-core.ts";
 import { danglingQuestionOf, endsInDismissal, needsContinuation, newAnswerResult, newUserMessage } from "../src/core/native-messages.ts";
 import { projectView } from "../src/core/view.ts";
@@ -50,6 +50,18 @@ const steerRoute = await import("../app/api/chats/[id]/steer/route.ts");
 const streamRoute = await import("../app/api/chats/[id]/stream/route.ts");
 const recordRoute = await import("../app/api/chats/[id]/route.ts");
 import { PATHS } from "../config.ts";
+
+/** The fs adapters behind these storage ports answer synchronously today
+ *  (ports.ts `MaybePromise` / `expectSync`): they only LOOK async at the type
+ *  level. These tests drive them directly (including reassigning methods for
+ *  the persistence-failure pins), so narrow the port return types back to
+ *  their concrete shapes — the cast preserves object identity, so those mock
+ *  assignments still land on the real store the handler uses. */
+type SyncPort<T> = {
+	[K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : T[K];
+};
+const chatStore = _chatStore as SyncPort<typeof _chatStore>;
+const jobStore = _jobStore as SyncPort<typeof _jobStore>;
 
 // The key-presence turn gate (provider-key interlude, 2026-09-25): scripted
 // turns pin openrouter per chat — the gate reads env-first truth, so the
@@ -1035,7 +1047,7 @@ describe("the BYOK turn gate (no factory floor — owner, 2026-09-22)", () => {
 		// one-fs-owner policy) — READ the resolved truth, never write it.
 		// Refusal holds when the chain is empty; a record-carried strong
 		// slot legitimately opens the gate (the chain is honest both ways).
-		const expectRefusal = effectiveSettings().models.strong === null;
+		const expectRefusal = (await effectiveSettings()).models.strong === null;
 
 		const res = await handleChatRequest(post(chat.id, { type: "text", text: "teach me the solar system" }), agentFactory(scriptedTeacher(defaultLesson).engine));
 

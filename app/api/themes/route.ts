@@ -15,7 +15,7 @@ import { themeStore, ownerScoped } from "@/src/server";
 export const dynamic = "force-dynamic";
 
 async function GETHandler() {
-	return Response.json({ themes: [...BUILTIN_THEMES, ...themeStore.listThemes()] });
+	return Response.json({ themes: [...BUILTIN_THEMES, ...await themeStore.listThemes()] });
 }
 
 async function POSTHandler(request: Request) {
@@ -24,14 +24,14 @@ async function POSTHandler(request: Request) {
 	const parsed = parseThemeFile(body);
 	if (!parsed.ok) return Response.json({ error: parsed.error }, { status: 400 });
 	const base = themeIdFromName(parsed.theme.name);
-	const taken = (id: string) => isBuiltinThemeId(id) || themeStore.readTheme(id) !== null;
+	const taken = async (id: string) => isBuiltinThemeId(id) || (await themeStore.readTheme(id)) !== null;
 	let id = base;
-	for (let n = 2; taken(id); n++) {
+	for (let n = 2; await taken(id); n++) {
 		const suffix = `-${n}`;
 		id = `${base.slice(0, 64 - suffix.length).replace(/-+$/g, "")}${suffix}`;
 	}
 	if (!isThemeId(id)) return Response.json({ error: "name must produce a valid theme id" }, { status: 400 });
-	themeStore.writeTheme(id, parsed.theme);
+	await themeStore.writeTheme(id, parsed.theme);
 	return Response.json({ theme: { ...parsed.theme, id, builtin: false } }, { status: 201 });
 }
 

@@ -23,9 +23,9 @@ process.env.LH_DATA_DIR = TMP_DATA;
 
 type Post = (req: Request, ctx: { params: Promise<{ id: string }> }) => Promise<Response>;
 let POST: Post;
-let createChat: (title: string, kind?: "practice") => { id: string; title: string };
+let createChat: typeof import("../src/server/chats.ts").createChat;
 let saveMessages: (id: string, messages: unknown[]) => void;
-let getChat: (id: string) => { messages: unknown[] } | undefined;
+let getChat: typeof import("../src/server/chats.ts").getChat;
 let buildSubagentSteerFn: typeof import("../src/core/contracts.ts").buildSubagentSteer;
 
 before(async () => {
@@ -33,7 +33,7 @@ before(async () => {
 	POST = route.POST;
 	const server = await import("../src/server/chats.ts");
 	createChat = server.createChat;
-	getChat = server.getChat as typeof getChat;
+	getChat = server.getChat;
 	const { chatStore } = await import("../src/store/chats.ts");
 	saveMessages = (id, messages) => chatStore.saveMessages(id, messages as never);
 	const contracts = await import("../src/core/contracts.ts");
@@ -52,7 +52,7 @@ describe("POST /api/chats/:id/artifact-ui", () => {
 	});
 
 	it("400s a malformed body and a non-artifact message id", async () => {
-		const chat = createChat("Artifact UI guards");
+		const chat = await createChat("Artifact UI guards");
 		const steer = buildSubagentSteerFn(
 			{ id: "jg", kind: "demo", toolCallId: "cg" },
 			{ title: "T", html: "<p>x</p>", tested: true },
@@ -68,7 +68,7 @@ describe("POST /api/chats/:id/artifact-ui", () => {
 	});
 
 	it("persists ui.inverted onto the demo steer and toggles it back", async () => {
-		const chat = createChat("Artifact UI round trip");
+		const chat = await createChat("Artifact UI round trip");
 		const steer = buildSubagentSteerFn(
 			{ id: "jk", kind: "visual", toolCallId: "ck" },
 			{ svg: '<svg xmlns="http://www.w3.org/2000/svg" width="10" height="10"></svg>' },
@@ -76,11 +76,11 @@ describe("POST /api/chats/:id/artifact-ui", () => {
 		saveMessages(chat.id, [steer as never]);
 
 		assert.equal((await post(chat.id, { input: { messageId: steer.id, inverted: true } })).status, 200);
-		let saved = getChat(chat.id)!.messages as [{ details: { ui?: { inverted?: boolean } } }];
+		let saved = (await getChat(chat.id))!.messages as unknown as [{ details: { ui?: { inverted?: boolean } } }];
 		assert.equal(saved[0]!.details.ui?.inverted, true, "the flag rides the record");
 
 		assert.equal((await post(chat.id, { input: { messageId: steer.id, inverted: false } })).status, 200);
-		saved = getChat(chat.id)!.messages as [{ details: { ui?: { inverted?: boolean } } }];
+		saved = (await getChat(chat.id))!.messages as unknown as [{ details: { ui?: { inverted?: boolean } } }];
 		assert.equal(saved[0]!.details.ui?.inverted, false, "and toggles back off");
 	});
 });

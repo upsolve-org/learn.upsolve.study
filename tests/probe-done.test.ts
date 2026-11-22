@@ -33,8 +33,8 @@ after(() => {
 	}
 });
 
-function newChat(title: string): string {
-	const chat = chatStore.createChat(title);
+async function newChat(title: string): Promise<string> {
+	const chat = await chatStore.createChat(title);
 	createdChats.push(chat.id);
 	return chat.id;
 }
@@ -70,7 +70,7 @@ async function execute(tools: ReturnType<typeof probeDoneTool>, input: unknown) 
 
 describe("probe_done: the probe→planning seam", () => {
 	it("ok path: records the assessment and queues the handoff steer (deterministic id)", async () => {
-		const chatId = newChat("Probe: ok");
+		const chatId = await newChat("Probe: ok");
 		const delivered: SteerMessage[] = [];
 		const tools = probeDoneTool({ chatId, chatStore, deliver: (s) => delivered.push(s) });
 
@@ -87,7 +87,7 @@ describe("probe_done: the probe→planning seam", () => {
 	});
 
 	it("REFUSES while a question is still open — resolve it first", async () => {
-		const chatId = newChat("Probe: open question");
+		const chatId = await newChat("Probe: open question");
 		chatStore.saveMessages(chatId, [
 			assistantWithCall("m1", "quiz", { question: "q?", options: [{ label: "a" }], correctAnswer: "a" }),
 		]);
@@ -101,7 +101,7 @@ describe("probe_done: the probe→planning seam", () => {
 	});
 
 	it("REFUSES a second conclusion — probe_done fires exactly once", async () => {
-		const chatId = newChat("Probe: twice");
+		const chatId = await newChat("Probe: twice");
 		chatStore.saveMessages(chatId, [
 			assistantWithCall("m1", "probe_done", { assessment: ASSESSMENT }),
 			{
@@ -131,7 +131,7 @@ describe("probe_done: the probe→planning seam", () => {
 	});
 
 	it("a deliver failure never fails the call — the assessment records; the wake is recoverable-by-design", async () => {
-		const chatId = newChat("Probe: deliver crash");
+		const chatId = await newChat("Probe: deliver crash");
 		const tools = probeDoneTool({
 			chatId,
 			chatStore,
@@ -171,7 +171,7 @@ const incompleteProbes: Array<[string, () => LhMessage[]]> = [
 describe("probe completion: matched successful results only (PR130 foundation)", () => {
 	for (const [name, messages] of incompleteProbes) {
 		it(`${name} keeps probing open and allows a fresh conclusion`, async () => {
-			const chatId = newChat(`Probe recovery: ${name}`);
+			const chatId = await newChat(`Probe recovery: ${name}`);
 			const before = messages();
 			const snapshot = structuredClone(before);
 			chatStore.saveMessages(chatId, before);
@@ -182,7 +182,7 @@ describe("probe completion: matched successful results only (PR130 foundation)",
 			assert.equal((await execute(tools, { assessment: ASSESSMENT })).ok, true);
 			assert.equal(delivered.length, 1, "only the fresh invocation queues a handoff");
 			assert.deepEqual(before, snapshot, "the scans never mutate history");
-			assert.deepEqual(chatStore.getChat(chatId)!.messages, snapshot, "the tool does not delete or replay saved attempts");
+			assert.deepEqual((await chatStore.getChat(chatId))!.messages, snapshot, "the tool does not delete or replay saved attempts");
 		});
 	}
 

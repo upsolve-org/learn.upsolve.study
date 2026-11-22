@@ -122,7 +122,7 @@ async function POSTHandler(request: Request) {
 					results.push({ filePath, requestIndex, outcome: "failed", ok: false, error: notes.error });
 					continue;
 				}
-				sourceDirectory.registerImport(filePath);
+				await sourceDirectory.registerImport(filePath);
 				const stats = await extraction.importNotes({ filePath, text: notes.text });
 				results.push({ filePath, requestIndex, outcome: "completed", ok: true, stats, ...(notes.notice ? { notice: notes.notice } : {}) });
 			} catch (err) {

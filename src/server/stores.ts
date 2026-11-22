@@ -19,6 +19,7 @@ import { jobStore } from "../store/jobs.ts";
 import { settingsStore } from "../store/settings.ts";
 import { themeStore } from "../store/themes.ts";
 import { resolveSettings, type EffectiveSettings } from "../core/settings-resolution.ts";
+import { FACTORY_SETTINGS, type UserSettings } from "../core/settings.ts";
 import { runAsOwner, currentOwnerId } from "../core/owner-scope.ts";
 import { syncCustomProvider } from "./custom-provider.ts";
 import { configureWorkerRequestAdmission } from "../agent/worker-request-admission.ts";
@@ -71,12 +72,80 @@ export function activeOwner(): string | undefined {
  * fresh on every call — the record is a small file and turns are rare, so
  * no caching layer (stale toggles after a settings PUT would be worse).
  */
-export function effectiveSettings(): EffectiveSettings {
-	return resolveSettings(settingsStore.readSettings());
+/**
+ * Cached so the synchronous worker-admission policy seam can read it.
+ * Refreshed on every effectiveSettings() read (a settings PUT re-reads before
+ * the next turn), and bootstrapped from the factory so the very first read
+ * is valid even before settings are loaded.
+ */
+let cachedWorkerConcurrency: number = FACTORY_SETTINGS.agent.workerRequestConcurrency;
+
+/**
+ * Per-owner last-known settings record. Several synchronous seams (cache
+ * retention, worker concurrency, search gating, Claude Code admission,
+ * background consent) cannot await an async store adapter, so they read
+ * through cachedSettings() instead. Keyed by owner — tenancy means one set
+ * of store objects serves every learner, and a sync read must never observe
+ * another owner's record.
+ */
+const settingsByOwner = new Map<string, UserSettings | null>();
+const settingsCacheKey = (): string => currentOwnerId() ?? "__default__";
+/** Once a read returns a promise we're on an async backend; from then on the
+ *  sync seams must use the cache (reading on every call would re-query the
+ *  database). With a sync adapter we keep the historical read-fresh behavior. */
+let settingsAsync = false;
+
+/** Refresh the per-owner cache from the authoritative read. Writes call
+ *  invalidateCachedSettings() first so the next read is always current. */
+export async function effectiveSettings(): Promise<EffectiveSettings> {
+	const record = await stores.settingsStore.readSettings();
+	settingsByOwner.set(settingsCacheKey(), record);
+	const effective = resolveSettings(record);
+	cachedWorkerConcurrency = effective.agent.workerRequestConcurrency;
+	return effective;
+}
+
+/**
+ * The last-known settings record for the current owner, for seams that must
+ * stay synchronous. Never throws under an async backend: when the adapter
+ * returns a promise, a background `.then` populates the cache and this call
+ * returns null (the honest "not loaded yet" answer) rather than failing
+ * loudly. Sync adapters populate immediately.
+ */
+export function cachedSettings(): UserSettings | null {
+	const key = settingsCacheKey();
+	if (settingsAsync) {
+		const cached = settingsByOwner.get(key);
+		if (cached !== undefined) return cached ?? null;
+	}
+	const value = stores.settingsStore.readSettings();
+	if (value !== null && typeof value === "object" && typeof (value as PromiseLike<UserSettings | null>).then === "function") {
+		settingsAsync = true;
+		void (value as Promise<UserSettings | null>).then(
+			(resolved) => { settingsByOwner.set(key, resolved); },
+			() => { /* a failed background read leaves this owner uncached */ },
+		);
+		return settingsByOwner.get(key) ?? null;
+	}
+	const sync = value as UserSettings | null;
+	settingsByOwner.set(key, sync);
+	return sync;
+}
+
+/** Drop the current owner's cached record after a settings write. The route
+ *  then calls effectiveSettings() to repopulate from the authoritative read. */
+export function invalidateCachedSettings(): void {
+	settingsByOwner.delete(settingsCacheKey());
+}
+
+/** Swap one or more adapters (PR 5 Postgres wiring / tests). The object stays
+ *  identity-stable — every consumer reads through `stores` at call time. */
+export function configureStores(next: Partial<Stores>): void {
+	Object.assign(stores, next);
 }
 
 // Runtime policy is supplied at the composition root, never imported by agents.
-configureWorkerRequestAdmission(() => effectiveSettings().agent.workerRequestConcurrency);
+configureWorkerRequestAdmission(() => cachedWorkerConcurrency);
 
 // Boot: register the custom endpoint (when configured) into piModels(); the
 // POST /api/custom-provider route re-syncs after every connect.

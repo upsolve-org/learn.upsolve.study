@@ -10,7 +10,7 @@ import { activityFeed, ownerScoped } from "@/src/server";
 export const dynamic = "force-dynamic";
 
 async function GETHandler() {
-	return Response.json(activityFeed());
+	return Response.json(await activityFeed());
 }
 
 // Tenancy: the body runs inside the caller's owner scope.

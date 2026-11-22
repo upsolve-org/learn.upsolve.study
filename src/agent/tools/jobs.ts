@@ -80,15 +80,15 @@ export const pdfInputSchema = Type.Object({
  * The per-call dispatch: create the job (idempotent by toolCallId), fire the
  * runner, and return the ack. Shared by all three tools — only kind differs.
  */
-function dispatch(
+async function dispatch(
 	ctx: JobToolContext,
 	kind: JobRecord["kind"],
 	toolCallId: string,
 	ack: string,
 	input: ResearchInput | DemoInput | VisualInput | PdfInput,
-): string {
-	const existing = ctx.jobStore.findJobByToolCallId(ctx.chatId, toolCallId);
-	const job = existing ?? ctx.jobStore.createJob({ kind, chatId: ctx.chatId, toolCallId, input });
+): Promise<string> {
+	const existing = await ctx.jobStore.findJobByToolCallId(ctx.chatId, toolCallId);
+	const job = existing ?? await ctx.jobStore.createJob({ kind, chatId: ctx.chatId, toolCallId, input });
 	if (!existing) ctx.spawn(job, input);
 	return `Dispatched (job ${job.id}). ${ack}`;
 }
@@ -146,8 +146,8 @@ export function jobTools(ctx: JobToolContext): Record<string, AgentTool<any>> {
 			label: "research",
 			description: RESEARCH_DESCRIPTION,
 			parameters: researchInputSchema,
-			execute: serverExecute("research", researchInputSchema, (input, { toolCallId }) =>
-				dispatch(ctx, "research", toolCallId, RESEARCH_ACK, input),
+			execute: serverExecute("research", researchInputSchema, async (input, { toolCallId }) =>
+				await dispatch(ctx, "research", toolCallId, RESEARCH_ACK, input),
 			),
 		},
 		demo: {
@@ -155,7 +155,7 @@ export function jobTools(ctx: JobToolContext): Record<string, AgentTool<any>> {
 			label: "demo",
 			description: DEMO_DESCRIPTION,
 			parameters: demoInputSchema,
-			execute: serverExecute("demo", demoInputSchema, (input, { toolCallId }) => dispatch(ctx, "demo", toolCallId, DEMO_ACK, input)),
+			execute: serverExecute("demo", demoInputSchema, async (input, { toolCallId }) => await dispatch(ctx, "demo", toolCallId, DEMO_ACK, input)),
 		},
 		visual: {
 			name: "visual",
@@ -165,9 +165,9 @@ export function jobTools(ctx: JobToolContext): Record<string, AgentTool<any>> {
 			// An unusable image path fails the CALL (no job is created), so the
 			// teacher corrects the path in the same turn.
 			execute: serverExecute("visual", visualInputSchema, async (input, { toolCallId, signal }) => {
-				if (!ctx.jobStore.findJobByToolCallId(ctx.chatId, toolCallId) && input.image !== undefined) await checkLearnerImage(input.image);
+				if (!(await ctx.jobStore.findJobByToolCallId(ctx.chatId, toolCallId)) && input.image !== undefined) await checkLearnerImage(input.image);
 				signal?.throwIfAborted();
-				return dispatch(ctx, "visual", toolCallId, VISUAL_ACK, input);
+				return await dispatch(ctx, "visual", toolCallId, VISUAL_ACK, input);
 			}),
 		},
 		pdf: {
@@ -175,11 +175,11 @@ export function jobTools(ctx: JobToolContext): Record<string, AgentTool<any>> {
 			label: "pdf",
 			description: PDF_DESCRIPTION,
 			parameters: pdfInputSchema,
-			execute: serverExecute("pdf", pdfInputSchema, (input, { toolCallId }) => {
+			execute: serverExecute("pdf", pdfInputSchema, async (input, { toolCallId }) => {
 				// Admission uses the current boundary; the queued reader checks
 				// again at job start. Preserve raw args/history and replay IDs.
-				if (!ctx.jobStore.findJobByToolCallId(ctx.chatId, toolCallId)) resolveSourcePath(input.path);
-				return dispatch(ctx, "pdf", toolCallId, PDF_ACK, input);
+				if (!(await ctx.jobStore.findJobByToolCallId(ctx.chatId, toolCallId))) resolveSourcePath(input.path);
+				return await dispatch(ctx, "pdf", toolCallId, PDF_ACK, input);
 			}),
 		},
 	};

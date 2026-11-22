@@ -68,8 +68,8 @@ import {
 import { isJobLive, registerJobAbort, unregisterJobAbort } from "../src/agent/subagents/aborts.ts";
 import { beginTurn, endTurn, isTurnRunning } from "../src/server/turn-liveness.ts";
 import { persistTurn } from "../src/server/turn-service.ts";
-import { chatStore } from "../src/store/chats.ts";
-import { jobStore } from "../src/store/jobs.ts";
+import { chatStore as _chatStore } from "../src/store/chats.ts";
+import { jobStore as _jobStore } from "../src/store/jobs.ts";
 import { createJobRunner, pdfModelOverride, researchModelOverride } from "../src/agent/subagents/runner.ts";
 import { providerKeyMissing, type ModelSlotName } from "../src/core/settings.ts";
 import type { PiEngine } from "../src/agent/models.ts";
@@ -81,6 +81,18 @@ import type { LhMessage } from "../src/core/native-messages.ts";
 import type { SteerInput, TurnInput } from "../src/core/input-events.ts";
 
 const JOBS_DIR = path.join(PATHS.data, "jobs");
+
+/** The fs adapters behind these storage ports answer synchronously today
+ *  (ports.ts `MaybePromise` / `expectSync`): they only LOOK async at the type
+ *  level. These tests drive them directly (including reassigning methods for
+ *  the persistence-failure pins), so narrow the port return types back to
+ *  their concrete shapes — the cast preserves object identity, so those mock
+ *  assignments still land on the real store the runner uses. */
+type SyncPort<T> = {
+	[K in keyof T]: T[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : T[K];
+};
+const chatStore = _chatStore as SyncPort<typeof _chatStore>;
+const jobStore = _jobStore as SyncPort<typeof _jobStore>;
 
 const createdChats: string[] = [];
 
@@ -1325,10 +1337,10 @@ function delay(ms: number): Promise<void> {
 // ─── persist id hygiene (the duplicate-empty-key bug) ────────────────────────
 
 describe("persistTurn (native history, Wave B)", () => {
-	it("stamps EMPTY ids (pi minted no id) at the canonical write and preserves existing ones", () => {
+	it("stamps EMPTY ids (pi minted no id) at the canonical write and preserves existing ones", async () => {
 		const chat = chatStore.createChat("Test: persist stamps ids");
 		trackChat(chat.id);
-		const stamped = persistTurn(chatStore, chat.id, 0, [
+		const stamped = await persistTurn(chatStore, chat.id, 0, [
 			{ id: "", role: "user", content: "wake turn", timestamp: 1 } as never,
 			{
 				id: "msg_kept",
@@ -1350,7 +1362,7 @@ describe("persistTurn (native history, Wave B)", () => {
 		assert.ok(record.messages.every((m) => m.id && m.id.length > 0), "no empty ids survive persist");
 	});
 
-	it("baseCount slices the turn's own messages (the agent's state is append-only across turns)", () => {
+	it("baseCount slices the turn's own messages (the agent's state is append-only across turns)", async () => {
 		const chat = chatStore.createChat("Test: persist slices the turn tail");
 		trackChat(chat.id);
 		chatStore.saveMessages(chat.id, [
@@ -1373,17 +1385,17 @@ describe("persistTurn (native history, Wave B)", () => {
 				timestamp: 1,
 			} as never,
 		];
-		const stamped = persistTurn(chatStore, chat.id, 1, state, false);
+		const stamped = await persistTurn(chatStore, chat.id, 1, state, false);
 		assert.equal(stamped.length, 1, "only the turn's new tail persists");
 		const record = chatStore.getChat(chat.id)!;
 		assert.equal(record.messages.length, 2, "the base record is untouched — append-only");
 		assert.match(record.messages[1]!.id, /^msg_/);
 	});
 
-	it("drops clean question placeholders, keeps errored ones (fork 1: the record ends at the unanswered call)", () => {
+	it("drops clean question placeholders, keeps errored ones (fork 1: the record ends at the unanswered call)", async () => {
 		const chat = chatStore.createChat("Test: persist placeholder filtering");
 		trackChat(chat.id);
-		const stamped = persistTurn(chatStore, chat.id, 0, [
+		const stamped = await persistTurn(chatStore, chat.id, 0, [
 			{
 				id: "",
 				role: "assistant",
@@ -1600,7 +1612,7 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 			const settled = runner.runJob(jobId, RESEARCH_INPUT);
 			await waitFor(() => jobStore.getJob(jobId)!.activity === "researching", 8000, "loop started");
 
-			const outcome = abortJob(jobId);
+			const outcome = await abortJob(jobId);
 			assert.ok(outcome.ok);
 			const killed = jobStore.getJob(jobId)!;
 			assert.equal(killed.status, "error", "flipped synchronously — the poll sees it at once");
@@ -1632,7 +1644,7 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 		try {
 			const settled = runner.runJob(jobId, RESEARCH_INPUT);
 			await waitFor(() => (jobStore.getJob(jobId)!.usage?.steps ?? 0) === 1, 8000, "first step folded");
-			abortJob(jobId);
+			await abortJob(jobId);
 			await settled;
 			const job = jobStore.getJob(jobId)!;
 			assert.equal(job.status, "error");
@@ -1671,7 +1683,7 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 		});
 		assert.equal(jobStore.getJob(job.id)!.delivery?.status, "pending");
 
-		const outcome = abortJob(job.id);
+		const outcome = await abortJob(job.id);
 		assert.deepEqual(outcome, { ok: false, reason: "not_running" });
 		assert.equal(jobStore.getJob(job.id)!.status, "done");
 		assert.equal(jobStore.getJob(job.id)!.error, undefined);
@@ -1683,14 +1695,14 @@ describe("abort (src/server/jobs.ts abortJob)", () => {
 		assert.equal(jobStore.getJob(job.id)!.status, "done");
 	});
 
-	it("outcome reasons: not_found for unknown, not_running for settled jobs", () => {
-		assert.deepEqual(abortJob("job_does_not_exist"), { ok: false, reason: "not_found" });
+	it("outcome reasons: not_found for unknown, not_running for settled jobs", async () => {
+		assert.deepEqual(await abortJob("job_does_not_exist"), { ok: false, reason: "not_found" });
 		const chat = chatStore.createChat("Test: abort settled job");
 		trackChat(chat.id);
 		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "call-abort4" });
 		trackJob(job.id);
 		jobStore.updateJob(job.id, { status: "done", activity: "delivered" });
-		assert.deepEqual(abortJob(job.id), { ok: false, reason: "not_running" });
+		assert.deepEqual(await abortJob(job.id), { ok: false, reason: "not_running" });
 	});
 });
 
@@ -1722,7 +1734,7 @@ describe("stale-job recovery sweep (liveness-gated)", () => {
 		return { chatId: chat.id, jobId: job.id };
 	}
 
-	it("a running record with a LIVE loop registration is never recovered — however old (the double-run guard)", () => {
+	it("a running record with a LIVE loop registration is never recovered — however old (the double-run guard)", async () => {
 		const { jobId } = orphanJob();
 		// Backdate the record well past every plausible in-flight run: age
 		// alone must NOT trigger recovery anymore.
@@ -1738,7 +1750,7 @@ describe("stale-job recovery sweep (liveness-gated)", () => {
 			respawnedIds.push(id);
 		});
 		resetSweepThrottle();
-		recoverStaleJobs();
+		await recoverStaleJobs();
 		assert.ok(!respawnedIds.includes(jobId), "a live loop is provably executing — no respawn beside it");
 		assert.equal(jobStore.getJob(jobId)!.activity, "starting", "the record is untouched");
 		// Hermetic teardown: settle + unregister so later sweeps in THIS suite
@@ -1747,7 +1759,7 @@ describe("stale-job recovery sweep (liveness-gated)", () => {
 		unregisterJobAbort(jobId);
 	});
 
-	it("a running record WITHOUT a registration is an orphan: the loop is re-spawned immediately (no age wait)", () => {
+	it("a running record WITHOUT a registration is an orphan: the loop is re-spawned immediately (no age wait)", async () => {
 		const { jobId } = orphanJob();
 		// JURISDICTIONAL (see above): foreign respawns may interleave under
 		// the full suite — ours must be among them, at once.
@@ -1756,7 +1768,7 @@ describe("stale-job recovery sweep (liveness-gated)", () => {
 			respawnedIds.push(id);
 		});
 		resetSweepThrottle();
-		recoverStaleJobs();
+		await recoverStaleJobs();
 		assert.ok(respawnedIds.includes(jobId), "the orphan's loop is re-spawned at once");
 		assert.equal(jobStore.getJob(jobId)!.activity, "recovering: re-running");
 		// Hermetic teardown (see above) — the respawned loop is the TEST's
@@ -1772,7 +1784,7 @@ describe("stale-job recovery sweep (liveness-gated)", () => {
 			return 200;
 		});
 		resetSweepThrottle();
-		recoverStaleJobs();
+		await recoverStaleJobs();
 		await waitFor(() => fired > 0, 8000, "recovery wake fired");
 		await waitFor(() => jobStore.getJob(jobId)!.status !== "running", 8000, "orphan settled after re-delivery");
 		assert.equal(jobStore.getJob(jobId)!.status, "done");

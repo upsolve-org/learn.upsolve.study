@@ -81,7 +81,7 @@ test("send launches server-owned work promptly, preserves native content, dedupl
 	await assert.rejects(f.service.run(id, { requestId: "empty" }), /send.*explicitPrompt/);
 	const accepted = await f.service.send(id, "Plugin-authored task", { requestId: "one", purpose: "background" });
 	assert.equal(accepted.status, "running");
-	assert.equal(f.store.get(id)?.messages[0]?.role, "user");
+	assert.equal((await f.store.get(id))?.messages[0]?.role, "user");
 	assert.equal((await f.service.send(id, "retry", { requestId: "one" })).messages.length, 1);
 	await assert.rejects(f.service.send(id, "concurrent", { requestId: "two" }), /busy/);
 	let views = 0;
@@ -91,7 +91,7 @@ test("send launches server-owned work promptly, preserves native content, dedupl
 	const final = await settled(f.service, id);
 	assert.equal(final.status, "idle");
 	assert.deepEqual(final.messages.at(-1), native);
-	assert.deepEqual(f.store.get(id)?.messages.at(-1), native);
+	assert.deepEqual((await f.store.get(id))?.messages.at(-1), native);
 	assert.equal(views, 1);
 	assert.equal(billed, 3);
 	assert.deepEqual(f.purposes, ["background"]);
@@ -181,7 +181,7 @@ test("calls are persisted before side effects and completed siblings checkpoint 
 	f.service.register({ ...f.definition, tools: [
 		{ name: "quick", description: "Quick", parameters: Type.Object({}), execute: async () => {
 			executions++;
-			const record = f.store.list()[0]!;
+			const record = (await f.store.list())[0]!;
 			assert.equal(record.status, "running");
 			assert.equal(record.messages.at(-1)?.role, "assistant");
 			return result;
@@ -195,10 +195,10 @@ test("calls are persisted before side effects and completed siblings checkpoint 
 	await entered.promise;
 	await waitFor(f.service, id, (s) => s.messages.some((m) => m.role === "toolResult" && m.toolCallId === "quick"));
 	await f.service.dispose();
-	const before = f.store.get(id)!;
+	const before = (await f.store.get(id))!;
 	assert.equal(before.status, "interrupted");
 	gate.resolve(); await tick(); await tick();
-	assert.deepEqual(f.store.get(id), before, "no late writes from a cancelled tool");
+	assert.deepEqual(await f.store.get(id), before, "no late writes from a cancelled tool");
 	const next = scripted([output()]);
 	const restarted = createPluginAgentService({ store: f.store, engineFor: () => next.engine });
 	t.after(() => restarted.dispose());
@@ -220,7 +220,7 @@ test("restart interrupts RUNNING records without rerunning tools; waiting inputs
 	await f.service.send(id, "Go", { requestId: "start" });
 	await settled(f.service, id);
 	await f.service.dispose();
-	const saved = f.store.get(id)!;
+	const saved = (await f.store.get(id))!;
 	const running: PluginAgentRecord = { ...saved, id: "crashed", status: "running" };
 	f.store.save(running);
 	const next = scripted([output()]);
@@ -230,7 +230,7 @@ test("restart interrupts RUNNING records without rerunning tools; waiting inputs
 	assert.equal(restarted.get("crashed").pending.length, 1);
 	assert.deepEqual(restarted.get(id), saved);
 	await assert.rejects(restarted.answer(id, "ask", "answer", { requestId: "answer" }), /definition unavailable/);
-	assert.deepEqual(f.store.get(id), saved);
+	assert.deepEqual(await f.store.get(id), saved);
 	restarted.register(d);
 	await restarted.answer(id, "ask", "answer", { requestId: "answer" });
 	assert.equal((await settled(restarted, id)).status, "idle");
@@ -247,7 +247,7 @@ test("persistence failure rejects acceptance and prevents inference and false ac
 	fail = true;
 	await assert.rejects(service.send(id, "Go", { requestId: "rejected" }), /persistence failed/);
 	assert.equal(f.contexts.length, 0);
-	assert.deepEqual(f.store.get(id)?.acceptedInputs, []);
+	assert.deepEqual((await f.store.get(id))?.acceptedInputs, []);
 	assert.deepEqual(service.get(id).acceptedInputs, []);
 	assert.equal(service.get(id).status, "error");
 	await assert.rejects(service.send(id, "Retry", { requestId: "another" }), /persistence failed/);
@@ -268,7 +268,7 @@ test("assistant persistence barrier fails closed before side effects", async (t)
 	assert.equal(final.status, "error");
 	assert.match(final.error!, /persistence failed/);
 	assert.equal(sideEffects, 0);
-	assert.equal(f.store.get(id)?.messages.length, 1);
+	assert.equal((await f.store.get(id))?.messages.length, 1);
 });
 
 test("tool completion checkpoint failure prevents another provider request", async (t) => {
@@ -285,7 +285,7 @@ test("tool completion checkpoint failure prevents another provider request", asy
 	assert.equal((await settled(service, id)).status, "error");
 	assert.equal(sideEffects, 1);
 	assert.equal(f.contexts.length, 1);
-	assert.equal(f.store.get(id)?.messages.at(-1)?.role, "assistant");
+	assert.equal((await f.store.get(id))?.messages.at(-1)?.role, "assistant");
 });
 
 test("unregister, activation cancellation, and delayed engine disposal cannot launch late work", async (t) => {
@@ -299,10 +299,10 @@ test("unregister, activation cancellation, and delayed engine disposal cannot la
 		if (mode === "unregister") unregister();
 		else if (mode === "signal") signal.abort();
 		else await f.service.dispose();
-		const before = f.store.get(id);
+		const before = await f.store.get(id);
 		assert.equal(before?.status, "interrupted");
 		gate.resolve(f.engine); await tick(); await tick();
-		assert.deepEqual(f.store.get(id), before);
+		assert.deepEqual(await f.store.get(id), before);
 		assert.equal(f.contexts.length, 0);
 		if (mode !== "unregister") assert.throws(() => f.service.create("helper"), /unavailable/);
 	}

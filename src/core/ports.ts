@@ -34,20 +34,40 @@ import type {
 import type { UserSettings } from "./settings.ts";
 import type { Theme, ThemeFile } from "./themes.ts";
 
+/** A port call may be served by an in-process fs adapter or by an async
+ *  backend (SQLite, remote store). Every storage method may return a promise;
+ *  callers await it. Pure in-memory helpers stay synchronous. */
+export type MaybePromise<T> = T | Promise<T>;
+
+/** Bridge a MaybePromise port call into the few seams that must stay
+ *  synchronous (the in-process plugin record services and the synchronous
+ *  graph-tool factory). Every adapter shipped today answers synchronously;
+ *  if an async backend is ever wired into such a seam, this fails LOUDLY
+ *  instead of leaking a rejected promise. The rejection is still observed
+ *  so it can never surface as an unhandled rejection. */
+export function expectSync<T>(value: MaybePromise<T>, operation: string): T {
+	if (value !== null && typeof value === "object" && typeof (value as PromiseLike<T>).then === "function") {
+		const promise = value as Promise<T>;
+		void promise.then(undefined, () => { /* observed here, surfaced by the throw below */ });
+		throw new Error(`${operation} must be synchronous at this seam`);
+	}
+	return value as T;
+}
+
 // ─── Plugin sessions — plugin-owned data, separate from core chats ──────────
 
 /** One writer per plugin directory. Failed atomic replacements must throw. */
 export interface PluginAgentRecordStore {
-	list(): PluginAgentRecord[];
-	get(id: string): PluginAgentRecord | null;
-	save(record: PluginAgentRecord): void;
+	list(): MaybePromise<PluginAgentRecord[]>;
+	get(id: string): MaybePromise<PluginAgentRecord | null>;
+	save(record: PluginAgentRecord): MaybePromise<void>;
 }
 
 /** One writer per plugin task directory; accepted results require an atomic save. */
 export interface PluginTaskRecordStore {
-	list(): PluginTaskRecord[];
-	get(id: string): PluginTaskRecord | null;
-	save(record: PluginTaskRecord): void;
+	list(): MaybePromise<PluginTaskRecord[]>;
+	get(id: string): MaybePromise<PluginTaskRecord | null>;
+	save(record: PluginTaskRecord): MaybePromise<void>;
 }
 
 // ─── ChatStore — the session record's home (data/chats) ─────────────────────
@@ -56,37 +76,37 @@ export interface ChatStore {
 	/** Create a session record (persisted immediately). */
 	/** Create a session record; kind "practice" marks a practice session
 	 *  (absent = teach, the default). */
-	createChat(title: string, kind?: "practice"): ChatRecord;
+	createChat(title: string, kind?: "practice"): MaybePromise<ChatRecord>;
 	/** The full record, or null if unknown id / corrupt file. */
-	getChat(id: string): ChatRecord | null;
+	getChat(id: string): MaybePromise<ChatRecord | null>;
 	/** All sessions, newest activity first (the sidebar's list view). */
-	listChats(): ChatSummary[];
+	listChats(): MaybePromise<ChatSummary[]>;
 	/** Persist the full native message list (the record IS the agent
 	 * state — Wave B, owner-approved 2026-09-26). */
-	saveMessages(id: string, messages: LhMessage[]): void;
+	saveMessages(id: string, messages: LhMessage[]): MaybePromise<void>;
 	/** Save a processed picture once, without changing conversation activity/order. */
-	saveImageSnapshot(id: string, snapshotId: string, image: ImageSnapshot): void;
+	saveImageSnapshot(id: string, snapshotId: string, image: ImageSnapshot): MaybePromise<void>;
 	/** Persist the session plan tree (plan tools call this in execute). */
-	saveTree(id: string, tree: PlanTree): void;
+	saveTree(id: string, tree: PlanTree): MaybePromise<void>;
 	/** Append one usage entry to the record's turn log (the money channel,
 	 * 2026-09): idempotent per turn id — each request carries its own, so
 	 * a turn persisted twice appends once while continuation turns (which
 	 * share a response message id) each keep their usage. */
-	appendTurnUsage(id: string, entry: TurnUsage): void;
+	appendTurnUsage(id: string, entry: TurnUsage): MaybePromise<void>;
 	/** Append one extraction-run usage entry — idempotent per startedAt. */
-	appendExtractionUsage(id: string, entry: ExtractionRunUsage): void;
+	appendExtractionUsage(id: string, entry: ExtractionRunUsage): MaybePromise<void>;
 	/** Persist the per-chat model/thinking settings (the model control).
 	 *  Replace-whole: the picker sends the complete settings object. */
-	saveSettings(id: string, settings: ChatSettings): void;
+	saveSettings(id: string, settings: ChatSettings): MaybePromise<void>;
 	/** Rename a session (the header's click-to-edit title, 2026-09-17).
 	 * Like saveSettings: a rename is NOT conversation activity — updatedAt
 	 * stays put, so sidebar order never churns on a rename. */
-	renameChat(id: string, title: string): ChatRecord;
+	renameChat(id: string, title: string): MaybePromise<ChatRecord>;
 	/** Delete the session record entirely (session-deletion wave 6, owner
 	 *  2026-09-22). False when the id is unknown. The graph-ledger purge and
 	 *  job cleanup are the caller's choreography (core/graph-deletion.ts +
 	 *  the DELETE route), not the store's. */
-	deleteChat(id: string): boolean;
+	deleteChat(id: string): MaybePromise<boolean>;
 	/** Read-modify-write the record's side-question threads (inline
 	 *  clarification threads, 2026-11-02) in one synchronous section — the
 	 *  same per-field discipline as the usage logs, so it never clobbers a
@@ -94,7 +114,7 @@ export interface ChatStore {
 	 *  the chat is unknown (deleted mid-answer is not an error). Silent: the
 	 *  side-chat service announces its own changes. Not conversation
 	 *  activity — updatedAt stays put. */
-	updateSideChats(id: string, update: (threads: SideChatThread[]) => SideChatThread[]): SideChatThread[] | null;
+	updateSideChats(id: string, update: (threads: SideChatThread[]) => SideChatThread[]): MaybePromise<SideChatThread[] | null>;
 }
 
 // ─── GraphStore — the append-only evidence ledgers (data/graph) ──────────────
@@ -107,44 +127,44 @@ export interface ChatStore {
 
 export interface GraphStore {
 	/** Append one GraphNode (ids are unique — no merging needed). */
-	appendNode(node: GraphNode): void;
+	appendNode(node: GraphNode): MaybePromise<void>;
 	/** Raw node lines in append order. */
-	readNodes(): GraphNode[];
+	readNodes(): MaybePromise<GraphNode[]>;
 
 	/** Append one chain ASSERTION (a second session asserting the same
 	 *  (premises, conclusion) appends another line; readers merge). */
-	appendChain(assertion: GraphChain): void;
-	readChains(): GraphChain[];
+	appendChain(assertion: GraphChain): MaybePromise<void>;
+	readChains(): MaybePromise<GraphChain[]>;
 
 	/** Append one emission checkpoint. */
-	appendCheckpoint(checkpoint: SessionCheckpoint): void;
-	readCheckpoints(): SessionCheckpoint[];
+	appendCheckpoint(checkpoint: SessionCheckpoint): MaybePromise<void>;
+	readCheckpoints(): MaybePromise<SessionCheckpoint[]>;
 	/** Message-granular extraction coverage (vision-extraction-coverage.md):
 	 *  append-only; one line per covered message. The chat-extraction
 	 *  checkpoint — "uncovered" is derived from these, never tracked. */
-	appendCoverage(entry: CoverageEntry): void;
-	readCoverage(): CoverageEntry[];
+	appendCoverage(entry: CoverageEntry): MaybePromise<void>;
+	readCoverage(): MaybePromise<CoverageEntry[]>;
 
 	/** Append one cluster-naming run's usage (graph-global money channel) —
 	 *  idempotent per startedAt. */
 
 	/** Upsert one imported-notes source record (config.SOURCES_FILE — a
 	 *  JSON map, not a ledger; an upsert keeps the existing usage log). */
-	upsertSource(source: NotesSource): void;
+	upsertSource(source: NotesSource): MaybePromise<void>;
 	/** Every notes source record, by id order-insensitive. */
-	readSources(): NotesSource[];
+	readSources(): MaybePromise<NotesSource[]>;
 	/** Remove imported-source bookkeeping only; the service removes graph traces first. */
-	deleteSources(ids: ReadonlySet<string>): number;
+	deleteSources(ids: ReadonlySet<string>): MaybePromise<number>;
 	/** Append one run's usage to a source record — idempotent per
 	 *  startedAt, mirroring ChatRecord.extractions. */
-	appendSourceUsage(id: string, entry: ExtractionRunUsage): void;
+	appendSourceUsage(id: string, entry: ExtractionRunUsage): MaybePromise<void>;
 
 	/** The layout ledger (config.POSITIONS_FILE): nodeId → resting {x,y}.
 	 *  WRITTEN ONLY by the incremental settle after a merge (core/layout.ts
 	 *  settleGraphLayout) — read-only for everything else. */
-	readPositions(): Record<string, Position>;
+	readPositions(): MaybePromise<Record<string, Position>>;
 	/** Replace the whole ledger (the settle is a full-graph computation). */
-	writePositions(positions: Record<string, Position>): void;
+	writePositions(positions: Record<string, Position>): MaybePromise<void>;
 
 	/** THE DESTRUCTIVE SEAM (session-deletion wave 6, owner 2026-09-22 —
 	 *  the first non-append operation on these ledgers): atomically
@@ -159,13 +179,13 @@ export interface GraphStore {
 		chains?: GraphChain[];
 		coverage?: CoverageEntry[];
 		checkpoints?: SessionCheckpoint[];
-	}): void;
+	}): MaybePromise<void>;
 }
 
 /** Separate from graph ledgers and source identity, for future shared views. */
 export interface SourceOrganizationStore {
-	read(): import("./source-organization.ts").SourceOrganization;
-	write(state: import("./source-organization.ts").SourceOrganization): void;
+	read(): MaybePromise<import("./source-organization.ts").SourceOrganization>;
+	write(state: import("./source-organization.ts").SourceOrganization): MaybePromise<void>;
 }
 
 // ─── JobStore — background sub-agent jobs (data/jobs) ─────────────────────────
@@ -187,19 +207,19 @@ export type JobPatch = Partial<Omit<JobRecord, "id" | "kind" | "chatId" | "toolC
 
 export interface JobStore {
 	/** Create a running job (keyed by toolCallId for spawn dedup). */
-	createJob(init: CreateJobInit): JobRecord;
-	getJob(id: string): JobRecord | null;
+	createJob(init: CreateJobInit): MaybePromise<JobRecord>;
+	getJob(id: string): MaybePromise<JobRecord | null>;
 	/** Merge a patch into the record; null if unknown id. */
-	updateJob(id: string, patch: JobPatch): JobRecord | null;
+	updateJob(id: string, patch: JobPatch): MaybePromise<JobRecord | null>;
 	/** All jobs for a chat, newest activity first. */
-	listJobs(chatId: string): JobRecord[];
+	listJobs(chatId: string): MaybePromise<JobRecord[]>;
 	/** The job fulfilling a given tool part, if any (spawn-hook dedup). */
-	findJobByToolCallId(chatId: string, toolCallId: string): JobRecord | null;
+	findJobByToolCallId(chatId: string, toolCallId: string): MaybePromise<JobRecord | null>;
 	/** Delete every job record for a chat — running or finished (session-
 	 *  deletion wave 6). Returns how many files were removed. The deletion
 	 *  route refuses while jobs are still running, so by the time this
 	 *  fires every record is terminal. */
-	deleteJobsForChat(chatId: string): number;
+	deleteJobsForChat(chatId: string): MaybePromise<number>;
 }
 
 // ─── SettingsStore — THE user settings record (settings-storage wave, 2026-09-19) ──
@@ -215,9 +235,9 @@ export interface JobStore {
  */
 export interface SettingsStore {
 	/** The sanitized record, or null when none exists yet (first boot). */
-	readSettings(): UserSettings | null;
+	readSettings(): MaybePromise<UserSettings | null>;
 	/** Persist the record (replace-whole). Callers pass a SANITIZED record. */
-	writeSettings(settings: UserSettings): void;
+	writeSettings(settings: UserSettings): MaybePromise<void>;
 }
 
 // ─── ThemeStore — imported custom themes (theme wave, 2026-11-04) ──────────
@@ -230,13 +250,13 @@ export interface SettingsStore {
  */
 export interface ThemeStore {
 	/** Every valid custom theme on disk, sorted by id. */
-	listThemes(): Theme[];
+	listThemes(): MaybePromise<Theme[]>;
 	/** One custom theme, or null when the file is absent or invalid. */
-	readTheme(id: string): Theme | null;
+	readTheme(id: string): MaybePromise<Theme | null>;
 	/** Persist a theme file at `<id>.json` (creates the dir). */
-	writeTheme(id: string, theme: ThemeFile): void;
+	writeTheme(id: string, theme: ThemeFile): MaybePromise<void>;
 	/** Remove `<id>.json`, if present. */
-	deleteTheme(id: string): void;
+	deleteTheme(id: string): MaybePromise<void>;
 }
 
 // ─── PromptOverrideStore — per-segment system-prompt overrides (2026-09-19) ──
@@ -253,14 +273,14 @@ export interface ThemeStore {
 export interface PromptOverrideStore {
 	/** Every override path currently on disk ("system-prompt.md",
 	 *  "teacher/20-teaching.md", ...), POSIX-relative, sorted. */
-	listOverrides(): string[];
+	listOverrides(): MaybePromise<string[]>;
 	/** The override text, or null when the path has no file. */
-	readOverride(segmentPath: string): string | null;
+	readOverride(segmentPath: string): MaybePromise<string | null>;
 	/** Persist override text for a segment path (creates parents). */
-	writeOverride(segmentPath: string, text: string): void;
+	writeOverride(segmentPath: string, text: string): MaybePromise<void>;
 	/** Remove the override file, if present (switches are untouched — an
 	 *  on-switch with no file composes the source default, inert). */
-	deleteOverride(segmentPath: string): void;
+	deleteOverride(segmentPath: string): MaybePromise<void>;
 }
 
 // ─── AuthStore — BYOK provider keys (auth-keys wave, 2026-09-19) ────────────

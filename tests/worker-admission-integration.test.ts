@@ -76,7 +76,7 @@ function memoryLedgers(): GraphStore {
 	const chains: ReturnType<GraphStore["readChains"]> = [];
 	const coverage: ReturnType<GraphStore["readCoverage"]> = [];
 	const checkpoints: ReturnType<GraphStore["readCheckpoints"]> = [];
-	const sources = new Map<string, ReturnType<GraphStore["readSources"]>[number]>();
+	const sources = new Map<string, Awaited<ReturnType<GraphStore["readSources"]>>[number]>();
 	let positions: ReturnType<GraphStore["readPositions"]> = {};
 	return {
 		appendNode: (value) => { nodes.push(value); }, readNodes: () => structuredClone(nodes),
@@ -91,9 +91,9 @@ function memoryLedgers(): GraphStore {
 		rewriteLedgers: () => { throw new Error("unexpected destructive write"); },
 	};
 }
-function teachingChat(label: string) {
-	const chat = chatStore.createChat(label);
-	chatStore.saveMessages(chat.id, [{
+async function teachingChat(label: string) {
+	const chat = await chatStore.createChat(label);
+	await chatStore.saveMessages(chat.id, [{
 		id: "teach", role: "assistant", content: [{ type: "text", text: `${label} is a synthetic teaching passage.` }],
 		api: "openai-completions", provider: "faux", model: "synthetic", stopReason: "stop", timestamp: Date.now(),
 		usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
@@ -111,7 +111,7 @@ function submit(name: string, value: unknown, onCall?: () => void, gate?: Promis
 test("actual audit lock: cancelling middle B cannot let C audit while A still holds audit+merge", { timeout: 8_000 }, async () => {
 	configureWorkerRequestAdmission(() => 8); // admission must not mask lock overlap
 	const graphStore = memoryLedgers();
-	const a = teachingChat("Alpha"), b = teachingChat("Beta"), c = teachingChat("Gamma");
+	const a = await teachingChat("Alpha"), b = await teachingChat("Beta"), c = await teachingChat("Gamma");
 	const gate = deferred();
 	let cCalled = false, cSawAlpha = false, bCalled = false;
 	const pipeline = (id: string, label: string, auditor: PiEngine) => createExtractionPipeline({
@@ -128,9 +128,9 @@ test("actual audit lock: cancelling middle B cannot let C audit while A still ho
 		await until(() => extractionStatuses().some((row) => row.chatId === b && row.phase === "waiting"));
 		assert.equal(abortExtraction(b), true);
 		assert.deepEqual(await runB, { nodes: 0, chains: 0 });
-		runs.push(pipeline("pc", "Gamma", submit("submit_review", { links: [] }, () => {
+		runs.push(pipeline("pc", "Gamma", submit("submit_review", { links: [] }, async () => {
 			cCalled = true;
-			cSawAlpha = graphStore.readNodes().some((node) => node.name === "Alpha");
+			cSawAlpha = (await graphStore.readNodes()).some((node) => node.name === "Alpha");
 		})).runExtraction(c));
 		await until(() => extractionStatuses().some((row) => row.chatId === c && row.phase === "waiting") || cCalled);
 		await flush();
@@ -139,7 +139,7 @@ test("actual audit lock: cancelling middle B cannot let C audit while A still ho
 		gate.resolve();
 		await Promise.all(runs);
 		assert.equal(cSawAlpha, true, "C explores the graph after A's merge, not just after A's request");
-		assert.equal(graphStore.readCoverage().some((row) => row.chatId === b), false);
+		assert.equal((await graphStore.readCoverage()).some((row) => row.chatId === b), false);
 		assert.equal(extractionStatuses().length, 0);
 	} finally {
 		gate.resolve();
@@ -211,8 +211,8 @@ test("chat and notes extraction share the configured request limit, not the old 
 		auditor: submit("submit_review", { links: [] }),
 	});
 	const work = [
-		pipeline("Chat one", false).runExtraction(teachingChat("Chat one")),
-		pipeline("Chat two", false).runExtraction(teachingChat("Chat two")),
+		pipeline("Chat one", false).runExtraction(await teachingChat("Chat one")),
+		pipeline("Chat two", false).runExtraction(await teachingChat("Chat two")),
 		pipeline("Notes one", true).importNotes({ filePath: "/synthetic/one.md", text: "Notes one is synthetic." }),
 		pipeline("Notes two", true).importNotes({ filePath: "/synthetic/two.md", text: "Notes two is synthetic." }),
 	];
@@ -230,7 +230,7 @@ test("chat and notes extraction share the configured request limit, not the old 
 		assert.equal(billed, 0, "queued cancellation never becomes a billed model step");
 		gate.resolve();
 		await Promise.all(work);
-		assert.equal(graphStore.readNodes().length, 4, "both front doors still audit and merge normally");
+		assert.equal((await graphStore.readNodes()).length, 4, "both front doors still audit and merge normally");
 	} finally {
 		controller.abort(); gate.resolve();
 		await Promise.allSettled([...work, ...(extra ? [extra] : [])]);
@@ -246,7 +246,7 @@ test("auditor model requests share admission with other workers, independently o
 		extractor: submit("submit_findings", { propositions: [{ id: "p1", name: "Audit", statement: "Audit claim.", aliases: [], messageId: "teach" }], chains: [] }),
 		auditor: submit("submit_review", { links: [] }, entered.resolve, gate.promise),
 	});
-	const extraction = pipeline.runExtraction(teachingChat("Audit"));
+	const extraction = pipeline.runExtraction(await teachingChat("Audit"));
 	let sibling: Promise<unknown> | undefined;
 	try {
 		await entered.promise;
@@ -256,7 +256,7 @@ test("auditor model requests share admission with other workers, independently o
 		gate.resolve();
 		await Promise.all([extraction, sibling]);
 		assert.equal(called, true);
-		assert.equal(graphStore.readNodes().length, 1);
+		assert.equal((await graphStore.readNodes()).length, 1);
 	} finally { gate.resolve(); await Promise.allSettled([extraction, ...(sibling ? [sibling] : [])]); }
 });
 
@@ -305,13 +305,13 @@ test("same injected engine stays ungated for direct teacher/prober/practice, raw
 		await createProberAgent({} as never, { engine, tools: {} }).prompt("Synthetic probe");
 		await createPracticeAgent({} as never, { engine, tools: {} }).prompt("Synthetic practice");
 		await engine.streamFn(engine.model, normalizeContext({ messages: [newUserMessage("Raw standalone inference")] })).result();
-		const chat = chatStore.createChat("Synthetic compaction");
-		chatStore.saveMessages(chat.id, [newUserMessage("x".repeat(100_000)), newUserMessage("y".repeat(100_000)), newUserMessage("z".repeat(100_000)), newUserMessage("recent")]);
+		const chat = await chatStore.createChat("Synthetic compaction");
+		await chatStore.saveMessages(chat.id, [newUserMessage("x".repeat(100_000)), newUserMessage("y".repeat(100_000)), newUserMessage("z".repeat(100_000)), newUserMessage("recent")]);
 		// The production settle-kick exercises the real summarizer even in tests
 		// (ensureCompacted intentionally skips non-injected summaries in test mode).
 		kickCompaction(() => ({ chatStore, engine, modelId: "faux:synthetic", kind: "teach", thresholdTokens: 1_000, systemPromptTokens: 0 }), chat.id);
 		await awaitCompaction(chat.id);
-		const record = chatStore.getChat(chat.id)!;
+		const record = (await chatStore.getChat(chat.id))!;
 		assert.ok(activeCompactionOf(record.messages), "production summarizer bypasses a fully occupied worker pool");
 		assert.equal(record.turns?.length, 1, "compaction's usage persists through the existing money channel");
 		assert.equal(calls, 6, "excluded requests dispatch while the admitted worker remains held");

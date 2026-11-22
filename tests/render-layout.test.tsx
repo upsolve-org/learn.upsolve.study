@@ -24,8 +24,8 @@ const { AnsweredCard } = await import("../components/answered-card.tsx");
 after(() => fs.rmSync(TMP_DATA, { recursive: true, force: true }));
 
 /** The <html> the layout renders from a boot (className + style). */
-function html(): string {
-	const { theme, vars } = readThemeBoot();
+async function html(): Promise<string> {
+	const { theme, vars } = await readThemeBoot();
 	return renderToStaticMarkup(
 		<html className={theme.mode} style={vars as React.CSSProperties}>
 			<body />
@@ -34,15 +34,15 @@ function html(): string {
 }
 
 describe("first paint follows the theme", () => {
-	it("Rosé Pine Dawn renders light with its colors on <html>", () => {
+	it("Rosé Pine Dawn renders light with its colors on <html>", async () => {
 		writeSettingsRecord({ version: 1, appearance: { theme: "rose-pine-dawn" } });
-		const out = html();
+		const out = await html();
 		assert.match(out, /<html class="light"/);
 		assert.match(out, /--background:#faf4ed/);
 		assert.match(out, /--foreground:#575279/);
 	});
 
-	it("an imported theme paints from its file; overrides paint over it", () => {
+	it("an imported theme paints from its file; overrides paint over it", async () => {
 		themeStore.writeTheme("my-paper", {
 			name: "My Paper",
 			mode: "light",
@@ -53,15 +53,15 @@ describe("first paint follows the theme", () => {
 			},
 		});
 		writeSettingsRecord({ version: 1, appearance: { theme: "my-paper", colors: { warning: "#123456" } } });
-		const out = html();
+		const out = await html();
 		assert.match(out, /<html class="light"/);
 		assert.match(out, /--lh-accent:#3366ff/);
 		assert.match(out, /--lh-warning:#123456/);
 	});
 
-	it("no record = the Default dark theme", () => {
+	it("no record = the Default dark theme", async () => {
 		fs.rmSync(path.join(TMP_DATA, "settings.json"), { force: true });
-		const out = html();
+		const out = await html();
 		assert.match(out, /<html class="dark"/);
 		assert.match(out, /--background:#202020/);
 	});

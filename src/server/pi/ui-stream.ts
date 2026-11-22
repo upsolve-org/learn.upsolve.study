@@ -75,8 +75,9 @@ export type TurnWireEvent =
 
 export interface PiTurnSpec {
 	/** Fresh reference cargo for an already-selected native run, including
-	 * an admission-recovery run. This hook never schedules a run itself. */
-	beforeCycle?: () => void;
+	 * an admission-recovery run. This hook never schedules a run itself.
+	 * May await storage reads under an async backend. */
+	beforeCycle?: () => void | Promise<void>;
 	requestCycle?: ChatGPTRequestCycle;
 	/** The per-turn agent (stateless engine — built from the record). */
 	agent: Agent;
@@ -87,11 +88,11 @@ export interface PiTurnSpec {
 	/** Report settlement failure while the views are still open. */
 	onSettleError?: (error: unknown) => string;
 	/** Release liveness even if the normal finish seam throws. */
-	onSettleFailure?: (error: unknown, reportedErrorText?: string) => void;
+	onSettleFailure?: (error: unknown, reportedErrorText?: string) => void | Promise<void>;
 	/** The canonical end-of-turn seam: persist + usage + extraction + endTurn.
 	 *  Receives the agent's FULL final state (native messages) — the caller
 	 *  persists the slice past its own base count. */
-	onFinish: (messages: AgentMessage[], isAborted: boolean) => void;
+	onFinish: (messages: AgentMessage[], isAborted: boolean) => void | Promise<void>;
 	/** Tool-call ids already used in this chat's record (THE LACAN FIX,
 	 *  owner-approved 2026-10-04): when present, a ToolCallIdUniquifier
 	 *  sits at this boundary — providers that reset ids every response
@@ -231,20 +232,29 @@ export function runPiTurn(spec: PiTurnSpec): PiTurnHandle {
 	// suppressing the fresh per-turn re-seed). Our app mints no system
 	// messages of its own (the prompt is composed per turn), so dropping
 	// the role wholesale is exact; revisit if prompt-updates ever land.
-	const settleWith = () => {
+	// Memoized: agent_end can arrive from the agent's own subscribe AND from
+	// the request-cycle loop's synthetic settle. Both await the SAME run, and
+	// closeAll stays idempotent, so the record is persisted exactly once —
+	// before any view sees [DONE].
+	let settlePromise: Promise<void> | undefined;
+	const settleWith = (): Promise<void> => settlePromise ??= (async () => {
 		try {
 			const settled_ = [...agent.state.messages].filter((m) => (m as { role?: string }).role !== "system");
 			const mapped = (uniquifier?.remapSettled(settled_) as AgentMessage[]) ?? settled_;
-			onFinish(questions?.settled(settled_, mapped) ?? mapped, sawAbort);
+			await onFinish(questions?.settled(settled_, mapped) ?? mapped, sawAbort);
 		} catch (err) {
 			console.error("[turn] settlement failed:", err);
-			try { onSettleFailure?.(err, reportedErrorText); }
+			try { await onSettleFailure?.(err, reportedErrorText); }
 			catch (cleanupError) { console.error("[turn] settlement cleanup failed:", cleanupError); }
 			if (reportedErrorText === undefined) {
 				reportedErrorText = onSettleError?.(err) ?? "An error occurred.";
 				send({ type: "error", errorText: reportedErrorText });
 			}
 		}
+	})();
+	const finishSettle = async (): Promise<void> => {
+		await settleWith();
+		closeAll();
 	};
 
 	const handle = (event: AgentEvent) => {
@@ -266,8 +276,7 @@ export function runPiTurn(spec: PiTurnSpec): PiTurnHandle {
 		}
 		if (event.type === "agent_end") {
 			// Persist/report before the terminal closes every view to new frames.
-			settleWith();
-			closeAll();
+			void finishSettle();
 		}
 	};
 	requestCycle?.bindRelease(handle);
@@ -278,7 +287,16 @@ export function runPiTurn(spec: PiTurnSpec): PiTurnHandle {
 	void (async () => {
 		try {
 			do {
-				spec.beforeCycle?.();
+				if (sawAbort) {
+					await finishSettle();
+					break;
+				}
+				const before = spec.beforeCycle?.();
+				if (before && typeof (before as PromiseLike<void>).then === "function") await before;
+				if (sawAbort) {
+					await finishSettle();
+					break;
+				}
 				await agent.continue();
 				if (!requestCycle) break;
 				const denied = requestCycle.deniedBeforeDispatch;
@@ -287,6 +305,7 @@ export function runPiTurn(spec: PiTurnSpec): PiTurnHandle {
 				if (denied || locallyRejected) agent.state.messages = outcome.messages;
 				if (outcome.action !== "resumeForeground") {
 					handle({ type: "agent_end", messages: [...agent.state.messages] });
+					await finishSettle();
 					break;
 				}
 			} while (!sawAbort);
@@ -302,7 +321,7 @@ export function runPiTurn(spec: PiTurnSpec): PiTurnHandle {
 			console.error("[turn] agent loop failed:", err);
 			reportedErrorText = onError?.(err) ?? "An error occurred.";
 			send({ type: "error", errorText: reportedErrorText });
-			settleWith();
+			await settleWith();
 			closeAll();
 		}
 	})();

@@ -16,7 +16,7 @@ async function PATCHHandler(request: Request, ctx: Ctx): Promise<Response> {
 		if (err instanceof SideChatInputError) return Response.json({ error: err.message }, { status: 400 });
 		throw err;
 	}
-	const result = sideChats.setOpen(id, threadId, open);
+	const result = await sideChats.setOpen(id, threadId, open);
 	if (result === "unknown-chat") return Response.json({ error: "Unknown chat" }, { status: 404 });
 	if (result === "unknown-thread") return Response.json({ error: "Unknown side thread" }, { status: 404 });
 	return Response.json({ thread: result });
@@ -24,7 +24,7 @@ async function PATCHHandler(request: Request, ctx: Ctx): Promise<Response> {
 
 async function GETHandler(_req: Request, ctx: Ctx): Promise<Response> {
 	const { id, threadId } = await ctx.params;
-	return sideChats.watch(id, threadId);
+	return await sideChats.watch(id, threadId);
 }
 
 // Tenancy: the body runs inside the caller's owner scope.

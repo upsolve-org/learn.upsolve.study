@@ -2,8 +2,8 @@ import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import { serverExecute } from "../tool-execute.ts";
-import { getGraph, graphSessionIndex, graphSessionPropositions } from "../../core/graph.ts";
-import type { ChatStore, GraphStore } from "../../core/ports.ts";
+import { deriveGraph, graphSessionIndex, graphSessionPropositions } from "../../core/graph.ts";
+import { expectSync, type ChatStore, type GraphStore } from "../../core/ports.ts";
 import { createPropositionCandidateSearch, propositionCandidateBatch, type CandidateBatch, type CandidateProposition, type CandidateRequest } from "../../core/proposition-candidates.ts";
 
 /**
@@ -31,6 +31,13 @@ export interface GraphToolContext {
 	graphStore: GraphStore;
 }
 
+/** The tool factory is synchronous, so it reads the in-process graph store
+ *  through the pure core derivation rather than awaiting getGraph(). */
+const graphNodes = (graphStore: GraphStore) => deriveGraph(
+	expectSync(graphStore.readNodes(), "graph readNodes"),
+	expectSync(graphStore.readChains(), "graph readChains"),
+).nodes;
+
 const listSessionsInput = Type.Object({});
 
 const listPropositionsInput = Type.Object({
@@ -52,7 +59,7 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 				"Reading this first shows what he has already covered and when, before you probe anything.",
 			parameters: listSessionsInput,
 			execute: serverExecute("list_sessions", listSessionsInput, async (): Promise<string> => {
-				const sessions = graphSessionIndex(deps);
+				const sessions = await graphSessionIndex(deps);
 				if (sessions.length === 0) return "The knowledge graph is empty — no session has contributed propositions yet.";
 				const lines = sessions.map((s, i) =>
 					`${i + 1}. ${s.name} (${s.kind}, ${s.propositions} proposition${s.propositions === 1 ? "" : "s"}, ` +
@@ -69,7 +76,7 @@ export function proberGraphTools(ctx: GraphToolContext): Record<string, AgentToo
 				"Names only — no statement text, no session contents (owner ruling 2026-09-23: the map's ORGANIZATION is your business, its prose is not).",
 			parameters: listPropositionsInput,
 			execute: serverExecute("list_propositions", listPropositionsInput, async ({ session }): Promise<string> => {
-				const propositions = graphSessionPropositions(deps, session);
+				const propositions = await graphSessionPropositions(deps, session);
 				if (propositions.length === 0) {
 					return `No propositions born in session "${session}". Call list_sessions for the current ids.`;
 				}
@@ -140,7 +147,7 @@ export function prepareAuditorReview(ctx: GraphToolContext, propositions: readon
 			if (!query || query.id !== request.id) throw new Error("Unknown cursor for this finding and audit. Start a fresh lookup without cursor.");
 			return query;
 		});
-		search ??= createPropositionCandidateSearch(getGraph(deps.graphStore).nodes);
+		search ??= createPropositionCandidateSearch(graphNodes(deps.graphStore));
 		const batch = propositionCandidateBatch(search, propositions, queries);
 		return {
 			matches: batch.matches.map((match, index) => {
@@ -180,7 +187,7 @@ export function prepareAuditorReview(ctx: GraphToolContext, propositions: readon
 				"Each line: name, kind, proposition count, id. Use the id with list_propositions to see what a session covered.",
 			parameters: Type.Object({}),
 			execute: serverExecute("list_sessions", Type.Object({}), async (): Promise<string> => {
-				const sessions = graphSessionIndex(deps);
+				const sessions = await graphSessionIndex(deps);
 				if (sessions.length === 0) return "The knowledge graph is empty — no session has contributed propositions yet.";
 				const lines = sessions.map((s, i) => `${i + 1}. ${s.name} (${s.kind}, ${s.propositions} proposition${s.propositions === 1 ? "" : "s"}) — id: ${s.id}`);
 				return `${sessions.length} session(s):\n${lines.join("\n")}`;
@@ -194,9 +201,9 @@ export function prepareAuditorReview(ctx: GraphToolContext, propositions: readon
 				"(deciding whether a new proposition is really one of these).",
 			parameters: listPropositionsInput,
 			execute: serverExecute("list_propositions", listPropositionsInput, async ({ session }): Promise<string> => {
-				const propositions = graphSessionPropositions(deps, session);
+				const propositions = await graphSessionPropositions(deps, session);
 				if (propositions.length === 0) return `No propositions born in session "${session}". Call list_sessions for the current ids.`;
-				const nodes = new Map(getGraph(deps.graphStore).nodes.map((n) => [n.id, n]));
+				const nodes = new Map(graphNodes(deps.graphStore).map((n) => [n.id, n]));
 				const lines = propositions.map((p) => {
 					const node = nodes.get(p.nodeId);
 					return `- ${p.nodeId} :: ${p.name}\n  statement: ${node?.statement ?? "(unknown)"}`;

@@ -15,8 +15,8 @@ export default async function ChatPage({
 	const [{ id }, { prompt }] = await Promise.all([params, searchParams]);
 	// Tenancy: the record, liveness and settings are all read inside the
 	// owner scope — another learner's chat id must not resolve here.
-	const view = await asRequestOwner(() => {
-		const chat = getChat(id);
+	const view = await asRequestOwner(async () => {
+		const chat = await getChat(id);
 		if (!chat) return null;
 		// The persistent setup CTA's seed (BYOK, owner 2026-09-22): slotsConfigured
 		// over the settings record, server-read — the same gate home/new read. The

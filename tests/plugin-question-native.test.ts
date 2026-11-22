@@ -21,6 +21,7 @@ const { preparePluginQuestionAnswer, preparePluginQuestionDismissal, pluginQuest
 const { assertPluginQuestionInputAllowed } = await import("../src/core/input-events.ts");
 const { projectView } = await import("../src/core/view.ts");
 const { SubscriptionRequestCycle } = await import("../src/agent/subscription-request-cycle.ts");
+const { expectSync } = await import("../src/core/ports.ts");
 const { persistTurn } = await import("../src/server/turn-service.ts");
 
 const definition = preparePluginQuestionType({
@@ -105,7 +106,7 @@ test("a successful pose stops a mixed batch despite a failed sibling; ordinary r
 	assert(wire.some(event => event.type === "tool_execution_end" && event.toolCallId === "ordinary"));
 	const record = { id: "fixture", messages: [canonical[0]!] };
 	const store = { getChat: () => record, saveMessages: (_id: string, messages: LhMessage[]) => { record.messages = messages; } };
-	persistTurn(store as any, "fixture", 1, canonical, false);
+	(await persistTurn(store as any, "fixture", 1, canonical, false));
 	assert(record.messages.some(message => message.role === "toolResult" && message.toolCallId === "bad"));
 	assert(pendingPluginQuestionOf(record.messages));
 	const failed = projectView(canonical).flatMap(message => message.parts).find(part => part.pluginQuestion?.status === "attempt")!;
@@ -218,19 +219,19 @@ test("chat-handler saves the genuine native answer before teacher construction, 
 	let resolutionStatus: "available" | "unavailable" | "incompatible" = "available";
 	global.__lhPlugins = { host: { resolveQuestionType: () => resolutionStatus === "available" ? { status: "available", definition, signal: contribution.signal, requireActive() {} } : { status: resolutionStatus } }, ready: Promise.resolve() };
 	try {
-		const chat = stores.chatStore.createChat("Isolated native question lifecycle");
-		stores.chatStore.saveSettings(chat.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } });
-		stores.chatStore.saveMessages(chat.id, canonical);
+		const chat = (await stores.chatStore.createChat("Isolated native question lifecycle"));
+		(await stores.chatStore.saveSettings(chat.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } }));
+		(await stores.chatStore.saveMessages(chat.id, canonical));
 		const availableDto = await (await recordRoute.GET(new Request("http://fixture/chat"), { params: Promise.resolve({ id: chat.id }) })).json();
 		assert.deepEqual(availableDto.pluginQuestionAvailability, { questionId: snapshot.questionId, status: "available" });
-		assert.equal((stores.chatStore.getChat(chat.id) as any).pluginQuestionAvailability, undefined, "readiness is response-only, never stored");
+		assert.equal(((await stores.chatStore.getChat(chat.id)) as any).pluginQuestionAvailability, undefined, "readiness is response-only, never stored");
 		const faux = createFauxCore({});
 		faux.setResponses([fauxAssistantMessage("Teacher review, without a grading hook.")]);
 		let constructed = 0;
 		const input = { type: "plugin-question-answer" as const, questionId: snapshot.questionId, occurrence: snapshot.occurrence, answer: false, thinking: "" };
 		const response = await handleChatInput(chat.id, input, options => {
 			constructed++;
-			const durable = stores.chatStore.getChat(chat.id)!.messages.at(-1)! as any;
+			const durable = expectSync(stores.chatStore.getChat(chat.id), "getChat")!.messages.at(-1)! as any;
 			assert.equal(durable.details.kind, "plugin-question");
 			assert.equal(durable.details.answer, false);
 			assert.deepEqual(durable.lhQuestionOccurrence, snapshot.occurrence);
@@ -242,27 +243,27 @@ test("chat-handler saves the genuine native answer before teacher construction, 
 		assert.equal((await handleChatInput(chat.id, input)).status, 400);
 		assert.equal(constructed, 1);
 		assert.equal(faux.state.callCount, 1);
-		assert.equal(stores.chatStore.getChat(chat.id)!.messages.filter(message => message.role === "toolResult" && (message.details as any)?.kind === "plugin-question").length, 1);
-		const dismissedChat = stores.chatStore.createChat("Isolated silent dismissal");
-		stores.chatStore.saveMessages(dismissedChat.id, canonical);
+		assert.equal((await stores.chatStore.getChat(chat.id))!.messages.filter(message => message.role === "toolResult" && (message.details as any)?.kind === "plugin-question").length, 1);
+		const dismissedChat = (await stores.chatStore.createChat("Isolated silent dismissal"));
+		(await stores.chatStore.saveMessages(dismissedChat.id, canonical));
 		const result = await dismiss.POST(new Request("http://fixture/dismiss", { method: "POST", body: JSON.stringify({ input: { type: "dismiss-plugin-question", questionId: snapshot.questionId, occurrence: snapshot.occurrence } }) }), { params: Promise.resolve({ id: dismissedChat.id }) });
 		assert.equal(result.status, 200);
 		assert.equal(isTurnRunning(dismissedChat.id), false);
-		assert.equal((stores.chatStore.getChat(dismissedChat.id)!.messages.at(-1) as any).details.kind, "plugin-question-cancelled");
-		const compatChat = stores.chatStore.createChat("Isolated compatibility boundary");
-		stores.chatStore.saveMessages(compatChat.id, canonical);
+		assert.equal(((await stores.chatStore.getChat(dismissedChat.id))!.messages.at(-1) as any).details.kind, "plugin-question-cancelled");
+		const compatChat = (await stores.chatStore.createChat("Isolated compatibility boundary"));
+		(await stores.chatStore.saveMessages(compatChat.id, canonical));
 		resolutionStatus = "unavailable";
 		const unavailableDto = await (await recordRoute.GET(new Request("http://fixture/chat"), { params: Promise.resolve({ id: compatChat.id }) })).json();
 		assert.deepEqual(unavailableDto.pluginQuestionAvailability, { questionId: snapshot.questionId, status: "unavailable" });
-		assert(pendingPluginQuestionOf(stores.chatStore.getChat(compatChat.id)!.messages));
+		assert(pendingPluginQuestionOf((await stores.chatStore.getChat(compatChat.id))!.messages));
 		resolutionStatus = "incompatible";
 		assert(beginTurn(compatChat.id));
 		await recordRoute.GET(new Request("http://fixture/chat"), { params: Promise.resolve({ id: compatChat.id }) });
-		assert(pendingPluginQuestionOf(stores.chatStore.getChat(compatChat.id)!.messages), "compatibility reads cannot race an active turn's host write");
+		assert(pendingPluginQuestionOf((await stores.chatStore.getChat(compatChat.id))!.messages), "compatibility reads cannot race an active turn's host write");
 		endTurn(compatChat.id);
 		await recordRoute.GET(new Request("http://fixture/chat"), { params: Promise.resolve({ id: compatChat.id }) });
-		assert.equal(pendingPluginQuestionOf(stores.chatStore.getChat(compatChat.id)!.messages), undefined);
-		assert.equal((stores.chatStore.getChat(compatChat.id)!.messages.at(-1) as any).details.reason, "incompatible");
+		assert.equal(pendingPluginQuestionOf((await stores.chatStore.getChat(compatChat.id))!.messages), undefined);
+		assert.equal(((await stores.chatStore.getChat(compatChat.id))!.messages.at(-1) as any).details.reason, "incompatible");
 		assert.equal(isTurnRunning(compatChat.id), false, "compatibility cancellation never runs the teacher");
 	} finally { global.__lhPlugins = previous; }
 });

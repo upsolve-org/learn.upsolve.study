@@ -16,23 +16,23 @@ function record(extra: Partial<PluginTaskRecord> = {}): PluginTaskRecord {
 }
 const success = (result: unknown = false) => record({ status: "succeeded", result, completedAt: "2026-10-31T00:01:00.000Z" });
 
-test("store is lazy on missing reads and atomically round-trips independent native records", t => {
+test("store is lazy on missing reads and atomically round-trips independent native records", async t => {
 	const root = fixture(t); const directory = join(root, "data", "tasks"); const store = createPluginTaskRecordStore(directory);
 	assert.equal(store.get("missing"), null); assert.deepEqual(store.list(), []); assert(!existsSync(join(root, "data")));
 	const value = success({ final: 0 }); store.save(value);
 	assert.deepEqual(store.get(value.id), value); assert.deepEqual(store.list(), [value]);
 	assert.deepEqual(readdirSync(directory), ["task_one.json"]);
 	if (process.platform !== "win32") assert.equal(statSync(join(directory, "task_one.json")).mode & 0o777, 0o600);
-	(store.get(value.id)!.result as { final: number }).final = 999;
-	assert.deepEqual(store.get(value.id)?.result, { final: 0 });
+	((await store.get(value.id))!.result as { final: number }).final = 999;
+	assert.deepEqual((await store.get(value.id))?.result, { final: 0 });
 	assert(!existsSync(join(root, "chats")));
 });
 
-test("all falsy JSON results persist, while absent success and non-JSON data cannot be coerced", t => {
+test("all falsy JSON results persist, while absent success and non-JSON data cannot be coerced", async t => {
 	const store = createPluginTaskRecordStore(fixture(t));
-	for (const value of [false, 0, "", null]) { store.save(success(value)); assert.equal(store.get("task_one")?.result, value); }
+	for (const value of [false, 0, "", null]) { store.save(success(value)); assert.equal((await store.get("task_one"))?.result, value); }
 	for (const value of [undefined, Infinity, NaN, () => {}, BigInt(3), new Date()]) assert.throws(() => store.save({ ...success(), result: value }));
-	assert.equal(store.get("task_one")?.result, null);
+	assert.equal((await store.get("task_one"))?.result, null);
 });
 
 test("corrupt JSON, unsupported versions and malformed known fields never disappear from get/list", t => {
@@ -98,7 +98,7 @@ test("recovery missing paths return null without mkdir; unsafe ids and corrupt r
 	assert.throws(() => readPluginTaskRecord(root, "fixture-plugin", undefined, "request_one"), /Corrupt/);
 });
 
-test("bootstrap recovery includes disabled packages, interrupts all unfinished records, preserves successes and isolates errors", t => {
+test("bootstrap recovery includes disabled packages, interrupts all unfinished records, preserves successes and isolates errors", async t => {
 	const root = fixture(t);
 	const good = join(root, "disabled-plugin", "data", "tasks"); const store = createPluginTaskRecordStore(good);
 	store.save(record()); store.save(record({ id: "running", requestId: "running", status: "running" })); store.save({ ...success(0), id: "success", requestId: "success" });
@@ -107,7 +107,7 @@ test("bootstrap recovery includes disabled packages, interrupts all unfinished r
 	const absent = join(root, "empty-plugin"); mkdirSync(absent); writeFileSync(join(root, "plugins-state.json"), JSON.stringify({ enabled: { "disabled-plugin": false } }));
 	const errors = recoverPluginTaskRecords(root);
 	assert.deepEqual(Object.keys(errors), ["bad-plugin"]); assert.match(errors["bad-plugin"]!, /Corrupt/);
-	assert.equal(store.get("task_one")?.status, "interrupted"); assert.equal(store.get("running")?.status, "interrupted");
+	assert.equal((await store.get("task_one"))?.status, "interrupted"); assert.equal((await store.get("running"))?.status, "interrupted");
 	assert.equal(readPluginTaskRecord(root, "disabled-plugin", "task_one")?.error?.code, "interrupted");
 	assert.equal(readFileSync(join(good, "success.json"), "utf8"), successBefore);
 	assert.deepEqual(readdirSync(absent), []);
@@ -122,13 +122,13 @@ test("bootstrap missing root stays missing, and unsafe package paths are per-pac
 	const rootLink = join(base, "link"); symlinkSync(root, rootLink); assert.throws(() => recoverPluginTaskRecords(rootLink), /Unsafe/);
 });
 
-test("core recovery uses only core-plugin-data, skips reserved community copies and includes disabled tasks", t => {
+test("core recovery uses only core-plugin-data, skips reserved community copies and includes disabled tasks", async t => {
 	const base = fixture(t), root = join(base, "plugins"), core = { directory: join(base, "core-plugin-data"), ids: ["official", "missing"] };
 	const old = join(root, "official", "data", "tasks"); mkdirSync(old, { recursive: true }); writeFileSync(join(old, "broken.json"), "must not read legacy data");
 	const coreStore = createPluginTaskRecordStore(join(core.directory, "official", "tasks")); coreStore.save(record());
 	const community = createPluginTaskRecordStore(join(root, "other", "data", "tasks")); community.save(record());
 	assert.deepEqual(recoverPluginTaskRecords(root, core), {});
-	assert.equal(coreStore.get("task_one")?.status, "interrupted"); assert.equal(community.get("task_one")?.status, "interrupted");
+	assert.equal((await coreStore.get("task_one"))?.status, "interrupted"); assert.equal((await community.get("task_one"))?.status, "interrupted");
 	assert.equal(readPluginTaskRecord(root, "official", "task_one", undefined, core)?.status, "interrupted");
 	assert.equal(readPluginTaskRecord(root, "official", undefined, "request_one", core)?.status, "interrupted");
 	assert.equal(readPluginTaskRecord(root, "missing", "task_one", undefined, core), null);

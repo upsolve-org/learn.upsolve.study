@@ -47,7 +47,7 @@ for (const cacheRetention of CACHE_RETENTIONS) test(`slot ${cacheRetention} surv
 	const response = await PUT(new Request("http://localhost/api/settings/models", { method: "PUT", body: JSON.stringify(body) }), { params: Promise.resolve({ section: "models" }) });
 	assert.equal(response.status, 200, await response.clone().text());
 	assert.equal(readSettings()?.models?.strong?.cacheRetention, cacheRetention);
-	assert.equal(catalogSlots().strong?.cacheRetention, cacheRetention);
+	assert.equal((await catalogSlots()).strong?.cacheRetention, cacheRetention);
 	assert.ok(!Object.hasOwn(readSettings()!.models!.cheap!, "cacheRetention"));
 });
 
@@ -57,7 +57,7 @@ test("unset remains absent through storage/resolution; Pi default clears rather 
 	writeSettings(before);
 	assert.deepEqual(readSettings(), before);
 	assert.ok(!Object.hasOwn(resolveSettings(readSettings()).models.strong!, "cacheRetention"));
-	assert.ok(!Object.hasOwn(catalogSlots().strong!, "cacheRetention"));
+	assert.ok(!Object.hasOwn((await catalogSlots()).strong!, "cacheRetention"));
 	const parsed = parseModelsSettingsBody({ strong: { model, cacheRetention: "default" } });
 	assert.equal(parsed.ok, false, "default is UI-only; omitted is the native default");
 });
@@ -125,8 +125,8 @@ test("real conversation wiring inherits live Strong retention without changing t
 	piModels().setProvider(createProvider({ id, models: [entry, { ...entry, id: "strong-model" }], auth: { apiKey: { name: "fixture", resolve: async () => ({ auth: {} }) } }, api: { stream, streamSimple: stream } }));
 	const record: UserSettings = { version: 1, graph: { enabled: false }, models: { strong: { model: { provider: id, id: "strong-model" }, cacheRetention: "long" } } };
 	writeSettings(record);
-	const chat = chatStore.createChat("Synthetic cache-retention test");
-	chatStore.saveSettings(chat.id, { model: { provider: id, id: "chat-model" } });
+	const chat = await chatStore.createChat("Synthetic cache-retention test");
+	await chatStore.saveSettings(chat.id, { model: { provider: id, id: "chat-model" } });
 	faux.setResponses([
 		fauxAssistantMessage([fauxToolCall("again", {}, { id: "cache-again" })], { stopReason: "toolUse" }),
 		fauxAssistantMessage([fauxText("done")]),
@@ -142,7 +142,7 @@ test("real conversation wiring inherits live Strong retention without changing t
 	const handle = runningTurn(chat.id);
 	if (handle) await new Response(handle.subscribe()).text();
 	assert.deepEqual(seen.map((call) => [call.model, call.options.cacheRetention]), [["chat-model", "long"], ["chat-model", "short"]]);
-	assert.deepEqual(chatStore.getChat(chat.id)?.settings?.model, { provider: id, id: "chat-model" });
+	assert.deepEqual((await chatStore.getChat(chat.id))?.settings?.model, { provider: id, id: "chat-model" });
 	piModels().deleteProvider(id);
 });
 

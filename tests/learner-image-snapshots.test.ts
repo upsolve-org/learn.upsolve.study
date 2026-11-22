@@ -18,7 +18,7 @@ import type { JobStore } from "../src/core/ports.ts";
 const scratch = await fs.mkdtemp(path.join(os.tmpdir(), "lh-image-snapshots-"));
 const chats: string[] = [];
 after(async () => {
-	for (const id of chats) chatStore.deleteChat(id);
+	for (const id of chats) (await chatStore.deleteChat(id));
 	await fs.rm(scratch, { recursive: true, force: true });
 });
 function picture(width = 40, height = 30): Buffer {
@@ -31,12 +31,12 @@ async function file(name: string, bytes: Uint8Array) {
 	await fs.writeFile(p, bytes);
 	return p;
 }
-function newChat() { const chat = chatStore.createChat("Synthetic snapshot regression"); chats.push(chat.id); return chat; }
+async function newChat() { const chat = (await chatStore.createChat("Synthetic snapshot regression")); chats.push(chat.id); return chat; }
 const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><image href="learner-image" width="40" height="30"/><circle cx="5" cy="5" r="2"/></svg>';
 
 describe("session-local learner image snapshots", () => {
 	it("shares processed bytes across repeated displays and different paths, preserving captions", async () => {
-		const chat = newChat();
+		const chat = await newChat();
 		const p = await file("same.png", picture());
 		const copy = await file("copy.png", picture());
 		const tool = createShowImageTool({ chatId: chat.id, chatStore });
@@ -48,14 +48,14 @@ describe("session-local learner image snapshots", () => {
 		assert.equal(a.caption, "First explanation");
 		assert.equal(b.caption, "Later explanation");
 		assert.ok(!("data" in a));
-		const record = chatStore.getChat(chat.id)!;
+		const record = (await chatStore.getChat(chat.id))!;
 		assert.equal(Object.keys(record.imageSnapshots!).length, 1);
 		assert.equal(record.updatedAt, chat.updatedAt, "snapshot writes do not reorder the sidebar");
-		assert.ok(!("imageSnapshots" in chatStore.listChats().find((item) => item.id === chat.id)!));
+		assert.ok(!("imageSnapshots" in (await chatStore.listChats()).find((item) => item.id === chat.id)!));
 	});
 
 	it("versions changed contents at the same path and survives source deletion and later message writes", async () => {
-		const chat = newChat();
+		const chat = await newChat();
 		const p = await file("replaced.png", picture());
 		const tool = createShowImageTool({ chatId: chat.id, chatStore });
 		const a = (await tool.execute("a", { path: p })).details as ShowImageDetails;
@@ -63,8 +63,8 @@ describe("session-local learner image snapshots", () => {
 		const b = (await tool.execute("b", { path: p })).details as ShowImageDetails;
 		assert.notEqual(a.snapshotId, b.snapshotId);
 		await fs.unlink(p);
-		chatStore.saveMessages(chat.id, []);
-		const record = chatStore.getChat(chat.id)!;
+		(await chatStore.saveMessages(chat.id, []));
+		const record = (await chatStore.getChat(chat.id))!;
 		assert.equal(Object.keys(record.imageSnapshots!).length, 2);
 		assert.equal(record.imageSnapshots![a.snapshotId]!.width, 40);
 		assert.equal(record.imageSnapshots![b.snapshotId]!.width, 41);
@@ -72,21 +72,21 @@ describe("session-local learner image snapshots", () => {
 		assert.equal(response.status, 200);
 		assert.equal(response.headers.get("cache-control"), "private, no-store");
 		assert.deepEqual(await response.json(), record.imageSnapshots![a.snapshotId]);
-		const other = newChat();
+		const other = await newChat();
 		assert.equal((await GET(new Request("http://localhost/snapshot"), { params: Promise.resolve({ id: other.id, snapshotId: a.snapshotId }) })).status, 404);
 		assert.equal((await GET(new Request("http://localhost/snapshot"), { params: Promise.resolve({ id: chat.id, snapshotId: "../file" }) })).status, 404);
 	});
 
 	it("stores annotation marks without duplicating the base and exports self-contained SVGs", async () => {
-		const chat = newChat();
+		const chat = await newChat();
 		const image = await loadLearnerImage(await file("annotation.png", picture()));
-		chatStore.saveImageSnapshot(chat.id, image.snapshotId, image);
-		chatStore.saveImageSnapshot(chat.id, image.snapshotId, image);
+		(await chatStore.saveImageSnapshot(chat.id, image.snapshotId, image));
+		(await chatStore.saveImageSnapshot(chat.id, image.snapshotId, image));
 		const one = { svg, image: { path: image.path, snapshotId: image.snapshotId } };
 		const two = { ...one, svg: svg.replace('r="2"', 'r="3"') };
-		assert.equal(Object.keys(chatStore.getChat(chat.id)!.imageSnapshots!).length, 1);
+		assert.equal(Object.keys((await chatStore.getChat(chat.id))!.imageSnapshots!).length, 1);
 		assert.ok(!JSON.stringify([one, two]).includes(image.data));
-		const exported = embedLearnerImage(one.svg, chatStore.getChat(chat.id)!.imageSnapshots![one.image.snapshotId]!);
+		const exported = embedLearnerImage(one.svg, (await chatStore.getChat(chat.id))!.imageSnapshots![one.image.snapshotId]!);
 		assert.ok(exported.includes(`data:${image.mimeType};base64,${image.data}`));
 		assert.ok(!exported.includes('href="learner-image"'));
 		assert.equal(embedLearnerImage("<svg><circle/></svg>", image), "<svg><circle/></svg>");
@@ -133,7 +133,7 @@ describe("learner image source safety", () => {
 		assert.equal(converted.mimeType, "image/png");
 	});
 
-	it("checks compressed WebP frame geometry even when a smaller VP8X canvas was declared", () => {
+	it("checks compressed WebP frame geometry even when a smaller VP8X canvas was declared", async () => {
 		const webp = Buffer.alloc(12 + 18 + 14);
 		webp.write("RIFF"); webp.writeUInt32LE(webp.length - 8, 4); webp.write("WEBP", 8);
 		webp.write("VP8X", 12); webp.writeUInt32LE(10, 16);
@@ -185,7 +185,7 @@ describe("learner image source safety", () => {
 });
 
 describe("annotation placement protocol", () => {
-	it("counts actual image elements, not comments, CDATA, text, or lookalike attributes", () => {
+	it("counts actual image elements, not comments, CDATA, text, or lookalike attributes", async () => {
 		assert.equal(annotationPlacementProblem(svg, 40, 30), null);
 		for (const impostor of ['<!-- <image href="learner-image"/> -->', '<text><![CDATA[<image href="learner-image"/>]]></text>', '<g data-href="learner-image"/>']) {
 			assert.match(annotationPlacementProblem(`<svg>${impostor}</svg>`, 40, 30)!, /exactly once/);
@@ -197,7 +197,7 @@ describe("annotation placement protocol", () => {
 		assert.match(annotationPlacementProblem(spoofed, 40, 30)!, /literal/);
 	});
 
-	it("refuses executable markup and additional file/URL references", () => {
+	it("refuses executable markup and additional file/URL references", async () => {
 		for (const markup of ['<script>alert(1)</script>', '<foreignObject/>', '<use href="file:///private.png"/>', '<path style="fill:url(https://example.invalid/image)"/>', '<g onclick="alert(1)"/>', '<set attributeName="href" to="file:///private.png"/>', '<g xml:base="file:///private/"/>', '<path style="fill:u\\\\72l(file:///private.png)"/>']) {
 			assert.ok(annotationPlacementProblem(svg.replace('</svg>', `${markup}</svg>`), 40, 30));
 		}
@@ -205,7 +205,7 @@ describe("annotation placement protocol", () => {
 		assert.ok(annotationPlacementProblem('<?xml-stylesheet type="text/xsl" href="https://example.invalid/style.xsl"?>' + svg, 40, 30));
 	});
 
-	it("rejects qualified element and attribute aliases and namespace rebinding", () => {
+	it("rejects qualified element and attribute aliases and namespace rebinding", async () => {
 		for (const markup of [
 			'<s:script xmlns:s="http://www.w3.org/2000/svg">alert(1)</s:script>',
 			'<s:foreignObject xmlns:s="http://www.w3.org/2000/svg"/>',
@@ -221,7 +221,7 @@ describe("annotation placement protocol", () => {
 		assert.equal(annotationPlacementProblem(standardXlink, 40, 30), null);
 	});
 
-	it("embedding preserves comments and replaces only the actual picture", () => {
+	it("embedding preserves comments and replaces only the actual picture", async () => {
 		const withComment = svg.replace('<image', '<!-- <image href="learner-image"/> --><image');
 		const result = embedLearnerImage(withComment, { mimeType: "image/png", data: "AAAA", width: 40, height: 30 });
 		assert.ok(result.includes('<!-- <image href="learner-image"/> -->'));

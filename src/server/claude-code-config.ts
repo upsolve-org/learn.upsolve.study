@@ -1,10 +1,13 @@
 import { getClaudeBinary } from "../agent/claude-code/binary.ts";
-import { settingsStore } from "../store/settings.ts";
+import { cachedSettings } from "./stores.ts";
 
-/** Fresh admission state, not a process-wide cache. Existing runs retain
- * their engines; only new chat/job/extraction/compaction admissions consult it. */
+/** Fresh admission state from the per-owner settings cache, not a
+ *  process-wide toggle cache. Existing runs retain their engines; only new
+ *  chat/job/extraction/compaction admissions consult it. The admission gates
+ *  are synchronous seams, so they read the cache rather than awaiting an
+ *  async store adapter. */
 export function claudeCodeEnabled(): boolean {
-	return settingsStore.readSettings()?.claudeCode?.enabled === true;
+	return cachedSettings()?.claudeCode?.enabled === true;
 }
 
 /** Installation/opt-in availability only, never authenticated readiness. */

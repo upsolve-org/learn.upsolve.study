@@ -46,9 +46,18 @@ function validate(value: unknown, expected: string): PluginTaskRecord {
 	return r as unknown as PluginTaskRecord;
 }
 
+/** The concrete fs adapter is synchronous. The public port widens these
+ * calls to MaybePromise for future backends; recovery/read helpers need the
+ * un-widened view, so keep one sync implementation and derive both from it. */
+interface SyncTaskStore {
+	get(id: string): PluginTaskRecord | null;
+	list(): PluginTaskRecord[];
+	save(record: PluginTaskRecord): void;
+}
+
 /** Atomic one-file-per-task plugin-local records. One writer per directory;
  * this is not an interprocess lock. Never falls back past corrupt JSON. */
-export function createPluginTaskRecordStore(directory: string): PluginTaskRecordStore {
+function createSyncPluginTaskRecordStore(directory: string): SyncTaskStore {
 	// Plugin data directories are runtime inputs, never deployment assets.
 	const root = path.resolve(/* turbopackIgnore: true */ directory);
 	const filename = (id: string) => { if (!safeId(id)) throw new Error("Invalid plugin task id"); return path.join(/* turbopackIgnore: true */ root, `${id}.json`); };
@@ -71,49 +80,52 @@ export function createPluginTaskRecordStore(directory: string): PluginTaskRecord
 		try { parsed = JSON.parse(raw); } catch { throw new Error(`Corrupt plugin task JSON: ${id}`); }
 		return validate(parsed, id);
 	};
-	return {
-		get,
-		list() {
-			if (!directoryExists()) return [];
-			let files: string[];
-			try { files = fs.readdirSync(/* turbopackIgnore: true */ root); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
-			return files.filter(name => name.endsWith(".json")).sort().map(name => {
-				const record = get(name.slice(0, -5));
-				if (!record) throw new Error(`Plugin task disappeared during list: ${name}`);
-				return record;
-			});
-		},
-		save(record) {
-			const file = filename(record.id);
-			// Serialize first, checking unsupported JSON values instead of silently
-			// dropping a result, coercing NaN, or executing custom toJSON methods.
-			const seen = new Set<object>();
-			const jsonSafe = (v: unknown): void => {
-				if (v === undefined || v === null || typeof v === "string" || typeof v === "boolean") return;
-				if (typeof v === "number" && Number.isFinite(v)) return;
-				if (!v || typeof v !== "object" || (!Array.isArray(v) && Object.getPrototypeOf(v) !== Object.prototype) || seen.has(v)) throw new Error("Plugin task record must contain finite JSON data");
-				seen.add(v); for (const child of Object.values(v)) jsonSafe(child); seen.delete(v);
-			};
-			jsonSafe(record);
-			const data = JSON.stringify(record, null, "\t");
-			validate(JSON.parse(data), record.id);
-			if (!directoryExists()) fs.mkdirSync(root, { recursive: true });
-			directoryExists();
-			const temp = path.join(root, `.${record.id}.${randomUUID()}.tmp`);
-			let descriptor: number | undefined;
-			try {
-				descriptor = fs.openSync(temp, "wx", 0o600);
-				fs.writeFileSync(descriptor, data, "utf8"); fs.fsyncSync(descriptor); fs.closeSync(descriptor); descriptor = undefined;
-				fs.renameSync(temp, file);
-				if (process.platform !== "win32") {
-					const dir = fs.openSync(root, "r"); try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
-				}
-			} finally {
-				if (descriptor !== undefined) fs.closeSync(descriptor);
-				try { fs.unlinkSync(temp); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-			}
-		},
+	const list = (): PluginTaskRecord[] => {
+		if (!directoryExists()) return [];
+		let files: string[];
+		try { files = fs.readdirSync(/* turbopackIgnore: true */ root); } catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return []; throw error; }
+		return files.filter(name => name.endsWith(".json")).sort().map(name => {
+			const record = get(name.slice(0, -5));
+			if (!record) throw new Error(`Plugin task disappeared during list: ${name}`);
+			return record;
+		});
 	};
+	const save = (record: PluginTaskRecord): void => {
+		const file = filename(record.id);
+		// Serialize first, checking unsupported JSON values instead of silently
+		// dropping a result, coercing NaN, or executing custom toJSON methods.
+		const seen = new Set<object>();
+		const jsonSafe = (v: unknown): void => {
+			if (v === undefined || v === null || typeof v === "string" || typeof v === "boolean") return;
+			if (typeof v === "number" && Number.isFinite(v)) return;
+			if (!v || typeof v !== "object" || (!Array.isArray(v) && Object.getPrototypeOf(v) !== Object.prototype) || seen.has(v)) throw new Error("Plugin task record must contain finite JSON data");
+			seen.add(v); for (const child of Object.values(v)) jsonSafe(child); seen.delete(v);
+		};
+		jsonSafe(record);
+		const data = JSON.stringify(record, null, "\t");
+		validate(JSON.parse(data), record.id);
+		if (!directoryExists()) fs.mkdirSync(root, { recursive: true });
+		directoryExists();
+		const temp = path.join(root, `.${record.id}.${randomUUID()}.tmp`);
+		let descriptor: number | undefined;
+		try {
+			descriptor = fs.openSync(temp, "wx", 0o600);
+			fs.writeFileSync(descriptor, data, "utf8"); fs.fsyncSync(descriptor); fs.closeSync(descriptor); descriptor = undefined;
+			fs.renameSync(temp, file);
+			if (process.platform !== "win32") {
+				const dir = fs.openSync(root, "r"); try { fs.fsyncSync(dir); } finally { fs.closeSync(dir); }
+			}
+		} finally {
+			if (descriptor !== undefined) fs.closeSync(descriptor);
+			try { fs.unlinkSync(temp); } catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
+		}
+	};
+	return { get, list, save };
+}
+
+/** The public port widens the sync adapter to MaybePromise. */
+export function createPluginTaskRecordStore(directory: string): PluginTaskRecordStore {
+	return createSyncPluginTaskRecordStore(directory);
 }
 
 function safeTaskDirectory(rootPluginsDirectory: string, pluginId: string, core?: CorePluginDataLocation): string | null {
@@ -140,7 +152,7 @@ export function readPluginTaskRecord(rootPluginsDirectory: string, pluginId: str
 	if (taskId === undefined && requestId === undefined) throw new Error("A task id or request id is required");
 	const directory = safeTaskDirectory(rootPluginsDirectory, pluginId, core);
 	if (!directory) return null;
-	const store = createPluginTaskRecordStore(directory);
+	const store = createSyncPluginTaskRecordStore(directory);
 	if (taskId !== undefined) {
 		const record = store.get(taskId);
 		if (record && requestId !== undefined && record.requestId !== requestId) throw new Error("Plugin task/request identity mismatch");
@@ -167,7 +179,7 @@ export function recoverPluginTaskRecords(rootPluginsDirectory: string, core?: Co
 	for (const id of ids) {
 		try {
 			const directory = safeTaskDirectory(root, id, core); if (!directory) continue;
-			const store = createPluginTaskRecordStore(directory);
+			const store = createSyncPluginTaskRecordStore(directory);
 			// Read/validate the whole package first: corruption must not cause
 			// partially reinterpreted task histories within that package.
 			const records = store.list();

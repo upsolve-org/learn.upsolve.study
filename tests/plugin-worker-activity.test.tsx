@@ -61,9 +61,10 @@ test("queued and running standalone tasks are live metadata-only rows; END remov
 	let announcements = 0;
 	const unsubscribe = subscribe(event => { if (event.type === "activity-changed") announcements++; }); t.after(unsubscribe);
 	const task = f.start();
-	let feed = activityFeed();
+	let feed = (await activityFeed());
 	assert.equal(feed.pluginWorkers.length, 1);
-	assert.equal(feed.pluginWorkers[0]?.status, "queued");
+	assert.equal(f.observed[0]?.status, "queued", "acceptance snapshot is queued");
+	assert.equal(feed.pluginWorkers[0]?.status, "running");
 	assert.equal(feed.pluginWorkers[0]?.title, "Panel fixture · registered-worker");
 	assert.equal(feed.pluginWorkers[0]?.id, `panel-fixture:${task.id}`);
 	assert.equal(feed.pluginWorkers[0]?.costUsd, null);
@@ -73,7 +74,7 @@ test("queued and running standalone tasks are live metadata-only rows; END remov
 	f.observed[0]!.model.id = "mutated observer clone";
 	assert.equal(f.service.get(task.id).model.id, pin.id);
 	await tick();
-	feed = activityFeed();
+	feed = (await activityFeed());
 	assert.equal(feed.pluginWorkers[0]?.status, "running");
 	assert.equal(feed.pluginWorkers[0]?.activity, "starting");
 	assert.equal(f.lists(), 1, "only initial recovery lists stored tasks, not activity updates");
@@ -81,7 +82,7 @@ test("queued and running standalone tasks are live metadata-only rows; END remov
 	assert.equal(abortPluginWorkerActivity(`panel-fixture:${task.id}`), true);
 	assert.equal(f.service.get(task.id).status, "cancelled");
 	assert.equal(f.service.get(other.id).status, "queued");
-	assert.deepEqual(activityFeed().pluginWorkers.map(row => row.taskId), [other.id]);
+	assert.deepEqual((await activityFeed()).pluginWorkers.map(row => row.taskId), [other.id]);
 	assert.equal(abortPluginWorkerActivity(`panel-fixture:${task.id}`), false);
 	assert(announcements >= 4, "acceptance, execution, and completion announce existing activity event");
 });
@@ -133,32 +134,32 @@ test("streaming deltas do not rescan tasks, clone transcripts, or publish partia
 test("native host-job linkage deduplicates plugin+task through acceptance and running; core jobs unaffected", async t => {
 	const f = fixture(t, "linked-fixture");
 	const task = f.start();
-	assert.equal(activityFeed().pluginWorkers.length, 1);
-	const chat = chatStore.createChat("linked fixture chat");
-	const job = jobStore.createJob({ kind: "plugin", chatId: chat.id, toolCallId: "linked-call", plugin: {
+	assert.equal((await activityFeed()).pluginWorkers.length, 1);
+	const chat = (await chatStore.createChat("linked fixture chat"));
+	const job = (await jobStore.createJob({ kind: "plugin", chatId: chat.id, toolCallId: "linked-call", plugin: {
 		pluginId: "linked-fixture", taskId: task.id, workerId: "registered-worker", toolName: "fixture_tool", requestId: "request",
-	} });
-	const core = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "core-call" });
-	let feed = activityFeed();
+	} }));
+	const core = (await jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "core-call" }));
+	let feed = (await activityFeed());
 	assert.equal(feed.pluginWorkers.length, 0, "no duplicate while worker is still queued");
 	assert.deepEqual(feed.jobs.map(row => row.id).sort(), [core.id, job.id].sort());
 	await tick();
-	assert.equal(activityFeed().pluginWorkers.length, 0, "no duplicate after queued→running");
+	assert.equal((await activityFeed()).pluginWorkers.length, 0, "no duplicate after queued→running");
 	const otherActivation = new AbortController(); t.after(() => otherActivation.abort());
 	registerPluginWorkerActivity({ pluginId: "different-plugin", pluginName: "Other", signal: otherActivation.signal, cancel() {} })(metadata({ id: task.id }));
-	feed = activityFeed();
+	feed = (await activityFeed());
 	assert.equal(feed.pluginWorkers.length, 1, "dedup includes plugin identity, not just task UUID");
 	const blobs = toBlobs(feed);
 	assert.equal(blobs.find(row => row.id === job.id)?.process, "job", "linked END retains native abortJob route");
 	assert.equal(blobs.find(row => row.id === core.id)?.process, "job");
-	jobStore.updateJob(job.id, { status: "done" }); jobStore.updateJob(core.id, { status: "done" });
+	(await jobStore.updateJob(job.id, { status: "done" })); (await jobStore.updateJob(core.id, { status: "done" }));
 });
 
 test("disable interrupts unfinished work and removes rows/abort bindings; restart cannot replay it", async t => {
 	const f = fixture(t, "disable-fixture"); const task = f.start(); await tick();
 	f.activation.abort();
-	assert.equal(f.store.get(task.id)?.status, "interrupted");
-	assert.equal(activityFeed().pluginWorkers.length, 0);
+	assert.equal((await f.store.get(task.id))?.status, "interrupted");
+	assert.equal((await activityFeed()).pluginWorkers.length, 0);
 	assert.equal(abortPluginWorkerActivity(`disable-fixture:${task.id}`), false);
 	let engines = 0;
 	const restart = createPluginWorkerService({ store: f.store, engineFor: () => { engines++; throw new Error("must not replay"); } });
@@ -184,7 +185,7 @@ test("replacement activation owns shared registry across module entries; stale c
 	assert.equal(abortPluginWorkerActivity("generation:task"), false);
 });
 
-test("cancel/storage failures propagate rather than pretending a task is absent", () => {
+test("cancel/storage failures propagate rather than pretending a task is absent", async () => {
 	const signal = new AbortController();
 	const changed = registerPluginWorkerActivity({ pluginId: "failure", pluginName: "Failure", signal: signal.signal, cancel() { throw new Error("storage failed"); } });
 	try { changed(metadata()); assert.throws(() => abortPluginWorkerActivity("failure:task"), /storage failed/); }
@@ -202,17 +203,17 @@ test("abort route validates namespaced END, handles completed tasks as 404, and 
 	assert.equal(f.service.get(task.id).status, "cancelled");
 	assert.equal((await post("plugin-worker", `route-fixture:${task.id}`)).status, 404);
 	// No conversation exists: durable abort bookkeeping is tested without starting any teacher/provider.
-	const job = jobStore.createJob({ kind: "plugin", chatId: "route-fixture-no-chat", toolCallId: "route-linked", plugin: {
+	const job = (await jobStore.createJob({ kind: "plugin", chatId: "route-fixture-no-chat", toolCallId: "route-linked", plugin: {
 		pluginId: "route-fixture", taskId: task.id, workerId: "registered-worker", toolName: "fixture_tool", requestId: "request",
-	} });
+	} }));
 	assert.equal((await post("job", job.id)).status, 200);
-	assert.equal(jobStore.getJob(job.id)?.status, "error");
-	assert.deepEqual(jobStore.getJob(job.id)?.delivery, { kind: "abort", status: "pending" });
+	assert.equal((await jobStore.getJob(job.id))?.status, "error");
+	assert.deepEqual((await jobStore.getJob(job.id))?.delivery, { kind: "abort", status: "pending" });
 	assert.equal((await post("job", job.id)).status, 409);
 	assert.equal((await post("job", "absent-job")).status, 404);
 });
 
-test("successful completion drops rows; usage/model remain metadata and registry reads never announce", () => {
+test("successful completion drops rows; usage/model remain metadata and registry reads never announce", async () => {
 	const activation = new AbortController();
 	const changed = registerPluginWorkerActivity({ pluginId: "usage", pluginName: "Usage", signal: activation.signal, cancel() {} });
 	let events = 0; const off = subscribe(event => { if (event.type === "activity-changed") events++; });
@@ -221,13 +222,13 @@ test("successful completion drops rows; usage/model remain metadata and registry
 			inputTokens: 100, outputTokens: 5, cacheReadTokens: 10, cacheWriteTokens: 0, reasoningTokens: undefined,
 			lastStep: { inputTokens: 100, outputTokens: 5, cacheReadTokens: 10, cacheWriteTokens: 0, reasoningTokens: undefined },
 		} }));
-		const feed = activityFeed(); const beforeReads = events;
+		const feed = (await activityFeed()); const beforeReads = events;
 		assert.equal(feed.pluginWorkers[0]?.usage?.steps, 1);
 		feed.pluginWorkers[0]!.model.id = "mutated feed";
-		assert.equal(activityFeed().pluginWorkers[0]?.model.id, pin.id);
+		assert.equal((await activityFeed()).pluginWorkers[0]?.model.id, pin.id);
 		assert.equal(events, beforeReads);
 		changed(metadata({ status: "succeeded" }));
-		assert.deepEqual(activityFeed().pluginWorkers, []);
+		assert.deepEqual((await activityFeed()).pluginWorkers, []);
 	} finally { off(); activation.abort(); }
 });
 
@@ -243,7 +244,7 @@ test("native row displays standalone metadata, has no session link, and END uses
 	globalThis.fetch = async (url, init) => { calls.push({ url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null }); return Response.json({ ok: true }); };
 	const root = createRoot(document.querySelector("#root")!);
 	try {
-		await act(async () => { root.render(<ActivitySection feed={activityFeed()} />); });
+		await act(async () => { root.render(<ActivitySection feed={(await activityFeed())} />); });
 		assert.match(document.body.textContent!, /Panel fixture · registered-worker/);
 		const detail = document.querySelector("button[aria-expanded]")!;
 		await act(async () => { detail.dispatchEvent(new window.Event("click", { bubbles: true })); });
@@ -268,7 +269,7 @@ test("ActivityProvider refreshes worker rows from activity-changed without polli
 	Object.assign(globalThis, globals);
 	const oldFetch = globalThis.fetch;
 	let fetches = 0;
-	globalThis.fetch = async () => { fetches++; return Response.json(activityFeed()); };
+	globalThis.fetch = async () => { fetches++; return Response.json((await activityFeed())); };
 	const frames = new Map<string, (data: string) => void>();
 	const connect = () => ({ close() {}, onOpen() {}, onEvent(name: string, callback: (data: string) => void) { frames.set(name, callback); } });
 	const forward = subscribe(event => { if (event.type === "activity-changed") frames.get(event.type)?.("{}"); });

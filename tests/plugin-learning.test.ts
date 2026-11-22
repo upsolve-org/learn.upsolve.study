@@ -3,7 +3,7 @@ import { it } from "node:test";
 import type { ChatStore, GraphStore } from "../src/core/ports.ts";
 import { createPluginLearningData } from "../src/server/plugin-learning.ts";
 
-it("plugin learning reader preserves native data and provides reads only", () => {
+it("plugin learning reader preserves native data and provides reads only", async () => {
 	const record = { id: "chat_a", createdAt: "2026-01-01", updatedAt: "2026-01-01", messages: [{ role: "user", content: "Learner thought", timestamp: 1 }], title: "Source" };
 	const nodes = [{ id: "node", name: "Evidence", statement: "Evidence", aliases: [], createdAt: "2026-01-01", provenance: [{ chatId: "chat_a", messageId: "message_a" }] }];
 	const sources = [{ id: "source", filePath: "/notes.pdf" }];
@@ -14,19 +14,19 @@ it("plugin learning reader preserves native data and provides reads only", () =>
 		readMetadata: (name) => name === "format.json" ? { version: 1 } : { enabled: true },
 	});
 	assert.equal(reader.directory, "/learning");
-	assert.deepEqual(reader.getSession("chat_a"), record);
-	assert.equal(reader.getSession("missing"), null);
-	assert.deepEqual(reader.listSessions(), [{ id: "chat_a", kind: "teach", busy: true, compacting: false }]);
-	assert.deepEqual(reader.readGraphFile("nodes.jsonl"), nodes);
-	assert.deepEqual(reader.readGraphFile("sources.json"), sources);
-	assert.deepEqual(reader.readGraphFile("sessions.jsonl"), checkpoints);
-	assert.deepEqual(reader.readGraphFile("positions.json"), { node: { x: 1, y: 2 } });
-	assert.deepEqual(reader.readGraphFile("format.json"), { version: 1 });
-	const graph = reader.graph();
+	assert.deepEqual(await reader.getSession("chat_a"), record);
+	assert.equal(await reader.getSession("missing"), null);
+	assert.deepEqual(await reader.listSessions(), [{ id: "chat_a", kind: "teach", busy: true, compacting: false }]);
+	assert.deepEqual(await reader.readGraphFile("nodes.jsonl"), nodes);
+	assert.deepEqual(await reader.readGraphFile("sources.json"), sources);
+	assert.deepEqual(await reader.readGraphFile("sessions.jsonl"), checkpoints);
+	assert.deepEqual(await reader.readGraphFile("positions.json"), { node: { x: 1, y: 2 } });
+	assert.deepEqual(await reader.readGraphFile("format.json"), { version: 1 });
+	const graph = await reader.graph();
 	assert.deepEqual(graph.propositions, nodes);
 	assert.deepEqual(graph.sessions, { chat_a: "Source" });
 	assert.deepEqual(graph.positions, { node: { x: 1, y: 2 } });
-	assert.throws(() => reader.getSession("../../auth"), /Invalid/);
-	assert.throws(() => reader.readGraphFile("../../auth.json" as never), /Unknown/);
+	await assert.rejects(async () => reader.getSession("../../auth"), /Invalid/);
+	await assert.rejects(async () => reader.readGraphFile("../../auth.json" as never), /Unknown/);
 	assert.deepEqual(Object.keys(reader).sort(), ["directory", "getSession", "graph", "listSessions", "readGraphFile"]);
 });

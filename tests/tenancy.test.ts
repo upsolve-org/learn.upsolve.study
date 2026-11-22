@@ -19,6 +19,7 @@ const { graphStore } = await import("../src/store/graph.ts");
 const { themeStore } = await import("../src/store/themes.ts");
 const { withOwner, forOwner, activeOwner } = await import("../src/server/stores.ts");
 const { THEME_COLOR_KEYS } = await import("../src/core/themes.ts");
+const { expectSync } = await import("../src/core/ports.ts");
 
 const A = "9d0409ac-ee31-4944-8cc8-56ef5eb1bed5";
 const B = "0f0e0d0c-0b0a-4908-8706-050403020100";
@@ -81,37 +82,37 @@ describe("owner paths", () => {
 
 describe("store isolation", () => {
 	it("chats, settings, jobs, graph and themes do not cross owners", () => {
-		const chatA = runAsOwner(A, () => chatStore.createChat("A session"));
-		const chatB = runAsOwner(B, () => chatStore.createChat("B session"));
+		const chatA = runAsOwner(A, () => expectSync(chatStore.createChat("A session"), "createChat"));
+		const chatB = runAsOwner(B, () => expectSync(chatStore.createChat("B session"), "createChat"));
 
-		assert.deepEqual(runAsOwner(A, () => chatStore.listChats().map((c) => c.id)), [chatA.id]);
-		assert.deepEqual(runAsOwner(B, () => chatStore.listChats().map((c) => c.id)), [chatB.id]);
+		assert.deepEqual(runAsOwner(A, () => expectSync(chatStore.listChats(), "listChats").map((c) => c.id)), [chatA.id]);
+		assert.deepEqual(runAsOwner(B, () => expectSync(chatStore.listChats(), "listChats").map((c) => c.id)), [chatB.id]);
 
 		// A's chat id must not resolve for B.
-		assert.equal(runAsOwner(B, () => chatStore.getChat(chatA.id)), null);
-		assert.notEqual(runAsOwner(A, () => chatStore.getChat(chatA.id)), null);
+		assert.equal(runAsOwner(B, () => expectSync(chatStore.getChat(chatA.id), "getChat")), null);
+		assert.notEqual(runAsOwner(A, () => expectSync(chatStore.getChat(chatA.id), "getChat")), null);
 
 		runAsOwner(A, () => settingsStore.writeSettings({ version: 1, general: { autoUpdate: false } }));
 		assert.equal(runAsOwner(B, () => settingsStore.readSettings()), null, "B has no settings record yet");
-		assert.equal(runAsOwner(A, () => settingsStore.readSettings()?.general?.autoUpdate), false);
+		assert.equal(runAsOwner(A, () => expectSync(settingsStore.readSettings(), "readSettings")?.general?.autoUpdate), false);
 
 		runAsOwner(A, () => jobStore.createJob({ chatId: chatA.id, kind: "research", input: { query: "x" } } as never));
-		assert.equal(runAsOwner(A, () => jobStore.listJobs(chatA.id).length), 1);
-		assert.deepEqual(runAsOwner(B, () => jobStore.listJobs(chatA.id)), []);
+		assert.equal(runAsOwner(A, () => expectSync(jobStore.listJobs(chatA.id), "listJobs").length), 1);
+		assert.deepEqual(runAsOwner(B, () => expectSync(jobStore.listJobs(chatA.id), "listJobs")), []);
 
 		runAsOwner(A, () => graphStore.appendNode({
 			id: "n1", name: "n", statement: "s", aliases: [],
 			createdAt: new Date().toISOString(), provenance: [],
 		}));
-		assert.equal(runAsOwner(A, () => graphStore.readNodes().length), 1);
-		assert.equal(runAsOwner(B, () => graphStore.readNodes().length), 0);
+		assert.equal(runAsOwner(A, () => expectSync(graphStore.readNodes(), "readNodes").length), 1);
+		assert.equal(runAsOwner(B, () => expectSync(graphStore.readNodes(), "readNodes").length), 0);
 
 		runAsOwner(A, () => themeStore.writeTheme("mine", {
 			name: "Mine", mode: "dark",
 			colors: Object.fromEntries(THEME_COLOR_KEYS.map((key) => [key, "#123456"])) as Record<(typeof THEME_COLOR_KEYS)[number], string>,
 		}));
-		assert.deepEqual(runAsOwner(B, () => themeStore.listThemes()), []);
-		assert.equal(runAsOwner(A, () => themeStore.listThemes().length), 1);
+		assert.deepEqual(runAsOwner(B, () => expectSync(themeStore.listThemes(), "listThemes")), []);
+		assert.equal(runAsOwner(A, () => expectSync(themeStore.listThemes(), "listThemes").length), 1);
 	});
 
 	it("writes land on disk under the owner, not the shared root", () => {

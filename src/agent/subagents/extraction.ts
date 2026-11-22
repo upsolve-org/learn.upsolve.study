@@ -23,7 +23,7 @@ import type {
 	SessionFindings,
 } from "../../core/contracts.ts";
 import { getGraph, mergeFindings, type DerivedGraph, type EmissionStats, type GraphDeps } from "../../core/graph.ts";
-import type { GraphStore } from "../../core/ports.ts";
+import type { GraphStore, MaybePromise } from "../../core/ports.ts";
 import { emit } from "../../core/events.ts";
 import { settleGraphLayout } from "../../core/layout-settle.ts";
 import { batchRuns, coverageOf, messageViewLines } from "../../core/coverage.ts";
@@ -723,7 +723,7 @@ export interface ExtractionModels {
 	 *  stages lands). BYOK (owner, 2026-09-22): the chain (role override →
 	 *  slot → NOTHING) may end EMPTY → undefined; the front doors refuse
 	 *  with ModelsNotConfiguredError before any stage runs. */
-	engineFor?: (role: ModelRole) => PiEngine | undefined;
+	engineFor?: (role: ModelRole) => MaybePromise<PiEngine | undefined>;
 	/** Key-presence gate (provider-key interlude, 2026-09-25): given a
 	 *  stage engine's provider + the role's slot tier, the injected check
 	 *  returns the refusal envelope when the provider's key is missing
@@ -801,16 +801,16 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	// stage call server-side) — the job runner's exact treatment. undefined
 	// = the BYOK chain came up empty; the front-door guards turn that into
 	// an honest refusal.
-	const stageEngine = (role: ModelRole, override?: PiEngine): PiEngine | undefined =>
-		override ?? deps.engineFor?.(role);
+	const stageEngine = async (role: ModelRole, override?: PiEngine): Promise<PiEngine | undefined> =>
+		override ?? await deps.engineFor?.(role);
 	/** The per-need refusal guard: which slot tiers the pipeline's stages
 	 *  found unset (test values count as configured — they ARE engines),
 	 *  and whether a configured stage's provider key is gone (provider-key
 	 *  interlude, 2026-09-25) — both refuse BEFORE any batch runs. */
-	function refuseIfStagesUnready(): void {
+	async function refuseIfStagesUnready(): Promise<void> {
 		const stages: readonly [ModelRole, PiEngine | undefined][] = [
-			["extractor", stageEngine("extractor", deps.extractor)],
-			["auditor", stageEngine("auditor", deps.auditor)],
+			["extractor", await stageEngine("extractor", deps.extractor)],
+			["auditor", await stageEngine("auditor", deps.auditor)],
 		];
 		const missing = new Set<ModelSlotName>();
 		for (const [role, engine] of stages) if (!engine) missing.add(ROLE_SLOT[role]);
@@ -932,7 +932,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		// on it. Serialized batches make this read the post-merge graph of
 		// every earlier batch (cross-source runs stay parallel — the
 		// digest is source-scoped, so only SAME-source order matters).
-		const graph = getGraph(graphStore);
+		const graph = await getGraph(graphStore);
 		const digest = sourceDigest(graph, sourceId);
 		const prompt = digest === "" ? view : `${digest}\n\n${view}`;
 		console.info(
@@ -942,7 +942,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		const t0 = performance.now();
 
 		const findings = await runExtractor(
-			stageEngine("extractor", deps.extractor),
+			await stageEngine("extractor", deps.extractor),
 			sourceId,
 			prompt,
 			new Set(graph.nodes.map((n) => n.id)),
@@ -960,7 +960,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 	async function audit(jobKey: string, sourceId: string, findings: SessionFindings): Promise<AuditVerdicts> {
 		const signal = runningExtractions.get(jobKey)?.controller.signal;
 		signal?.throwIfAborted(); // an abort during the extract→audit gap ends here
-		const graph = getGraph(graphStore);
+		const graph = await getGraph(graphStore);
 		console.info(
 			`[extraction ${jobKey}] auditor starting (${findings.propositions.length} propositions, ` +
 				`${graph.nodes.length} graph nodes)`,
@@ -975,7 +975,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		// to it — they add cognitive load, not signal.
 		const review = prepareAuditorReview({ chatStore, graphStore }, findings.propositions);
 		const auditResult = await runAuditor(
-			stageEngine("auditor", deps.auditor),
+			await stageEngine("auditor", deps.auditor),
 			sourceId,
 			`Review these proposed findings against the supplied existing records. matches points from finding ids to candidateIds; candidates contains those records:\n\n` +
 				`${JSON.stringify(
@@ -1106,14 +1106,14 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		// error below loses at most the in-flight batch — every earlier
 		// batch stays covered, the rest stays visibly uncovered.
 		try {
-			const record = chatStore.getChat(chatId);
+			const record = await chatStore.getChat(chatId);
 			if (!record) throw new Error(`Chat not found: ${chatId}`);
 			// BYOK per-need gate (owner, 2026-09-22) + key presence
 			// (2026-09-25): the write channel needs extractor + auditor
 			// engines AND their providers' keys; a refusal lands BEFORE any
 			// stage runs (typed — the trigger skips, routes surface 503).
-			refuseIfStagesUnready();
-			const covered = coverageOf(record.messages, graphStore.readCoverage(), chatId);
+			await refuseIfStagesUnready();
+			const covered = coverageOf(record.messages, await graphStore.readCoverage(), chatId);
 			const failedOutputCalls = failedOutputCallIds(record.messages);
 			if (covered.uncovered.length === 0) {
 				console.info(`[extraction ${chatId}] nothing uncovered — no-op`);
@@ -1174,7 +1174,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 								// as one sync block; this closes the last window — a run that slipped
 								// past the wind-down finds the chat gone HERE and rides the existing
 								// abort path (info, not error): nothing merged, nothing checkpointed.
-								if (!chatStore.getChat(chatId)) {
+								if (!(await chatStore.getChat(chatId))) {
 									const gone = new Error(`chat deleted mid-run: ${chatId}`);
 									gone.name = "AbortError";
 									throw gone;
@@ -1184,7 +1184,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 								// merges in), the stored fingerprint won't match its new
 								// one and it re-opens: honest by construction.
 								const foldedAt = new Date().toISOString();
-								const batchStats = mergeFindings(chatId, findings, auditResult, { chatStore, graphStore }, {
+								const batchStats = await mergeFindings(chatId, findings, auditResult, { chatStore, graphStore }, {
 									foldedAt,
 									coverage: batch
 										.filter((slot) => slot.tokens > 0)
@@ -1192,7 +1192,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 								});
 								// The layout ledger evolves with the merge (sync — the
 								// next snapshot fetch must already reflect the new nodes).
-								settleGraphLayout(graphStore);
+								await settleGraphLayout(graphStore);
 								console.info(
 									`[extraction ${jobKey}] merged: ${batchStats.nodes} nodes, ${batchStats.chains ?? 0} chains`,
 								);
@@ -1271,7 +1271,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		const view = notesView(input);
 		// Same digest law as the chat door (owner, 2026-09-30 evening): the
 		// chunk extractor continues its own source, ids verbatim.
-		const graph = getGraph(graphStore);
+		const graph = await getGraph(graphStore);
 		const digest = sourceDigest(graph, input.id);
 		const prompt = digest === "" ? view : `${digest}\n\n${view}`;
 		console.info(
@@ -1280,7 +1280,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 		);
 		const t0 = performance.now();
 		const findings = await runNotesExtractor(
-			stageEngine("extractor", deps.extractor),
+			await stageEngine("extractor", deps.extractor),
 			input.id,
 			prompt,
 			new Set(graph.nodes.map((n) => n.id)),
@@ -1306,7 +1306,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 			// BYOK per-need gate (owner, 2026-09-22) + key presence
 			// (2026-09-25): same refusal as the chat front door — no
 			// extractor/auditor engines, or a stage key gone, no run.
-			refuseIfStagesUnready();
+			await refuseIfStagesUnready();
 			// CHUNKED like the chat path (owner, 2026-09-28): each chunk is a
 			// standalone extract → audit → merge, so no single call carries a
 			// whole large file. Abort mid-run keeps earlier chunks merged
@@ -1345,7 +1345,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 								setPhase(jobKey, "auditing", "notes", input.filePath, part);
 								const auditResult = await audit(jobKey, input.id, findings);
 								setPhase(jobKey, "merging", "notes", input.filePath, part);
-								const merged = mergeFindings(
+								const merged = await mergeFindings(
 									id,
 									findings,
 									auditResult,
@@ -1359,7 +1359,7 @@ export function createExtractionPipeline(deps: ExtractionPipelineDeps): Extracti
 									mergedStats.droppedChains = (mergedStats.droppedChains ?? 0) + merged.droppedChains;
 								// The layout ledger evolves with each merge — the next
 								// snapshot fetch reflects every finished chunk.
-								settleGraphLayout(graphStore);
+								await settleGraphLayout(graphStore);
 								console.info(`[extraction ${jobKey}] merged: ${merged.nodes} nodes, ${merged.chains ?? 0} chains`);
 								return merged;
 							});

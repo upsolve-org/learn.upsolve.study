@@ -26,6 +26,7 @@ import type { PluginToolContext } from "../core/plugins.ts";
 import { toLlmMessages, nativeInputCause, PRACTICE_PROBLEM_TOOL } from "../core/native-messages.ts";
 import type { ChatGPTRequestCycle } from "./chatgpt-request-cycle.ts";
 import { usageWasAdmitted } from "./subscription-request-cycle.ts";
+import type { MaybePromise } from "../core/ports.ts";
 import { PluginQuestionLedger, type NativePluginQuestionContribution } from "./plugin-question-tools.ts";
 
 /**
@@ -120,11 +121,11 @@ export interface AgentBuildOptions {
 	onUsage?: StepUsageCollector;
 	/** Append-only reference updates before each already-scheduled internal
 	 * model call. Does not schedule an extra call or interrupt live output. */
-	contextUpdates?: (messages: readonly AgentMessage[]) => AgentMessage[];
+	contextUpdates?: (messages: readonly AgentMessage[]) => MaybePromise<AgentMessage[]>;
 	/** Validate the actual selected context after prepared/queued messages
 	 * join, before dispatch. Throws through the SDK's normal failed-response
-	 * lifecycle, never through the conversion seam. */
-	validateContext?: (messages: readonly AgentMessage[]) => void;
+	 * lifecycle, never through the conversion seam. May await storage reads. */
+	validateContext?: (messages: readonly AgentMessage[]) => MaybePromise<void>;
 	/** Tests may pass a bare tool registry to drive deterministic flows.
 	 *  An explicit registry is NEVER toggle-filtered — the caller owns it. */
 	tools?: Record<string, AgentTool<any>>;
@@ -201,7 +202,7 @@ function makeQuestionStopper(kind: AgentKind) {
 	};
 }
 
-function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: AgentTool<any, any>[], nodeExists?: (nodeId: string) => boolean,
+function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: AgentTool<any, any>[], nodeExists?: (nodeId: string) => MaybePromise<boolean>,
 	practice?: { gate: PracticeGate; graphNodes: PracticeToolContext["graphNodes"] }) {
 	// Practice never reaches the role fallback (the handler ALWAYS injects
 	// the session's conversation engine — practice rides the same
@@ -285,11 +286,11 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 		// an abort's dangling question call gets its INTERRUPTED result. It
 		// must never throw (pi's convertToLlm contract).
 		convertToLlm: toLlmMessages,
-		...(opts.contextUpdates ? { prepareNextTurnWithContext: ({ context }: { context: { messages: AgentMessage[] } }) => {
-			const messages = opts.contextUpdates!(context.messages);
+		...(opts.contextUpdates ? { prepareNextTurnWithContext: async ({ context }: { context: { messages: AgentMessage[] } }) => {
+			const messages = await opts.contextUpdates!(context.messages);
 			return messages.length ? { messages } : undefined;
 		} } : {}),
-		prepareRequest: (request) => {
+		prepareRequest: async (request) => {
 			if (opts.callPurpose) {
 				let learner = false, automatic = false;
 				const messages = request.context.messages;
@@ -306,7 +307,7 @@ function baseAgentOptions(kind: AgentKind, opts: AgentBuildOptions, tools: Agent
 				else if (learner) opts.callPurpose.background = false;
 			}
 			opts.requestCycle?.prepare(request);
-			try { opts.validateContext?.(request.context.messages); }
+			try { await opts.validateContext?.(request.context.messages); }
 			catch (error) {
 				opts.requestCycle?.rejectLocalRequest();
 				throw error;
@@ -354,7 +355,7 @@ export function createTeacherAgent(
 ) {
 	const tools = opts.tools ?? (ctx ? createTeacherTools(ctx, opts.toolToggles) : bareQuestionTools());
 	return baseAgentOptions("teacher", opts, Object.values(tools), ctx
-		? nodeId => ctx.chatStore.getChat(ctx.chatId)?.tree?.nodes.some(node => node.id === nodeId) ?? false
+		? async nodeId => (await ctx.chatStore.getChat(ctx.chatId))?.tree?.nodes.some(node => node.id === nodeId) ?? false
 		: undefined);
 }
 

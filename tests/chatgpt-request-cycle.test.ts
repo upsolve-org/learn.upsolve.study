@@ -17,6 +17,7 @@ fs.writeFileSync(process.env.LH_AUTH_FILE, "{}");
 const { runPiTurn } = await import("../src/server/pi/ui-stream.ts");
 const { projectedContextTokens } = await import("../src/server/compaction.ts");
 import { newUserMessage, newNextMessage, newThinkingMessage, newAnswerResult, reconstructRequestCause, concludedByDismissalPair, type LhMessage } from "../src/core/native-messages.ts";
+import { expectSync } from "../src/core/ports.ts";
 
 const originalSend = Object.getOwnPropertyDescriptor(process, "send");
 const originalConnected = Object.getOwnPropertyDescriptor(process, "connected");
@@ -196,29 +197,29 @@ for (const admission of ["accepted", "denied"] as const) test(`handler publishes
  const { handleChatInput } = await import("../src/server/chat-handler.ts");
  const { runningTurn } = await import("../src/server/turn-runs.ts");
  const { sideConversationEntries } = await import("../src/core/side-chat.ts");
- const chat = chatStore.createChat(`Native side admission ${admission}`);
- chatStore.saveSettings(chat.id, { model: { provider: "chatgpt", id: model.id } });
+ const chat = await chatStore.createChat(`Native side admission ${admission}`);
+ await chatStore.saveSettings(chat.id, { model: { provider: "chatgpt", id: model.id } });
  const previous = { role: "assistant", id: "previous_teacher", api: "openai-responses", provider: "chatgpt", model: model.id,
   content: [{ type: "text", text: "An earlier completed explanation." }], stopReason: "stop", timestamp: 1,
   usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } },
  } as LhMessage;
- const original = [newUserMessage("Initial learner"), previous]; chatStore.saveMessages(chat.id, original);
+ const original = [newUserMessage("Initial learner"), previous]; await chatStore.saveMessages(chat.id, original);
  const threads = [{ id: "side_native", anchor: { messageId: previous.id, partId: `${previous.id}-t0`, blockIndex: 0, blockText: "An earlier completed explanation." },
   open: true, createdAt: "2026-11-07T00:00:00Z", messages: [
    { id: "native_q", role: "user" as const, text: "RAW NATIVE QUESTION", at: "2026-11-07T00:00:00Z" },
    { id: "native_a", role: "assistant" as const, text: "RAW NATIVE REPLY", at: "2026-11-07T00:00:00Z" },
   ],
  }];
- chatStore.updateSideChats(chat.id, () => threads);
+ await chatStore.updateSideChats(chat.id, () => threads);
  const input = admission === "denied" ? { type: "steers", steers: [automatic("handler-auto")] } : { type: "text", text: "Continue the lesson" };
  const response = await handleChatInput(chat.id, input as Parameters<typeof handleChatInput>[1], (opts) => {
-  assert.equal(chatStore.getChat(chat.id)!.messages.filter((m) => m.role === "custom" && m.customType === "side-question").length, 0);
+  assert.equal(expectSync(chatStore.getChat(chat.id), "getChat")!.messages.filter((m) => m.role === "custom" && m.customType === "side-question").length, 0);
   return createTeacherAgent(undefined, { ...opts, tools: {} });
  }, { snapshot: () => threads });
  const turn = runningTurn(chat.id); if (turn) await new Response(turn.subscribe()).text();
  assert.equal(response.status, admission === "denied" ? 403 : 200);
  assert.equal(fetches, admission === "denied" ? 0 : 1); assert.deepEqual(leases, [admission === "denied"]);
- const saved = chatStore.getChat(chat.id)!;
+ const saved = (await chatStore.getChat(chat.id))!;
  assert.deepEqual(saved.messages.slice(0, original.length), original); assert.deepEqual(saved.sideChats, threads);
  assert.equal(saved.messages.filter((m) => m.role === "custom" && m.customType === "side-question").length, admission === "denied" ? 0 : 2);
  assert.equal(sideConversationEntries(saved).length, admission === "denied" ? 2 : 0, "unadmitted references must stay deliverable");

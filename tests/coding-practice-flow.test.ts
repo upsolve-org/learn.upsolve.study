@@ -38,8 +38,8 @@ const unregister = activate(ctx);
 after(async () => { unregister(); await host.dispose(); globalThis.fetch = realFetch; fs.rmSync(root, { recursive: true, force: true }); });
 
 test("real coding registration poses once, processes revisions before continuation, and reveals only through native conclude", { timeout: 15000 }, async () => {
-  const chat = chatStore.createChat("Isolated coding practice", "practice");
-  chatStore.saveSettings(chat.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } });
+  const chat = await chatStore.createChat("Isolated coding practice", "practice");
+  await chatStore.saveSettings(chat.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } });
   const practice = host.agentContributions({ chatId: chat.id, agent: "practice" }, ["problem", "conclude"]);
   const teacher = host.agentContributions({ chatId: chat.id, agent: "teacher" }, []);
   const prober = host.agentContributions({ chatId: chat.id, agent: "prober" }, []);
@@ -79,10 +79,10 @@ test("real coding registration poses once, processes revisions before continuati
     context => { modelInputs.push(JSON.stringify(context.messages)); return fauxAssistantMessage([fauxToolCall("conclude", { outcome: "solved", verdict: "Reviewed the code and reasoning", rung: null, missClass: null, retest: false }, { id: "coding-conclude" })], { stopReason: "toolUse" }); },
   ]);
   const factory: NonNullable<Parameters<typeof handleChatRequest>[1]> = options => {
-    factories++; return createPracticeAgent({ chatId: chat.id, chatStore }, { engine: { model: faux.getModel(), streamFn: faux.streamSimple }, messages: options.messages });
+    factories++; return createPracticeAgent({ chatId: chat.id, chatStore } as never, { engine: { model: faux.getModel(), streamFn: faux.streamSimple }, messages: options.messages });
   };
-  const saved = () => chatStore.getChat(chat.id)!;
-  const submissions = () => saved().messages.flatMap(message => message.role === "custom" && message.customType === "plugin-problem-submission" ? [readPluginProblemSubmission(message.details)!] : []);
+  const saved = async () => (await chatStore.getChat(chat.id))!;
+  const submissions = async () => (await saved()).messages.flatMap(message => message.role === "custom" && message.customType === "plugin-problem-submission" ? [readPluginProblemSubmission(message.details)!] : []);
   const post = async (submission: string, thinking: string) => {
     const response = await handleChatRequest(new Request("http://fixture/api/chat", { method: "POST", body: JSON.stringify({ chatId: chat.id, input: {
       type: "plugin-problem-submission", problemId: snapshot.problemId, occurrence, submission, thinking,
@@ -92,24 +92,24 @@ test("real coding registration poses once, processes revisions before continuati
   };
   const wrong = "  function square(x) { return x; }  \n\n", revised = "  function square(x) { return x * x; }  \n\n";
   await post(wrong, "First reasoning");
-  assert.equal(submissions().length, 1);
-  assert.equal(submissions()[0]!.submission, wrong);
-  assert.equal(submissions()[0]!.thinking, "First reasoning");
-  assert.equal(readTestResult((submissions()[0]!.processing as { result: unknown }).result)?.status, "failed");
+  assert.equal((await submissions()).length, 1);
+  assert.equal((await submissions())[0]!.submission, wrong);
+  assert.equal((await submissions())[0]!.thinking, "First reasoning");
+  assert.equal(readTestResult(((await submissions())[0]!.processing as { result: unknown }).result)?.status, "failed");
   assert.match(modelInputs[0]!, /Expected 9/);
-  assert.ok(activeProblemOf(saved().messages));
+  assert.ok(activeProblemOf((await saved()).messages));
   await post(revised, "Revised reasoning");
-  assert.equal(submissions().length, 2);
-  assert.equal(submissions()[1]!.submission, revised);
-  assert.equal(submissions()[1]!.thinking, "Revised reasoning");
-  assert.equal(readTestResult((submissions()[1]!.processing as { result: unknown }).result)?.status, "passed");
+  assert.equal((await submissions()).length, 2);
+  assert.equal((await submissions())[1]!.submission, revised);
+  assert.equal((await submissions())[1]!.thinking, "Revised reasoning");
+  assert.equal(readTestResult(((await submissions())[1]!.processing as { result: unknown }).result)?.status, "passed");
   assert.match(modelInputs[1]!, /Observed test passed/);
-  assert.ok(activeProblemOf(saved().messages), "Passing tests alone do not close the problem");
-  assert.equal(modelSolutionForConclude(saved().messages, "coding-conclude"), undefined);
+  assert.ok(activeProblemOf((await saved()).messages), "Passing tests alone do not close the problem");
+  assert.equal(modelSolutionForConclude((await saved()).messages, "coding-conclude"), undefined);
   await post(revised, "Ready for final assessment");
-  assert.equal(submissions().length, 3);
+  assert.equal((await submissions()).length, 3);
   assert.equal(factories, 3, "Exactly one normal continuation per accepted attempt");
-  assert.equal(activeProblemOf(saved().messages), null);
-  assert.equal(modelSolutionForConclude(saved().messages, "coding-conclude"), input.modelSolution);
+  assert.equal(activeProblemOf((await saved()).messages), null);
+  assert.equal(modelSolutionForConclude((await saved()).messages, "coding-conclude"), input.modelSolution);
   assert.deepEqual(fs.readdirSync(path.join(ctx.dataDirectory, "test-runs", snapshot.problemId)), []);
 });

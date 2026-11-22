@@ -59,8 +59,8 @@ function qwenModel() {
 }
 
 describe("the model catalog projection", () => {
-	it("serves the keyed providers' catalogs with the picker's DTO shape", () => {
-		const { models, defaults, providers, slots } = modelCatalog();
+	it("serves the keyed providers' catalogs with the picker's DTO shape", async () => {
+		const { models, defaults, providers, slots } = (await modelCatalog());
 		// 0.85.1 ships 366 OpenRouter models — the exact count is pi's, but
 		// the shape and the config models' presence are ours to pin.
 		assert.ok(models.length > 300, `expected a full catalog, got ${models.length}`);
@@ -97,7 +97,7 @@ describe("the model catalog projection", () => {
 		// the record is empty (defaults/slots NULL), on the owner's machine
 		// configured slots must surface exactly as configured.
 		const record = readSettings();
-		const strong = effectiveSettings().models.strong;
+		const strong = (await effectiveSettings()).models.strong;
 		if (strong) {
 			assert.ok(defaults, "a configured strong slot yields a default");
 			assert.deepEqual(defaults!.model, { provider: strong.provider, id: strong.id });
@@ -115,7 +115,7 @@ describe("the model catalog projection", () => {
 		}
 	});
 
-	it("defaults: the strong slot verbatim; null when unset (BYOK, per-session models 2026-09-28)", () => {
+	it("defaults: the strong slot verbatim; null when unset (BYOK, per-session models 2026-09-28)", async () => {
 		assert.equal(catalogDefaultsFor(null), null);
 		const strong = { provider: "openrouter", id: "z-ai/glm-5.3-flash", thinkingLevel: "low" as const };
 		const d = catalogDefaultsFor(strong);
@@ -126,7 +126,7 @@ describe("the model catalog projection", () => {
 		assert.deepEqual(bare, { model: { provider: "openrouter", id: "qwen/qwen3.8-flash" } });
 	});
 
-	it("toModelDto projects the raw catalog model verbatim", () => {
+	it("toModelDto projects the raw catalog model verbatim", async () => {
 		const raw = glmModel();
 		const dto = toModelDto(raw);
 		assert.equal(dto.id, raw.id);
@@ -139,7 +139,7 @@ describe("the model catalog projection", () => {
 });
 
 describe("the background roles' resolved pins (rolePins)", () => {
-	it("no record → every role is NULL (BYOK: no phantom defaults)", () => {
+	it("no record → every role is NULL (BYOK: no phantom defaults)", async () => {
 		const pins = rolePinsFor(resolveSettings(null).agent.models);
 		assert.deepEqual(Object.keys(pins), [...BACKGROUND_MODEL_ROLES]);
 		for (const role of BACKGROUND_MODEL_ROLES) {
@@ -147,7 +147,7 @@ describe("the background roles' resolved pins (rolePins)", () => {
 		}
 	});
 
-	it("a slot re-tiers its roles; overrides win for that role only", () => {
+	it("a slot re-tiers its roles; overrides win for that role only", async () => {
 		const record = {
 			version: 1,
 			models: { cheap: { model: { provider: "openrouter", id: "qwen/qwen3.8-flash" } } },
@@ -159,8 +159,8 @@ describe("the background roles' resolved pins (rolePins)", () => {
 		assert.equal(pins.visualMaker, null, "vision tier untouched");
 	});
 
-	it("catalogRolePins matches the same resolution the engine wiring uses", () => {
-		const pins = catalogRolePins();
+	it("catalogRolePins matches the same resolution the engine wiring uses", async () => {
+		const pins = (await catalogRolePins());
 		for (const role of BACKGROUND_MODEL_ROLES) {
 			assert.ok(pins[role] === null || typeof pins[role]!.model.id === "string");
 		}
@@ -168,10 +168,10 @@ describe("the background roles' resolved pins (rolePins)", () => {
 });
 
 describe("the model slots surface (model slots wave, 2026-09-20)", () => {
-	it("catalogSlots projects the record's tiers — NULL only where a tier holds no model", () => {
+	it("catalogSlots projects the record's tiers — NULL only where a tier holds no model", async () => {
 		// machine-aware (one-fs-owner: READ the record, never pin it)
 		const record = readSettings();
-		const slots = catalogSlots();
+		const slots = (await catalogSlots());
 		for (const name of ["strong", "cheap", "vision"] as const) {
 			const stored = record?.models?.[name];
 			if (stored?.model) {
@@ -183,13 +183,13 @@ describe("the model slots surface (model slots wave, 2026-09-20)", () => {
 		}
 	});
 
-	it("catalogProviders reads keys env-wins, fresh per call", () => {
-		const before = catalogProviders().find((p) => p.id === "zai");
+	it("catalogProviders reads keys env-wins, fresh per call", async () => {
+		const before = (await catalogProviders()).find((p) => p.id === "zai");
 		assert.equal(before?.keyPresent, false);
 		const saved = process.env.ZAI_API_KEY;
 		process.env.ZAI_API_KEY = "test-zai-key-1234567890";
 		try {
-			assert.equal(catalogProviders().find((p) => p.id === "zai")?.keyPresent, true);
+			assert.equal((await catalogProviders()).find((p) => p.id === "zai")?.keyPresent, true);
 		} finally {
 			if (saved === undefined) delete process.env.ZAI_API_KEY;
 			else process.env.ZAI_API_KEY = saved;
@@ -198,7 +198,7 @@ describe("the model slots surface (model slots wave, 2026-09-20)", () => {
 });
 
 describe("the models-section validation gate", () => {
-	it("accepts a valid slot and rejects unknown provider/model", () => {
+	it("accepts a valid slot and rejects unknown provider/model", async () => {
 		assert.equal(
 			validateModelsSettings({ strong: { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } } }).ok,
 			true,
@@ -213,7 +213,7 @@ describe("the models-section validation gate", () => {
 		);
 	});
 
-	it("thinking levels never reject a slot write (owner, interlude 2026-09-22)", () => {
+	it("thinking levels never reject a slot write (owner, interlude 2026-09-22)", async () => {
 		// clamp, never reject: the model swap with a pinned level JUST
 		// WORKS — validation accepts ANY level; the WRITE clamps to the
 		// new model's nearest supported and stores the clamped result.
@@ -227,7 +227,7 @@ describe("the models-section validation gate", () => {
 		);
 	});
 
-	it("clampModelsLevels: the slot's own model translates the pin (the owner's exact case)", () => {
+	it("clampModelsLevels: the slot's own model translates the pin (the owner's exact case)", async () => {
 		// Claude Fable 5.1 xhigh → GLM 5.3 flash: the pin clamps to glm's
 		// nearest supported (low|high|max) and the CLAMPED value is stored.
 		const glm = { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" }, thinkingLevel: "xhigh" as const };
@@ -255,13 +255,13 @@ describe("the models-section validation gate", () => {
 		});
 	});
 
-	it("accepts empty settings (the clear-slots write)", () => {
+	it("accepts empty settings (the clear-slots write)", async () => {
 		assert.deepEqual(validateModelsSettings({}), { ok: true });
 	});
 });
 
 describe("the settings validation gate", () => {
-	it("thinking levels never reject a chat write (owner, interlude 2026-09-22)", () => {
+	it("thinking levels never reject a chat write (owner, interlude 2026-09-22)", async () => {
 		assert.deepEqual(
 			validateChatSettings({ model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" }, thinkingLevel: "minimal" }),
 			{ ok: true },
@@ -269,7 +269,7 @@ describe("the settings validation gate", () => {
 		assert.deepEqual(validateChatSettings({ thinkingLevel: "xhigh" }), { ok: true });
 	});
 
-	it("clampChatLevel: the body's model, else the strong slot, translates the pin", () => {
+	it("clampChatLevel: the body's model, else the strong slot, translates the pin", async () => {
 		const glm = { provider: "openrouter", id: "z-ai/glm-5.3-flash" };
 		const strong: EffectiveSlot = { provider: "openrouter", id: "z-ai/glm-5.3-flash" };
 		// the body's own model wins
@@ -286,18 +286,18 @@ describe("the settings validation gate", () => {
 		assert.deepEqual(clampChatLevel({ model: { ...glm } }, strong), { model: { ...glm } });
 	});
 
-	it("rejects unknown providers and models", () => {
+	it("rejects unknown providers and models", async () => {
 		assert.equal(validateChatSettings({ model: { provider: "nope", id: "x/y" } }).ok, false);
 		assert.equal(validateChatSettings({ model: { provider: "openrouter", id: "nope/nope" } }).ok, false);
 	});
 
-	it("accepts empty settings (the clear-overrides write)", () => {
+	it("accepts empty settings (the clear-overrides write)", async () => {
 		assert.deepEqual(validateChatSettings({}), { ok: true });
 	});
 });
 
 describe("pi thinking truth (pinned against pi-ai upgrades)", () => {
-	it("glm-5.3-flash: low|high|max; anything else clamps to the nearest", () => {
+	it("glm-5.3-flash: low|high|max; anything else clamps to the nearest", async () => {
 		const glm = glmModel();
 		assert.deepEqual(getSupportedThinkingLevels(glm), ["low", "high", "max"]);
 		assert.equal(clampThinkingLevel(glm, "minimal"), "low");
@@ -306,7 +306,7 @@ describe("pi thinking truth (pinned against pi-ai upgrades)", () => {
 		assert.equal(clampThinkingLevel(glm, "high"), "high");
 	});
 
-	it("the engine factory clamps explicit levels; unknown models throw honestly", () => {
+	it("the engine factory clamps explicit levels; unknown models throw honestly", async () => {
 		const over = piEngineForSpec({ provider: "openrouter", id: "qwen/qwen3.8-flash", thinkingLevel: "high" });
 		assert.equal(over.model.id, "qwen/qwen3.8-flash");
 		assert.equal(over.level, "high");
@@ -315,7 +315,7 @@ describe("pi thinking truth (pinned against pi-ai upgrades)", () => {
 		assert.throws(() => piEngineForSpec({ provider: "openrouter", id: "nope/nope", thinkingLevel: "low" }), /catalog has no model/);
 	});
 
-	it("UNSET levels resolve from the baked DEFAULT_THINKING_ORDER (owner, 2026-09-22)", () => {
+	it("UNSET levels resolve from the baked DEFAULT_THINKING_ORDER (owner, 2026-09-22)", async () => {
 		assert.deepEqual([...DEFAULT_THINKING_ORDER], ["medium", "low", "high", "minimal", "xhigh", "max"]);
 		// glm supports low|high|max → first supported in the order is "low"
 		const glm = piEngineForSpec({ provider: "openrouter", id: "z-ai/glm-5.3-flash" });
@@ -341,7 +341,7 @@ describe("pi thinking truth (pinned against pi-ai upgrades)", () => {
 });
 /** Runs fn with PATH and HOME pointed at a temp dir, so the CLI lookup only
  *  finds a claude binary when installed is true. */
-function withClaudeInstalled(installed: boolean, fn: () => void, enabled = true): void {
+async function withClaudeInstalled(installed: boolean, fn: () => void | Promise<void>, enabled = true): Promise<void> {
 	const dir = fs.mkdtempSync(path.join(os.tmpdir(), "claude-catalog-"));
 	const saved = { PATH: process.env.PATH, HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, npm_config_prefix: process.env.npm_config_prefix };
 	const settings = readSettings();
@@ -355,7 +355,7 @@ function withClaudeInstalled(installed: boolean, fn: () => void, enabled = true)
 	delete process.env.npm_config_prefix;
 
 	try {
-		fn();
+		await fn();
 	} finally {
 		for (const [name, value] of Object.entries(saved)) {
 			if (value === undefined) delete process.env[name];
@@ -368,52 +368,52 @@ function withClaudeInstalled(installed: boolean, fn: () => void, enabled = true)
 }
 
 describe("the claude-code provider (native CLI authentication, no LearnHarness key)", () => {
-	it("modelCatalog() lists claude-code opus/sonnet/haiku when the CLI is installed", () => {
-		withClaudeInstalled(true, () => {
-			const ids = modelCatalog()
+	it("modelCatalog() lists claude-code opus/sonnet/haiku when the CLI is installed", async () => {
+		await withClaudeInstalled(true, async () => {
+			const ids = (await modelCatalog())
 				.models.filter((m) => m.provider === "claude-code")
 				.map((m) => m.id);
 			assert.deepEqual(ids, ["haiku", "opus", "sonnet"]);
 		});
 	});
 
-	it("catalogProviders() marks claude-code present when the CLI is installed", () => {
-		withClaudeInstalled(true, () => {
-			const row = catalogProviders().find((p) => p.id === "claude-code");
+	it("catalogProviders() marks claude-code present when the CLI is installed", async () => {
+		await withClaudeInstalled(true, async () => {
+			const row = (await catalogProviders()).find((p) => p.id === "claude-code");
 			assert.deepEqual(row, { id: "claude-code", envVar: "", keyPresent: true });
 		});
 	});
 
-	it("catalogProviders() marks claude-code absent and modelCatalog() hides it when the CLI is missing", () => {
-		withClaudeInstalled(false, () => {
-			const row = catalogProviders().find((p) => p.id === "claude-code");
+	it("catalogProviders() marks claude-code absent and modelCatalog() hides it when the CLI is missing", async () => {
+		await withClaudeInstalled(false, async () => {
+			const row = (await catalogProviders()).find((p) => p.id === "claude-code");
 			assert.equal(row?.keyPresent, false);
 			assert.equal(
-				modelCatalog().models.some((m) => m.provider === "claude-code"),
+				(await modelCatalog()).models.some((m) => m.provider === "claude-code"),
 				false,
 			);
 		});
 	});
 
-	it("catalogContextLimits() never advertises placeholder CLI limits, even when installed", () => {
-		withClaudeInstalled(true, () => {
-			assert.equal(catalogContextLimits().has("claude-code:opus"), false);
+	it("catalogContextLimits() never advertises placeholder CLI limits, even when installed", async () => {
+		await withClaudeInstalled(true, async () => {
+			assert.equal((await catalogContextLimits()).has("claude-code:opus"), false);
 		});
 	});
 
-	it('piEngineForSpec({ provider: "claude-code", id: "sonnet" }) resolves', () => {
+	it('piEngineForSpec({ provider: "claude-code", id: "sonnet" }) resolves', async () => {
 		const engine = piEngineForSpec({ provider: "claude-code", id: "sonnet" });
 		assert.equal(engine.model.provider, "claude-code");
 		assert.equal(engine.model.id, "sonnet");
 	});
 
-	it('providerKeyPresent("claude-code") requires both explicit opt-in and executable presence', () => {
-		withClaudeInstalled(true, () => assert.equal(providerKeyPresent("claude-code"), true));
-		withClaudeInstalled(false, () => assert.equal(providerKeyPresent("claude-code"), false));
-		withClaudeInstalled(true, () => {
+	it('providerKeyPresent("claude-code") requires both explicit opt-in and executable presence', async () => {
+		await withClaudeInstalled(true, () => assert.equal(providerKeyPresent("claude-code"), true));
+		await withClaudeInstalled(false, () => assert.equal(providerKeyPresent("claude-code"), false));
+		await withClaudeInstalled(true, async () => {
 			assert.equal(providerKeyPresent("claude-code"), false);
-			assert.equal(catalogProviders().find((p) => p.id === "claude-code")?.keyPresent, false);
-			assert(!modelCatalog().models.some((m) => m.provider === "claude-code"));
+			assert.equal((await catalogProviders()).find((p) => p.id === "claude-code")?.keyPresent, false);
+			assert(!(await modelCatalog()).models.some((m) => m.provider === "claude-code"));
 			assert.equal(validateChatSettings({ model: { provider: "claude-code", id: "sonnet" } }).ok, false);
 		}, false);
 	});

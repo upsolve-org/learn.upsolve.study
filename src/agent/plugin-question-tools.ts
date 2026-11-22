@@ -6,6 +6,7 @@ import {
 	type PluginQuestionGradingContext, type JsonValue,
 } from "../core/plugin-questions.ts";
 import { newMessageId } from "../core/native-messages.ts";
+import type { MaybePromise } from "../core/ports.ts";
 import { invalidInputResult, questionResult } from "./tool-execute.ts";
 
 /** Heterogeneous host registry: schemas are validated dynamically before these callbacks run.
@@ -43,7 +44,7 @@ export class PluginQuestionLedger {
 	readonly tools: AgentTool<any>[];
 
 	constructor(contributions: readonly NativePluginQuestionContribution[], private readonly chatId: string,
-		private readonly nodeExists?: (nodeId: string) => boolean) {
+		private readonly nodeExists?: (nodeId: string) => MaybePromise<boolean>) {
 		this.tools = contributions.map(contribution => {
 			const { definition, variant } = contribution;
 			const spec = definition[variant]!;
@@ -59,7 +60,7 @@ export class PluginQuestionLedger {
 					this.validatedCalls.delete(input as object);
 					const accepted = validatePluginQuestionInput(definition, { chatId: this.chatId, variant, input });
 					if (!accepted.ok) return invalidInputResult(spec.toolName, accepted.problems);
-					if (variant === "teach" && (!accepted.value.nodeId || !this.nodeExists?.(accepted.value.nodeId)))
+					if (variant === "teach" && (!accepted.value.nodeId || !(await this.nodeExists?.(accepted.value.nodeId))))
 						return invalidInputResult(spec.toolName, ["nodeId must identify a live node in this session's plan map."]);
 					contribution.requireActive();
 					call.epoch.poses.set(call.index, { questionId: crypto.randomUUID(), input: accepted.value, contribution });

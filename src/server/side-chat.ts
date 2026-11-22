@@ -4,7 +4,7 @@
  * is append-only; a live helper never delays the teacher. */
 import { emit } from "../core/events.ts";
 import type { ChatRecord, SideChatMessage, SideChatThread } from "../core/contracts.ts";
-import type { ChatStore } from "../core/ports.ts";
+import type { ChatStore, MaybePromise } from "../core/ports.ts";
 import { failedOutputCallIds, newMessageId, userFacingTextOf } from "../core/native-messages.ts";
 import {
 	newSideQuestion, newSideThread, sideSegmentId, sideChatLessonDocument,
@@ -18,7 +18,7 @@ import { piEngineForSpec, type PiEngine } from "../agent/models.ts";
 import { isSubscriptionProvider } from "../agent/subscription-connections.ts";
 import { usageWasAdmitted } from "../agent/subscription-request-cycle.ts";
 import { composeSideChatInstructions, streamSideAnswer } from "../agent/side-chat.ts";
-import { effectiveSettings, stores } from "./stores.ts";
+import { cachedSettings, effectiveSettings, stores } from "./stores.ts";
 import { providerKeyPresent } from "./keys.ts";
 import { refreshConnectionCatalog } from "./model-catalog.ts";
 import { awaitCompaction } from "./compaction.ts";
@@ -32,7 +32,7 @@ type SideEngine = PiEngine & { sideUsageAdmitted?: () => boolean };
 export interface SideChatDeps {
 	chatStore: ChatStore;
 	engineFor: (record: ChatRecord) => Promise<SideEngine | Response>;
-	instructions: () => string;
+	instructions: () => MaybePromise<string>;
 	beforeAsk?: (chatId: string) => Promise<void>;
 }
 interface SideRun {
@@ -46,13 +46,13 @@ interface SideRun {
 	settled: Promise<void>;
 }
 export interface SideChatService {
-	list(chatId: string): { threads: SideChatThread[]; answering: Record<string, string> } | null;
+	list(chatId: string): Promise<{ threads: SideChatThread[]; answering: Record<string, string> } | null>;
 	ask(chatId: string, input: SideAskInput): Promise<Response>;
-	watch(chatId: string, threadId: string): Response;
+	watch(chatId: string, threadId: string): Promise<Response>;
 	/** Pure snapshot, including current streamed text. The caller publishes
 	 * new deltas at model-request boundaries, without waiting for a helper. */
-	snapshot(chatId: string): SideChatThread[];
-	setOpen(chatId: string, threadId: string, open: boolean): SideChatThread | "unknown-chat" | "unknown-thread";
+	snapshot(chatId: string): Promise<SideChatThread[]>;
+	setOpen(chatId: string, threadId: string, open: boolean): Promise<SideChatThread | "unknown-chat" | "unknown-thread">;
 	stop(chatId: string, threadId: string): boolean;
 	stopAll(chatId: string): void;
 	settled(chatId: string, threadId: string): Promise<void>;
@@ -64,8 +64,8 @@ export function createSideChatService(deps: SideChatDeps): SideChatService {
 	const runs = new Map<string, SideRun>();
 	const announce = (chatId: string) => emit("side-chats-changed", { chatId });
 
-	function list(chatId: string) {
-		const record = deps.chatStore.getChat(chatId);
+	async function list(chatId: string) {
+		const record = await deps.chatStore.getChat(chatId);
 		if (!record) return null;
 		const answering: Record<string, string> = {};
 		for (const thread of record.sideChats ?? []) {
@@ -97,9 +97,9 @@ export function createSideChatService(deps: SideChatDeps): SideChatService {
 				write({ type: "text", text: run.text });
 				run.listeners.add(listener);
 				detach = () => { closed = true; run.listeners.delete(listener); };
-				void run.settled.then(() => {
+				void run.settled.then(async () => {
 					if (closed) return;
-					const latest = deps.chatStore.getChat(chatId)?.sideChats?.find((entry) => entry.id === thread.id);
+					const latest = (await deps.chatStore.getChat(chatId))?.sideChats?.find((entry) => entry.id === thread.id);
 					write(latest ? { type: "done", thread: latest } : { type: "error", error: "The session is gone." });
 					run.listeners.delete(listener);
 					close();
@@ -110,8 +110,8 @@ export function createSideChatService(deps: SideChatDeps): SideChatService {
 		return new Response(body, { headers: { "Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-cache, no-transform" } });
 	}
 
-	function watch(chatId: string, threadId: string): Response {
-		const record = deps.chatStore.getChat(chatId);
+	async function watch(chatId: string, threadId: string): Promise<Response> {
+		const record = await deps.chatStore.getChat(chatId);
 		if (!record) return Response.json({ error: "Unknown chat" }, { status: 404 });
 		const thread = record.sideChats?.find((entry) => entry.id === threadId);
 		return thread ? responseFor(chatId, thread, runs.get(runKey(chatId, threadId))) : Response.json({ error: "Unknown side conversation" }, { status: 404 });
@@ -119,12 +119,12 @@ export function createSideChatService(deps: SideChatDeps): SideChatService {
 
 	async function ask(chatId: string, input: SideAskInput): Promise<Response> {
 		await deps.beforeAsk?.(chatId);
-		const initial = deps.chatStore.getChat(chatId);
+		const initial = await deps.chatStore.getChat(chatId);
 		if (!initial) return Response.json({ error: "Unknown chat" }, { status: 404 });
 		const engine = await deps.engineFor(initial);
 		if (engine instanceof Response) return engine;
 		// No awaits between reading, deduplicating, saving and registration.
-		const record = deps.chatStore.getChat(chatId);
+		const record = await deps.chatStore.getChat(chatId);
 		if (!record) return Response.json({ error: "Unknown chat" }, { status: 404 });
 		const threads = record.sideChats ?? [];
 		let target = input.threadId ? threads.find((thread) => thread.id === input.threadId) : undefined;
@@ -175,12 +175,12 @@ export function createSideChatService(deps: SideChatDeps): SideChatService {
 		const lesson = sideChatLessonDocument(record.messages);
 		const turns = sideChatModelTurns(modelThread, lesson);
 		if (input.working?.trim()) turns[turns.length - 1]!.text += `\n\nLearner's current working (not submitted):\n${input.working.trim()}`;
-		const instructions = deps.instructions();
+		const instructions = await deps.instructions();
 		const estimatedTokens = Math.ceil((instructions.length + turns.reduce((sum, turn) => sum + turn.text.length, 0)) / 4);
 		if (engine.model.contextWindow > 0 && estimatedTokens > Math.max(1, engine.model.contextWindow - Math.min(COMPACTION_RESERVE_TOKENS, engine.model.maxTokens))) {
 			return Response.json({ error: "This side conversation and lesson exceed the selected model's context window. Select a model with a larger context window." }, { status: 400 });
 		}
-		const stored = deps.chatStore.updateSideChats(chatId, (current) => current.some((entry) => entry.id === thread.id)
+		const stored = await deps.chatStore.updateSideChats(chatId, (current) => current.some((entry) => entry.id === thread.id)
 			? current.map((entry) => entry.id === thread.id ? thread : entry) : [...current, thread]);
 		if (!stored) return Response.json({ error: "Unknown chat" }, { status: 404 });
 		const run: SideRun = {
@@ -205,14 +205,14 @@ export function createSideChatService(deps: SideChatDeps): SideChatService {
 					...(result.outcome === "aborted" ? { stopped: true } : {}),
 					...(result.outcome === "error" ? { error: result.errorMessage ?? "The model call failed." } : {}),
 				};
-				deps.chatStore.updateSideChats(chatId, (current) => current.map((entry) => {
+				await deps.chatStore.updateSideChats(chatId, (current) => current.map((entry) => {
 					if (entry.id !== thread.id) return entry;
 					settledThread = { ...entry, messages: [...entry.messages, answer] };
 					return settledThread;
 				}));
 				if (result.usage && usageWasAdmitted(result.usage) && engine.sideUsageAdmitted?.() !== false) {
 					try {
-						deps.chatStore.appendTurnUsage(chatId, { id: run.answerId, messageId: answer.id, at, model: run.model, steps: [{
+						await deps.chatStore.appendTurnUsage(chatId, { id: run.answerId, messageId: answer.id, at, model: run.model, steps: [{
 							inputTokens: result.usage.input, outputTokens: result.usage.output, cacheReadTokens: result.usage.cacheRead,
 							cacheWriteTokens: result.usage.cacheWrite, cacheWrite1hTokens: result.usage.cacheWrite1h ?? 0,
 							reasoningTokens: result.usage.reasoning ?? 0,
@@ -233,8 +233,8 @@ export function createSideChatService(deps: SideChatDeps): SideChatService {
 		return responseFor(chatId, thread, run);
 	}
 
-	function snapshot(chatId: string): SideChatThread[] {
-		return (deps.chatStore.getChat(chatId)?.sideChats ?? []).map((thread) => {
+	async function snapshot(chatId: string): Promise<SideChatThread[]> {
+		return ((await deps.chatStore.getChat(chatId))?.sideChats ?? []).map((thread) => {
 			const run = runs.get(runKey(chatId, thread.id));
 			const messages = run ? [...thread.messages, {
 				id: run.answerId, role: "assistant" as const, text: run.text, at: run.updatedAt, model: run.model, pending: true,
@@ -242,9 +242,9 @@ export function createSideChatService(deps: SideChatDeps): SideChatService {
 			return { ...thread, messages };
 		});
 	}
-	function setOpen(chatId: string, threadId: string, open: boolean) {
+	async function setOpen(chatId: string, threadId: string, open: boolean) {
 		let found: SideChatThread | undefined;
-		const stored = deps.chatStore.updateSideChats(chatId, (current) => current.map((thread) => {
+		const stored = await deps.chatStore.updateSideChats(chatId, (current) => current.map((thread) => {
 			if (thread.id !== threadId) return thread;
 			found = { ...thread, open }; return found;
 		}));
@@ -265,19 +265,19 @@ export function createSideChatService(deps: SideChatDeps): SideChatService {
 }
 
 async function productionEngineFor(record: ChatRecord): Promise<SideEngine | Response> {
-	const spec = resolveSideQuestionSpec(record.settings, stores.settingsStore.readSettings());
+	const spec = resolveSideQuestionSpec(record.settings, await stores.settingsStore.readSettings());
 	if (!spec) return Response.json(modelsNotConfigured(["strong"]), { status: 503 });
 	if (isSubscriptionProvider(spec.provider)) await refreshConnectionCatalog(spec.provider);
 	if (!providerKeyPresent(spec.provider)) return Response.json(providerKeyMissingEnvelope(spec.provider, ["strong"]), { status: 503 });
 	try {
 		let denied = false;
 		const engine = piEngineForSpec(spec, false, { captured() {}, beforeDispatch() {}, noDispatch() { denied = true; } },
-			() => stores.settingsStore.readSettings()?.models?.strong?.cacheRetention);
+			() => cachedSettings()?.models?.strong?.cacheRetention);
 		return { ...engine, sideUsageAdmitted: () => !denied };
 	} catch { return Response.json({ error: "The selected model is unavailable." }, { status: 503 }); }
 }
 interface SideChatGlobal { __lhSideChatService?: SideChatService }
 export const sideChats: SideChatService = ((globalThis as typeof globalThis & SideChatGlobal).__lhSideChatService ??= createSideChatService({
 	chatStore: stores.chatStore, engineFor: productionEngineFor, beforeAsk: awaitCompaction,
-	instructions: () => composeSideChatInstructions(effectiveSettings().agent.prompts),
+	instructions: async () => composeSideChatInstructions((await effectiveSettings()).agent.prompts),
 }));

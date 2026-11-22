@@ -193,10 +193,10 @@ function planPart(toolCallId: string, name: string, input: Record<string, unknow
 
 /** A session-shaped fixture chat: probe → teaching text → check. Tree-blind
  *  world: the plan tree is NOT part of extraction — it is noise. */
-function fixtureChat() {
-	const chat = chatStore.createChat("Extraction fixture");
+async function fixtureChat() {
+	const chat = (await chatStore.createChat("Extraction fixture"));
 	createdChats.push(chat.id);
-	chatStore.saveMessages(chat.id, [
+	(await chatStore.saveMessages(chat.id, [
 		user("u1", "teach me the chain rule"),
 		...assistant("a1", [
 			{ type: "text", text: "The chain rule composes rates of change along a path." },
@@ -220,8 +220,8 @@ function fixtureChat() {
 				answeredAt: "2026-08-22T02:00:00.000Z",
 			}),
 		]),
-	].flat());
-	return { chatId: chat.id, record: chatStore.getChat(chat.id)! };
+	].flat()));
+	return { chatId: chat.id, record: (await chatStore.getChat(chat.id))! };
 }
 
 after(() => {
@@ -334,8 +334,8 @@ function silentModel(): PiEngine {
 // ─── transcriptView (pure) ───────────────────────────────────────────────────
 
 describe("transcriptView (pure — teacher prose only, owner 2026-09-28)", () => {
-	it("renders ONLY the teacher's prose — no learner, no checks, no tool notes", () => {
-		const { record } = fixtureChat();
+	it("renders ONLY the teacher's prose — no learner, no checks, no tool notes", async () => {
+		const { record } = (await fixtureChat());
 		const view = transcriptView(record);
 
 		// The document header is the session title; the body is the
@@ -366,10 +366,10 @@ describe("transcriptView (pure — teacher prose only, owner 2026-09-28)", () =>
 		assert.doesNotMatch(view, /plan_init/);
 	});
 
-	it("job tool results and empty text vanish — only prose paragraphs remain", () => {
-		const chat = chatStore.createChat("View noise fixture");
+	it("job tool results and empty text vanish — only prose paragraphs remain", async () => {
+		const chat = (await chatStore.createChat("View noise fixture"));
 		createdChats.push(chat.id);
-		chatStore.saveMessages(chat.id, [
+		(await chatStore.saveMessages(chat.id, [
 			user("u1", "go"),
 			...assistant("a1", [
 				{
@@ -381,8 +381,8 @@ describe("transcriptView (pure — teacher prose only, owner 2026-09-28)", () =>
 				{ type: "text", text: "   " },
 				{ type: "text", text: "Prose survives." },
 			]),
-		].flat());
-		const view = transcriptView(chatStore.getChat(chat.id)!);
+		].flat()));
+		const view = transcriptView((await chatStore.getChat(chat.id))!);
 		assert.match(view, /^TEACHER \[a1\] Prose survives\.$/m, "the surviving passage is labeled with its real id");
 		assert.doesNotMatch(view, /research/);
 		assert.doesNotMatch(view, /long brief/);
@@ -394,7 +394,7 @@ describe("transcriptView (pure — teacher prose only, owner 2026-09-28)", () =>
 
 describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	it("push S5: every registry mutation announces activity-changed; reads stay silent", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const verdict: AuditVerdicts = { links: [] };
 		const pipeline = createExtractionPipeline({
@@ -424,7 +424,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("stringified-payload heal (owner, 2026-09-28): propositions arriving as ONE JSON string still validate and merge", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const verdict: AuditVerdicts = { links: [] };
 
@@ -443,7 +443,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("stringified-payload heal: the CHAINS array arriving as ONE JSON string still validates (redesign, 2026-09-30)", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const extractor = submitModel("submit_findings", {
 			propositions: FINDINGS.propositions,
@@ -459,7 +459,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("runs end to end: findings → audit verdict (identity) → deterministic merge + checkpoint", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 
 		// The auditor passes p1 through and LINKS it to a pre-existing node
@@ -511,7 +511,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 		// COVERAGE checkpointed per message (not a whole-chat checkpoint):
 		// one entry per transcript message, fingerprinted content each —
 		// the same turns are never extracted twice.
-		const record = chatStore.getChat(chatId)!;
+		const record = (await chatStore.getChat(chatId))!;
 		const covered = ledgers.readCoverage();
 		// Wave D: the coverage unit is the VISIBLE native message — bonded
 		// riders with no view lines (a textless call message) are context,
@@ -531,11 +531,11 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("BYOK refusal: no stage engines anywhere → the run throws honestly before any stage (owner, 2026-09-22)", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		// No direct engines AND no engineFor — the chain came up empty.
 		const pipeline = createExtractionPipeline({ chatStore, graphStore: ledgers });
-		await assert.rejects(pipeline.runExtraction(chatId), (err: unknown) => {
+		await assert.rejects((pipeline.runExtraction(chatId)), (err: unknown) => {
 			assert.ok(err instanceof ModelsNotConfiguredError);
 			assert.deepEqual(err.envelope.missing, ["cheap"]); // extractor + auditor, both cheap-tier
 			assert.equal(err.envelope.code, "models_not_configured");
@@ -546,7 +546,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("key-presence refusal: a stage engine whose provider key is gone throws before any batch (provider-key interlude, 2026-09-25)", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const extractor = fauxEngine([]);
 		const auditor = fauxEngine([]);
@@ -561,7 +561,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 				return providerKeyMissing(provider, [tier]);
 			},
 		});
-		await assert.rejects(pipeline.runExtraction(chatId), (err: unknown) => {
+		await assert.rejects((pipeline.runExtraction(chatId)), (err: unknown) => {
 			assert.ok(err instanceof ProviderKeyMissingError);
 			assert.equal(err.envelope.code, "provider_key_missing");
 			assert.equal(err.envelope.provider, extractor.model.provider, "the provider of the keyless engine");
@@ -575,7 +575,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("key-presence pass-through: null from the check lets a stage through — the NEXT keyless stage surfaces (first-offender discipline)", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		let calls = 0;
 		const pipeline = createExtractionPipeline({
@@ -585,7 +585,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 			auditor: fauxEngine([]),
 			providerKeyMissing: (provider, tier) => (calls++ < 1 ? null : providerKeyMissing(provider, [tier])),
 		});
-		await assert.rejects(pipeline.runExtraction(chatId), (err: unknown) => {
+		await assert.rejects((pipeline.runExtraction(chatId)), (err: unknown) => {
 			assert.ok(err instanceof ProviderKeyMissingError, "the auditor's refusal surfaces after the extractor passed");
 			return true;
 		});
@@ -594,7 +594,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("the LLM cluster-namer is DEAD (wave 7): a merge mints no naming runs — labels are session names now", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		// Empty verdicts: everything creates (verdicts-only, 2026-09-28).
 		const verdict: AuditVerdicts = { links: [] };
@@ -614,7 +614,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 
 
 	it("engineFor fills the stages (model slots wave): the chain replaces config pins", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const verdict: AuditVerdicts = { links: [] };
 		const consulted: string[] = [];
@@ -640,7 +640,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("direct test values still WIN over engineFor (the priority pin)", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const verdict: AuditVerdicts = { links: [] };
 		const pipeline = createExtractionPipeline({
@@ -658,7 +658,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("a failing stage is ISOLATED (per-chunk jobs, owner 2026-09-28): the job fails, nothing merges — and a sibling batch still merges", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 
 		const pipeline = createExtractionPipeline({
@@ -687,14 +687,14 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 		// never submits — batch 1 still merges, batch 2 stays uncovered
 		// (honestly re-runnable). Count at stream-INVOKE time: readiness
 		// probes mint engines without ever calling them.
-		const { chatId: chunkyId, record } = chunkyChat();
+		const { chatId: chunkyId, record } = (await chunkyChat());
 		let invocations = 0;
 		const findings = findingsStep();
 		const refuse = fauxAssistantMessage("I refuse to use tools");
-		const countingStep: FauxResponseStep = (context, options, state, model) => {
+		const countingStep: FauxResponseStep = async (context, options, state, model) => {
 			invocations++;
 			const step = invocations === 1 ? findings : refuse;
-			return typeof step === "function" ? step(context, options, state, model) : step;
+			return typeof step === "function" ? (await step(context, options, state, model)) : step;
 		};
 		const mixed = createExtractionPipeline({
 			chatStore,
@@ -719,7 +719,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("reports its phase through the status registry while running, and clears it when done", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const existingId = "n_existing";
 		ledgers.appendNode({
@@ -749,8 +749,8 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("serialized audit (owner 2026-09-28): a second run QUEUES at the gate; its auditor explores the graph only AFTER the first run's merge", async () => {
-		const a = fixtureChat();
-		const b = fixtureChat();
+		const a = (await fixtureChat());
+		const b = (await fixtureChat());
 		const ledgers = memoryLedgers();
 
 		const single = (id: string, name: string, statement: string) => ({
@@ -805,9 +805,9 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("serialized audit: a run ABORTED while waiting never audits — and the queue chain stays healthy for successors", async () => {
-		const a = fixtureChat();
-		const b = fixtureChat();
-		const c = fixtureChat();
+		const a = (await fixtureChat());
+		const b = (await fixtureChat());
+		const c = (await fixtureChat());
 		const ledgers = memoryLedgers();
 
 		const single = (id: string, name: string, statement: string) => ({
@@ -859,7 +859,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("captures per-stage usage live, persists the run's usage into the chat record", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const existingId = "n_existing";
 		ledgers.appendNode({
@@ -903,7 +903,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 
 		// Persisted: the run appended ONE usage entry to the chat's
 		// extractions log — per-stage model + steps, with merge stats.
-		const record = chatStore.getChat(chatId)!;
+		const record = (await chatStore.getChat(chatId))!;
 		assert.equal(record.extractions?.length, 1);
 		const run = record.extractions![0]!;
 		assert.equal(run.stats?.nodes, 1); // p2 created; p1 linked, not created
@@ -928,7 +928,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("aborts mid-run: cancels the model call, persists partial usage, checkpoints nothing", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 
 		const pipeline = createExtractionPipeline({
@@ -939,8 +939,9 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 		});
 		const runPromise = pipeline.runExtraction(chatId);
 
-		// The registry entry exists synchronously after the call (setPhase
-		// runs before the first await); abort is TRUE cancellation.
+		// The run is announced asynchronously now (the port awaits); wait for
+		// its registry row before aborting — abort is still TRUE cancellation.
+		await until(() => extractionStatuses().some((r) => r.chatId === chatId));
 		assert.equal(abortExtraction(chatId), true);
 		const stats = await runPromise;
 
@@ -952,7 +953,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 
 		// Partial usage still persisted (money was spent): stats absent,
 		// no completed steps in either stage.
-		const record = chatStore.getChat(chatId)!;
+		const record = (await chatStore.getChat(chatId))!;
 		assert.equal(record.extractions?.length, 1);
 		const run = record.extractions![0]!;
 		assert.equal(run.stats, undefined);
@@ -964,7 +965,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("is single-flight per chat — a concurrent second run is a no-op", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 
 		// The extractor's first call hangs until we release it.
@@ -1000,7 +1001,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 	});
 
 	it("registers runs on the process-wide registry (route-instance safety): a second pipeline instance sees the same single-flight state", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 
 		// Gated extractor: the first call hangs until released, so the run
@@ -1034,8 +1035,8 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 		});
 
 		const first = pipeline.runExtraction(chatId);
-		// The synchronous prefix (setPhase at batch start) registers BEFORE
-		// the first await — the run is visible the moment it starts.
+		// Registration now lands after the async port awaits.
+		await until(() => extractionStatuses().some((r) => r.chatId === chatId && r.phase === "extracting"));
 		assert.ok(
 			extractionStatuses().some((run) => run.chatId === chatId && run.phase === "extracting"),
 			"the run is registered at start",
@@ -1058,7 +1059,7 @@ describe("the extraction pipeline (extractor → auditor → merger)", () => {
 			extractor: silentModel(),
 			auditor: silentModel(),
 		});
-		await assert.rejects(pipeline.runExtraction("chat_does_not_exist"), /Chat not found/);
+		await assert.rejects((pipeline.runExtraction("chat_does_not_exist")), /Chat not found/);
 	});
 });
 
@@ -1081,7 +1082,7 @@ describe("message anchors (session propositions carry their passage's id)", () =
 		);
 
 	it("a submit MISSING messageId never passes: the schema rejects every turn — nothing merges, nothing checkpoints", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		// The degraded shape: propositions without anchors, chains present —
 		// only the REQUIRED field is missing, and the schema refuses it on
@@ -1107,7 +1108,7 @@ describe("message anchors (session propositions carry their passage's id)", () =
 	});
 
 	it("an EMPTY or UNKNOWN anchor rides the error-back channel: refused, the model re-anchors clean, then merges", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		// Three bad anchors, all schema-valid (messageId is a string) — only
 		// the anchor law refuses them: empty, a LEARNER message of this very
@@ -1130,7 +1131,7 @@ describe("message anchors (session propositions carry their passage's id)", () =
 	});
 
 	it("the boundary is the CURRENT BATCH: a real teacher message id from another batch is refused, the in-batch retry merges", async () => {
-		const { chatId } = chunkyChat(); // deterministic batches [a1,a2,a3] + [a4,a5] at the 4096 budget
+		const { chatId } = (await chunkyChat()); // deterministic batches [a1,a2,a3] + [a4,a5] at the 4096 budget
 		const ledgers = memoryLedgers();
 		// Batch 1: "a5" is a REAL teacher-prose id of this very chat — but it
 		// lives in batch 2, so this stretch refuses it; the re-anchor to "a2"
@@ -1156,7 +1157,7 @@ describe("message anchors (session propositions carry their passage's id)", () =
 	});
 
 	it("a LINK-APPEND carries its proposition's anchor into the existing node's provenance", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const existingId = "n_anchor_existing";
 		ledgers.appendNode({
@@ -1181,7 +1182,7 @@ describe("message anchors (session propositions carry their passage's id)", () =
 			.find((line) => line.provenance.some((pt) => pt.chatId === chatId))!;
 		assert.deepEqual(appended.provenance, [{ chatId, messageId: "a2" }]);
 		// And the derived graph unions it under the same point identity.
-		const merged = getGraph(ledgers).nodes.find((n) => n.id === existingId)!;
+		const merged = (await getGraph(ledgers)).nodes.find((n) => n.id === existingId)!;
 		assert.ok(merged.provenance.some((pt) => pt.chatId === chatId && pt.messageId === "a2"));
 	});
 
@@ -1221,7 +1222,7 @@ describe("message anchors (session propositions carry their passage's id)", () =
 	});
 
 	it("coverage fingerprints are UNCHANGED by the anchors: the stored fps equal the plain coverage-slot hashes", async () => {
-		const { chatId, record } = chunkyChat();
+		const { chatId, record } = (await chunkyChat());
 		const ledgers = memoryLedgers();
 		const pipeline = createExtractionPipeline({
 			chatStore,
@@ -1290,7 +1291,7 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 	}
 
 	it("co-premises ride as ONE stored argument — the fan-out to arrows is the derived view, not the store", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const extractor = submitModel("submit_findings", {
 			propositions: [
@@ -1321,7 +1322,7 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 	});
 
 	it("two chains sharing a conclusion union their premises; a bare proposition stays an edge-less node", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const extractor = submitModel("submit_findings", {
 			propositions: [
@@ -1349,7 +1350,7 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 	});
 
 	it("identical chains dedupe SILENTLY at the expansion — restating an argument is a no-op, not an error", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const extractor = submitModel("submit_findings", {
 			...FINDINGS,
@@ -1365,7 +1366,7 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 	});
 
 	it("the OLD wire shape (an edges array, no chains) is dead: validation fails every turn — nothing merges", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const oldShape = () =>
 			fauxEngine(
@@ -1393,7 +1394,7 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 	});
 
 	it("validate error-back: a chain referencing an UNKNOWN id is rejected, the model re-submits clean", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const bad = {
 			...FINDINGS,
@@ -1411,7 +1412,7 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 	});
 
 	it("validate error-back: a conclusion in its OWN premises is rejected, the model re-submits clean", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const bad = {
 			...FINDINGS,
@@ -1427,7 +1428,7 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 	});
 
 	it("empty premises never pass: the schema's minItems rejects, the model re-submits clean", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const bad = {
 			...FINDINGS,
@@ -1510,7 +1511,7 @@ describe("the extractor redesign (owner, 2026-09-30): chains are the deliverable
 	});
 
 	it("the session runner still receives the unchanged teaching-session instructions", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		let calls = 0;
 		const pipeline = createExtractionPipeline({
 			chatStore,
@@ -1592,7 +1593,8 @@ describe("the notes front door (importNotes — format-agnostic)", () => {
 		assert.deepEqual(stats, { nodes: 1, chains: 0 });
 		// The run surfaced as a NOTES run labeled with the file path.
 		assert.deepEqual(seen, [{ kind: "notes", label: "/vault/learn vim.md" }]);
-		assert.equal(extractionStatuses().length, 0, "the registry clears when the run ends");
+		await until(() => extractionStatuses().every((r) => !r.chatId.startsWith("src_")));
+		assert.equal(extractionStatuses().filter((r) => r.chatId.startsWith("src_")).length, 0, "the registry clears when the run ends");
 
 		// The source record: deterministic src id, the file path, the usage log.
 		const source = ledgers.readSources()[0]!;
@@ -1658,7 +1660,7 @@ describe("the notes front door (importNotes — format-agnostic)", () => {
 	});
 
 	it("required top-level fields (owner, 2026-09-28; chains since 2026-09-30): a findings submit MISSING chains fails validation — no silent structure-less merge", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		// The degraded-retry shape from the OpenRouter log: propositions
 		// only, edges omitted. Required schema → validation fails on every
@@ -1726,6 +1728,7 @@ describe("the notes front door (importNotes — format-agnostic)", () => {
 		});
 		const runPromise = pipeline.importNotes({ filePath: "/vault/learn vim.md", text: NOTES_TEXT });
 
+		await until(() => extractionStatuses().some((r) => r.chatId.startsWith("src_")));
 		const srcId = extractionStatuses().find((r) => r.chatId.startsWith("src_"))!.chatId;
 		assert.equal(abortExtraction(srcId), true);
 		await assert.rejects(runPromise, (error) => error instanceof NotesImportError && error.outcome === "aborted" && error.partialStats.nodes === 0);
@@ -1789,23 +1792,23 @@ function passThroughAuditStep(): FauxResponseStep {
 /** A session with UNCOVERED-multiple-batch mass: five long distinct messages
  *  (~1200 tok each — 3600+1200 > the factory chunk budget 4096 → batches of
  *  [m1,m2,m3] and [m4,m5]). */
-function chunkyChat() {
-	const chat = chatStore.createChat("Chunky coverage fixture");
+async function chunkyChat() {
+	const chat = (await chatStore.createChat("Chunky coverage fixture"));
 	createdChats.push(chat.id);
 	// ~1230 tok per TEACHER message (chars/4): three fill the 4096 budget,
 	// the fourth would overflow — deterministic batches [m1,m2,m3] + [m4,m5].
 	// Teacher prose only (owner, 2026-09-28): learner messages are
 	// invisible to coverage, so the fixture is all-teacher.
-	chatStore.saveMessages(
+	(await chatStore.saveMessages(
 		chat.id,
 		[1, 2, 3, 4, 5].flatMap((n) => assistant(`a${n}`, [{ type: "text", text: `topic ${n}: ${"detail ".repeat(700)}${n}` }])),
-	);
-	return { chatId: chat.id, record: chatStore.getChat(chat.id)! };
+	));
+	return { chatId: chat.id, record: (await chatStore.getChat(chat.id))! };
 }
 
 describe("the chunked pipeline (extraction coverage)", () => {
 	it("extracts uncovered messages in token-budgeted batches, checkpoints coverage per batch, and no-ops once covered", async () => {
-		const { chatId, record } = chunkyChat();
+		const { chatId, record } = (await chunkyChat());
 		const ledgers = memoryLedgers();
 		const views: string[] = [];
 
@@ -1861,11 +1864,11 @@ describe("the chunked pipeline (extraction coverage)", () => {
 		assert.equal(views.length, before);
 		// PER-CHUNK JOBS (owner 2026-09-28): one usage record per batch job
 		// (two), and the no-op run adds none.
-		assert.equal(chatStore.getChat(chatId)!.extractions?.length, 2, "one usage record per batch job; the no-op run persists none");
+		assert.equal((await chatStore.getChat(chatId))!.extractions?.length, 2, "one usage record per batch job; the no-op run persists none");
 	});
 
 	it("aborting after a merged batch keeps it covered; the re-run extracts only the remainder", async () => {
-		const { chatId, record } = chunkyChat();
+		const { chatId, record } = (await chunkyChat());
 		const ledgers = memoryLedgers();
 		const views: string[] = [];
 
@@ -1932,12 +1935,12 @@ describe("the chunked pipeline (extraction coverage)", () => {
 	it("a re-opened message re-extracts alone; a data-part attach never re-opens it", async () => {
 		// A small session: one batch covers everything, so re-openings are
 		// the ONLY thing later runs can see.
-		const chat = chatStore.createChat("Re-open fixture");
+		const chat = (await chatStore.createChat("Re-open fixture"));
 		createdChats.push(chat.id);
-		chatStore.saveMessages(chat.id, [
+		(await chatStore.saveMessages(chat.id, [
 			...assistant("s1", [{ type: "text", text: "short topic one" }]),
 			...assistant("s2", [{ type: "text", text: "short topic two" }]),
-		].flat());
+		].flat()));
 		const chatId = chat.id;
 		const ledgers = memoryLedgers();
 		const pipeline = createExtractionPipeline({
@@ -1948,30 +1951,30 @@ describe("the chunked pipeline (extraction coverage)", () => {
 		});
 		await pipeline.runExtraction(chatId);
 		// Wave D: the record IS native history — coverage reads it directly.
-		const record = () => chatStore.getChat(chatId)!.messages;
-		const messages = () => record();
-		assert.equal(coverageOf(messages(), ledgers.readCoverage(), chatId).uncoveredCount, 0);
+		const record = async () => (await chatStore.getChat(chatId))!.messages;
+		const messages = async () => (await record());
+		assert.equal(coverageOf((await messages()), ledgers.readCoverage(), chatId).uncoveredCount, 0);
 
 		// Data parts are invisible to the extraction view — a plan-block
 		// marker append (whose data part splices into the projected view)
 		// does NOT re-open a covered message.
-		chatStore.saveMessages(chatId, [
-			...record(),
+		(await chatStore.saveMessages(chatId, [
+			...(await record()),
 			newPlanBlockMessage("call_s2", { kind: "full", at: "2026-09-26T00:00:00.000Z", current: null, nodes: [], edges: [] }),
-		]);
-		const afterAttach = coverageOf(messages(), ledgers.readCoverage(), chatId);
+		]));
+		const afterAttach = coverageOf((await messages()), ledgers.readCoverage(), chatId);
 		assert.equal(afterAttach.uncoveredCount, 0, "data parts don't change the fingerprint");
 
 		// A teacher-prose edit changes the message's view → exactly that
 		// message re-opens, and the next run extracts it alone. (Under the
 		// 2026-09-28 ruling only TEACHER prose can re-open anything.)
-		const mutated = record().map((m) =>
+		const mutated = (await record()).map((m) =>
 			(m as { id?: string }).id === "s1"
 				? ({ ...m, content: [...(m as { content: unknown[] }).content, { type: "text", text: "the answer merged in late" }] } as never)
 				: m,
 		);
-		chatStore.saveMessages(chatId, mutated);
-		const afterMerge = coverageOf(messages(), ledgers.readCoverage(), chatId);
+		(await chatStore.saveMessages(chatId, mutated));
+		const afterMerge = coverageOf((await messages()), ledgers.readCoverage(), chatId);
 		assert.equal(afterMerge.uncoveredCount, 1, "only the mutated message re-opens");
 
 		const reRunViews: string[] = [];
@@ -1985,7 +1988,7 @@ describe("the chunked pipeline (extraction coverage)", () => {
 		assert.equal(reRunViews.length, 1, "one batch: the single re-opened message");
 		assert.ok(reRunViews[0]!.includes("the answer merged in late") && !reRunViews[0]!.includes("short topic two"));
 		assert.ok(reRunViews[0]!.includes("short topic one"), "the re-opened message renders its full prose");
-		assert.equal(coverageOf(messages(), ledgers.readCoverage(), chatId).uncoveredCount, 0, "re-covered");
+		assert.equal(coverageOf((await messages()), ledgers.readCoverage(), chatId).uncoveredCount, 0, "re-covered");
 	});
 });
 
@@ -2026,8 +2029,9 @@ describe("per-chunk parallel jobs (owner, 2026-09-28)", () => {
 		});
 		const runPromise = pipeline.importNotes({ filePath: "/vault/parallel.md", text: wideText() });
 
-		const srcId = extractionStatuses().find((r) => r.chatId.startsWith("src_"))!.chatId;
-		await until(() => extractionStatuses().some((r) => r.chatId === srcId && r.phase === "extracting"), 500);
+		await until(() => ledgers.readSources().length > 0);
+		const srcId = ledgers.readSources()[0]!.id;
+		await until(() => extractionStatuses().some((r) => r.chatId === srcId && r.phase === "extracting" && r.part?.i === 1), 500);
 		const rows = extractionStatuses().filter((r) => r.chatId === srcId);
 		assert.equal(rows.length, 1, "one live row — the source's chunks run strictly in order");
 		assert.equal(rows[0]!.phase, "extracting");
@@ -2101,7 +2105,7 @@ describe("per-chunk parallel jobs (owner, 2026-09-28)", () => {
 
 describe("the session-deletion guard (chat deleted mid-run)", () => {
 	it("a run whose chat dies mid-extraction aborts at the merge with nothing merged, checkpointed, or billed", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 
 		// The chat record is deleted DURING the audit model call — the worst
@@ -2110,7 +2114,7 @@ describe("the session-deletion guard (chat deleted mid-run)", () => {
 			chatStore,
 			graphStore: ledgers,
 			extractor: submitModel("submit_findings", FINDINGS),
-			auditor: submitModel("submit_review", { links: [] }, () => chatStore.deleteChat(chatId)),
+			auditor: submitModel("submit_review", { links: [] }, async () => (await chatStore.deleteChat(chatId))),
 		});
 		const stats = await pipeline.runExtraction(chatId);
 
@@ -2130,7 +2134,7 @@ describe("the session-deletion guard (chat deleted mid-run)", () => {
 		// The run is off the registry (the finally always cleans up).
 		assert.equal(extractionStatuses().some((run) => run.chatId === chatId), false);
 		// And its partial spend died with the chat — no usage row on a ghost.
-		assert.equal(chatStore.getChat(chatId), null);
+		assert.equal((await chatStore.getChat(chatId)), null);
 	});
 });
 
@@ -2223,8 +2227,8 @@ describe("digest-aware serialized extraction (the extractor is the assembler)", 
 		});
 		const stats = await pipeline.importNotes({ filePath: "synthetic-candidates.txt", text: "Liquid changes into vapor." });
 		assert.equal(stats.nodes, 0, "the candidate identity is used by the existing merger");
-		assert.equal(getGraph(ledgers).nodes.length, 1);
-		assert.ok(getGraph(ledgers).nodes[0]!.provenance.some((point) => point.chatId === ledgers.readSources()[0]!.id));
+		assert.equal((await getGraph(ledgers)).nodes.length, 1);
+		assert.ok((await getGraph(ledgers)).nodes[0]!.provenance.some((point) => point.chatId === ledgers.readSources()[0]!.id));
 	});
 
 	it("a supplied accepted alias can be matched and submitted in one auditor response, with no lookup", async () => {
@@ -2250,11 +2254,11 @@ describe("digest-aware serialized extraction (the extractor is the assembler)", 
 		const stats = await pipeline.importNotes({ filePath: "synthetic-alias.txt", text: "PRIVATE SOURCE PASSAGE" });
 		assert.equal(calls, 1);
 		assert.equal(stats.nodes, 0);
-		assert.equal(getGraph(ledgers).nodes.length, 1);
+		assert.equal((await getGraph(ledgers)).nodes.length, 1);
 	});
 
 	it("a seeded digest rides the extractor's view: mixed-namespace chains reference existing ids VERBATIM", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const seed = (id: string, name: string): GraphNode => ({
 			id,
@@ -2305,7 +2309,7 @@ describe("digest-aware serialized extraction (the extractor is the assembler)", 
 	});
 
 	it("a chain endpoint that resolves NOWHERE is refused with the problem and the retry merges (error-back)", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		const badThenGood = fauxEngine([
 			() =>
@@ -2345,7 +2349,7 @@ describe("digest-aware serialized extraction (the extractor is the assembler)", 
 	});
 
 	it("batches serialize: chunk 2's extractor starts only after chunk 1's audit ran (digest order, owner 2026-09-30 evening)", async () => {
-		const { chatId } = chunkyChat(); // 2 deterministic batches at the 4096 override
+		const { chatId } = (await chunkyChat()); // 2 deterministic batches at the 4096 override
 		const ledgers = memoryLedgers();
 		const events: string[] = [];
 		let extractCalls = 0;
@@ -2449,7 +2453,7 @@ describe("chain simplification (the merger's maintenance pass, owner 2026-09-30 
 	});
 
 	it("the merge applies it live: a redundant arrival is skipped silently, stats count appends and drops", async () => {
-		const { chatId } = fixtureChat();
+		const { chatId } = (await fixtureChat());
 		const ledgers = memoryLedgers();
 		// Seed [A,B]⇒X and [X,C]⇒Y as an earlier source's chains.
 		const seedNode = (id: string, name: string): GraphNode => ({
@@ -2505,7 +2509,7 @@ describe("notes import completion and retry reliability", () => {
 
 	it("failure followed by an unchanged retry really extracts and preserves both usage records", async () => {
 		const ledgers = memoryLedgers();
-		await assert.rejects(make(ledgers, silentModel()).importNotes(input), incomplete("failed", 0));
+		await assert.rejects((make(ledgers, silentModel()).importNotes(input)), incomplete("failed", 0));
 		assert.deepEqual(await make(ledgers).importNotes(input), { nodes: 1, chains: 0 });
 		assert.equal(ledgers.readSources()[0]!.extractions?.length, 2);
 	});
@@ -2514,8 +2518,8 @@ describe("notes import completion and retry reliability", () => {
 		const ledgers = memoryLedgers();
 		assert.deepEqual(await make(ledgers, submitModel("submit_findings", { propositions: [], chains: [] })).importNotes(input), { nodes: 0, chains: 0 });
 		assert.deepEqual(await make(ledgers).importNotes({ ...input, text: " \n" }), { nodes: 0, chains: 0 });
-		await assert.rejects(createExtractionPipeline({ chatStore, graphStore: ledgers }).importNotes({ ...input, text: "" }), ModelsNotConfiguredError);
-		await assert.rejects(createExtractionPipeline({ chatStore, graphStore: ledgers, extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT), providerKeyMissing: () => providerKeyMissing("openai", ["cheap"]) }).importNotes(input), ProviderKeyMissingError);
+		await assert.rejects((createExtractionPipeline({ chatStore, graphStore: ledgers }).importNotes({ ...input, text: "" })), ModelsNotConfiguredError);
+		await assert.rejects((createExtractionPipeline({ chatStore, graphStore: ledgers, extractor: submitModel("submit_findings", NOTES_FINDINGS), auditor: submitModel("submit_review", NOTES_VERDICT), providerKeyMissing: () => providerKeyMissing("openai", ["cheap"]) }).importNotes(input)), ProviderKeyMissingError);
 	});
 
 	it("isolates an ordinary failed chunk, reports partial, and keeps earlier/later merges and usage", async () => {
@@ -2529,7 +2533,7 @@ describe("notes import completion and retry reliability", () => {
 				return fauxAssistantMessage([fauxToolCall("submit_findings", NOTES_FINDINGS as unknown as ToolCall["arguments"])], { stopReason: "toolUse" });
 			}]),
 		});
-		await assert.rejects(pipeline.importNotes({ ...input, text: "first chunk\nsecond chunk\nthird chunk" }), incomplete("partial", 2));
+		await assert.rejects((pipeline.importNotes({ ...input, text: "first chunk\nsecond chunk\nthird chunk" })), incomplete("partial", 2));
 		assert.equal(calls, 3);
 		assert.equal(ledgers.readNodes().length, 2);
 		assert.equal(ledgers.readSources()[0]!.extractions?.length, 3);
@@ -2545,7 +2549,7 @@ describe("notes import completion and retry reliability", () => {
 				if (calls === 2) abortExtraction(ledgers.readSources()[0]!.id);
 			}),
 		});
-		await assert.rejects(pipeline.importNotes({ ...input, text: "first chunk\nsecond chunk\nthird chunk" }), incomplete("aborted", 1));
+		await assert.rejects((pipeline.importNotes({ ...input, text: "first chunk\nsecond chunk\nthird chunk" })), incomplete("aborted", 1));
 		assert.equal(calls, 2);
 		assert.equal(ledgers.readNodes().length, 1);
 		assert.equal(ledgers.readSources()[0]!.extractions?.length, 2);
@@ -2571,7 +2575,7 @@ describe("notes import completion and retry reliability", () => {
 			}),
 		});
 		const wholeFile = { ...input, text: "first chunk\nsecond chunk\nthird chunk" };
-		await assert.rejects(pipeline.importNotes(wholeFile), (error) => {
+		await assert.rejects((pipeline.importNotes(wholeFile)), (error) => {
 			incomplete("aborted", abortAt - 1)(error);
 			assert.match((error as NotesImportError).message, /synthetic usage persistence failure during abort/);
 			return true;
@@ -2580,7 +2584,9 @@ describe("notes import completion and retry reliability", () => {
 		assert.equal(usageFailures, 1, "the aborted chunk attempted to persist usage and surfaced its failure");
 		assert.equal(ledgers.readNodes().length, abortAt - 1, "earlier graph merges retained");
 		assert.equal(ledgers.readSources()[0]!.extractions?.length, abortAt - 1, "earlier usage retained");
-		assert.equal(extractionStatuses().length, 0, "cancelled job row removed");
+		const srcId = ledgers.readSources()[0]!.id;
+		await until(() => extractionStatuses().every((r) => r.chatId !== srcId));
+		assert.equal(extractionStatuses().filter((r) => r.chatId === srcId).length, 0, "cancelled job row removed");
 		assert.deepEqual(await make(ledgers).importNotes(wholeFile), { nodes: 1, chains: 0 }, "source exclusion released for an explicit unchanged whole-file retry");
 		assert.equal(ledgers.readSources()[0]!.extractions?.length, abortAt);
 	});
@@ -2596,7 +2602,7 @@ describe("notes import completion and retry reliability", () => {
 			chatStore, graphStore, getChunkTokens: () => 1,
 			engineFor: (role) => role === "auditor" ? submitModel("submit_review", NOTES_VERDICT) : submitModel("submit_findings", NOTES_FINDINGS, () => { calls++; }),
 		});
-		await assert.rejects(pipeline.importNotes({ ...input, text: "first chunk\nsecond chunk\nthird chunk" }), (error) => {
+		await assert.rejects((pipeline.importNotes({ ...input, text: "first chunk\nsecond chunk\nthird chunk" })), (error) => {
 			incomplete("partial", 3)(error);
 			assert.match((error as NotesImportError).message, /synthetic isolated usage failure/);
 			return true;
@@ -2615,8 +2621,8 @@ describe("notes import completion and retry reliability", () => {
 		const first = make(tracked, gatedSubmitModel("submit_findings", NOTES_FINDINGS, gate)).importNotes(input);
 		const sourceBefore = structuredClone(ledgers.readSources());
 		try {
-			await assert.rejects(make(tracked).importNotes(input), incomplete("busy", 0));
-			await assert.rejects(make(tracked).importNotes({ ...input, text: "changed" }), incomplete("busy", 0));
+			await assert.rejects((make(tracked).importNotes(input)), incomplete("busy", 0));
+			await assert.rejects((make(tracked).importNotes({ ...input, text: "changed" })), incomplete("busy", 0));
 			assert.equal(upserts, 1, "busy calls cannot even attempt source metadata writes");
 			assert.deepEqual(ledgers.readSources(), sourceBefore);
 		} finally { release(); }
@@ -2635,14 +2641,14 @@ describe("notes import completion and retry reliability", () => {
 				return fauxAssistantMessage([fauxToolCall("submit_findings", { propositions: [], chains: [] })], { stopReason: "toolUse" });
 			}]),
 		});
-		await assert.rejects(pipeline.importNotes({ ...input, text: "first chunk\nsecond chunk" }), incomplete("partial", 0));
+		await assert.rejects((pipeline.importNotes({ ...input, text: "first chunk\nsecond chunk" })), incomplete("partial", 0));
 		assert.equal(ledgers.readSources()[0]!.extractions?.length, 2);
 	});
 
 	it("a merger failure after a node append is incomplete without rolling back that write", async () => {
 		const ledgers = memoryLedgers();
 		const broken = { ...ledgers, appendCheckpoint: () => { throw new Error("synthetic checkpoint failure after node append"); } };
-		await assert.rejects(make(broken).importNotes(input), incomplete("failed", 0));
+		await assert.rejects((make(broken).importNotes(input)), incomplete("failed", 0));
 		assert.equal(ledgers.readNodes().length, 1, "already appended graph write retained even though merge never returned stats");
 		assert.equal(ledgers.readSources()[0]!.extractions?.length, 1);
 	});
@@ -2656,7 +2662,7 @@ describe("notes import completion and retry reliability", () => {
 				appendSourceUsage: (id, entry) => { if (!failed) { failed = true; throw new Error("synthetic usage failure"); } originalUsage(id, entry); },
 			}),
 		};
-		await assert.rejects(make(broken).importNotes(input), incomplete("failed", 1));
+		await assert.rejects((make(broken).importNotes(input)), incomplete("failed", 1));
 		assert.equal(ledgers.readNodes().length, 1);
 		assert.equal(ledgers.readSources()[0]!.extractions?.length, 1);
 		await make(ledgers).importNotes(input);
@@ -2664,7 +2670,7 @@ describe("notes import completion and retry reliability", () => {
 
 	it("source-upsert failure is typed and releases exclusion for retry", async () => {
 		const ledgers = memoryLedgers();
-		await assert.rejects(make({ ...ledgers, upsertSource: () => { throw new Error("synthetic metadata failure"); } }).importNotes(input), incomplete("failed", 0));
+		await assert.rejects((make({ ...ledgers, upsertSource: () => { throw new Error("synthetic metadata failure"); } }).importNotes(input)), incomplete("failed", 0));
 		await make(ledgers).importNotes(input);
 	});
 

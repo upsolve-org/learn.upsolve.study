@@ -18,6 +18,9 @@
 export * from "./contracts.ts";
 export { embedLearnerImage } from "./learner-image-svg.ts";
 export * from "./ports.ts";
+// Explicit re-export so the async-port helper is part of the core barrel's
+// named surface (the `export *` above would carry it too).
+export type { MaybePromise } from "./ports.ts";
 export * from "./chains.ts";
 export * from "./source-organization.ts";
 export * from "./source-selection.ts";

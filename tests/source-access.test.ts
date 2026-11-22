@@ -203,7 +203,7 @@ describe("source access: canonical roots and all tool paths", () => {
 
 	it("applies unchanged to prober, teacher and practice registrations and model-bound reads", async () => {
 		const ctx = { chatId: "synthetic", chatStore: { getChat: () => null } as unknown as ChatStore, jobStore: {} as JobStore, spawn: () => {}, deliver: () => {} };
-		for (const tools of [createProberTools(ctx), createTeacherTools(ctx), practiceTools(ctx)]) {
+		for (const tools of [createProberTools(ctx), createTeacherTools(ctx), practiceTools(ctx as never)]) {
 			await assert.rejects(tools.read!.execute!("s", { path: auth }), denied);
 			await assert.rejects(tools.ls!.execute!("s", { path: "~/.ssh" }), denied);
 			await assert.rejects(tools.find!.execute!("s", { path: "~/.ssh", pattern: "*" }), denied);

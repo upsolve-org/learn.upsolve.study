@@ -24,7 +24,8 @@ const initial = {
 };
 fs.writeFileSync(settingsFile, JSON.stringify(initial));
 const { PUT } = await import("../app/api/settings/[section]/route.ts");
-const { effectiveSettings } = await import("../src/server/stores.ts");
+const { effectiveSettings, cachedSettings } = await import("../src/server/stores.ts");
+const { resolveSettings } = await import("../src/core/settings-resolution.ts");
 const { configureWorkerRequestAdmission, workerRequestStream } = await import("../src/agent/worker-request-admission.ts");
 const { AssistantMessageEventStream } = await import("@earendil-works/pi-ai/utils/event-stream");
 const { normalizeContext } = await import("@earendil-works/pi-ai");
@@ -51,6 +52,9 @@ async function put(body: unknown) {
 const turn = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 test("durable agent PUT refreshes live admission; increases drain, decreases wait, unset restores 8", async () => {
+	// The sync admission seam now reads a cache seeded from the factory, so
+	// bind it to the persisted record before exercising the pool.
+	configureWorkerRequestAdmission(() => resolveSettings(cachedSettings()).agent.workerRequestConcurrency);
 	const sources: InstanceType<typeof AssistantMessageEventStream>[] = [];
 	const transport: StreamFunction = () => {
 		const source = new AssistantMessageEventStream();
@@ -61,7 +65,7 @@ test("durable agent PUT refreshes live admission; increases drain, decreases wai
 	const requests = Array.from({ length: 3 }, () => stream(model, normalizeContext({ messages: [] })));
 	await turn();
 	assert.equal(sources.length, 1, "composition root reads the persisted limit, not a second default pool");
-	assert.equal(effectiveSettings().agent.workerRequestConcurrency, 1);
+	assert.equal((await effectiveSettings()).agent.workerRequestConcurrency, 1);
 	for (const workerRequestConcurrency of [0, -1, 1.5, "2", null, Number.MAX_SAFE_INTEGER + 1]) {
 		assert.equal((await put({ ...initial.agent, workerRequestConcurrency })).status, 400);
 		assert.deepEqual(JSON.parse(fs.readFileSync(settingsFile, "utf-8")), initial);
@@ -70,7 +74,7 @@ test("durable agent PUT refreshes live admission; increases drain, decreases wai
 
 	// An I/O failure must not refresh admission before the setting is durable.
 	let limitReads = 0;
-	configureWorkerRequestAdmission(() => { limitReads++; return effectiveSettings().agent.workerRequestConcurrency; });
+	configureWorkerRequestAdmission(() => { limitReads++; return resolveSettings(cachedSettings()).agent.workerRequestConcurrency; });
 	const readsBeforeFailure = limitReads;
 	const originalRename = fs.renameSync;
 	fs.renameSync = (from, to) => {
@@ -84,7 +88,7 @@ test("durable agent PUT refreshes live admission; increases drain, decreases wai
 		assert.equal(sources.length, 1);
 	} finally {
 		fs.renameSync = originalRename;
-		configureWorkerRequestAdmission(() => effectiveSettings().agent.workerRequestConcurrency);
+		configureWorkerRequestAdmission(() => resolveSettings(cachedSettings()).agent.workerRequestConcurrency);
 	}
 
 	assert.equal((await put({ ...initial.agent, workerRequestConcurrency: 2 })).status, 200);
@@ -107,7 +111,7 @@ test("durable agent PUT refreshes live admission; increases drain, decreases wai
 
 	const { workerRequestConcurrency: _drop, ...siblings } = initial.agent;
 	assert.equal((await put(siblings)).status, 200);
-	assert.equal(effectiveSettings().agent.workerRequestConcurrency, 8);
+	assert.equal((await effectiveSettings()).agent.workerRequestConcurrency, 8);
 	assert.deepEqual(JSON.parse(fs.readFileSync(settingsFile, "utf-8")).agent, siblings);
 	const resetRequests = Array.from({ length: 9 }, () => stream(model, normalizeContext({ messages: [] })));
 	await turn();

@@ -37,11 +37,11 @@ for (const practice of [false, true]) test(`${practice ? "plugin practice submis
 	const global = globalThis as typeof globalThis & { __lhPlugins?: unknown };
 	const previousHost = global.__lhPlugins;
 	let processed = 0;
-	const chat = chatStore.createChat("Offline plugin side compaction", practice ? "practice" : undefined);
+	const chat = (await chatStore.createChat("Offline plugin side compaction", practice ? "practice" : undefined));
 	const processOnce = async () => {
 		processed++;
 		assert.equal(isTurnRunning(chat.id), true, "normal turn claim precedes processing");
-		assert.equal(chatStore.getChat(chat.id)!.messages.filter(m => m.role === "custom" && m.customType === "compaction").length, 1, "preflight already compacted without executing this callback");
+		assert.equal((await chatStore.getChat(chat.id))!.messages.filter(m => m.role === "custom" && m.customType === "compaction").length, 1, "preflight already compacted without executing this callback");
 		return { observed: true };
 	};
 	const definition = preparePluginQuestionType({ id: "code", label: "Code", contractVersion: 1, showThinking: true,
@@ -56,29 +56,29 @@ for (const practice of [false, true]) test(`${practice ? "plugin practice submis
 	}, ready: Promise.resolve() };
 	try {
 		const prefix: LhMessage[] = [newUserMessage("SAVED_HISTORY_PUBLIC ".repeat(6000)), { ...fauxAssistantMessage("Saved earlier lesson."), id: "earlier_lesson" }, newUserMessage("CURRENT_RETAINED ".repeat(5000))];
-		chatStore.saveMessages(chat.id, prefix);
+		(await chatStore.saveMessages(chat.id, prefix));
 		const pose = createFauxCore({});
 		pose.setResponses([fauxAssistantMessage([fauxToolCall(practice ? problemDefinition.tool.toolName : definition.probe!.toolName,
 			practice ? { statement: "Implement f", mode: "composition", modelSolution: "Committed solution", payload: {} } : { question: "Write a value", payload: { privateReference: "PRIVATE_REFERENCE" } }, { id: "pose_call" })], { stopReason: "toolUse" }), fauxAssistantMessage("Work on this problem.")]);
 		const contribution = { pluginId: "offline", signal: activation.signal, requireActive() {} };
 		const options = { chatId: chat.id, messages: prefix, engine: { model: pose.getModel(), streamFn: pose.streamSimple },
 			pluginContributions: () => ({ instructions: [], tools: [], ...(practice ? { problemTypes: [{ ...contribution, definition: problemDefinition }] } : { questionTypes: [{ ...contribution, definition, variant: "probe" as const }] }) }) };
-		const agent = practice ? createPracticeAgent({ chatId: chat.id, chatStore }, options) : createProberAgent({ chatId: chat.id } as never, options);
+		const agent = practice ? createPracticeAgent({ chatId: chat.id, chatStore: chatStore as unknown as Parameters<typeof createPracticeAgent>[0]["chatStore"] }, options) : createProberAgent({ chatId: chat.id } as never, options);
 		let canonical: LhMessage[] = [];
 		const turn = runPiTurn({ agent, onFinish(messages) { canonical = messages as LhMessage[]; } });
 		await new Response(turn.subscribe()).text();
 		// Remove FauxCore's synthetic usage anchors, not any authority/input.
 		canonical = canonical.map((m, index) => ({ ...m, id: m.id ?? `saved_pose_${index}`, ...(m.role === "assistant" ? { usage: fauxAssistantMessage("").usage } : {}) }));
-		chatStore.saveMessages(chat.id, canonical);
-		canonical = chatStore.getChat(chat.id)!.messages;
+		(await chatStore.saveMessages(chat.id, canonical));
+		canonical = (await chatStore.getChat(chat.id))!.messages;
 		const question = pendingPluginQuestionOf(canonical), problem = activeProblemOf(canonical)?.pluginProblem;
 		if (practice) assert.ok(problem); else assert.ok(question);
 		const input: ChatInput = practice ? { type: "plugin-problem-submission", problemId: problem!.problemId, occurrence: activeProblemOccurrenceOf(canonical)!, submission: "code", thinking: "Host Thinking" }
 			: { type: "plugin-question-answer", questionId: question!.questionId, occurrence: question!.occurrence, answer: "code", thinking: "Host Thinking" };
 		const at = "2026-11-05T00:00:00Z";
-		chatStore.updateSideChats(chat.id, () => [{ id: "side_pending", anchor: { messageId: "earlier_lesson", partId: "earlier_lesson-t0", blockIndex: 0, blockText: "Saved earlier lesson." }, open: true, createdAt: at,
-			messages: [{ id: "side_raw", role: "assistant", text: "NEW_SIDE_CARGO ".repeat(8000), at }] }]);
-		const saved = chatStore.getChat(chat.id)!;
+		(await chatStore.updateSideChats(chat.id, () => [{ id: "side_pending", anchor: { messageId: "earlier_lesson", partId: "earlier_lesson-t0", blockIndex: 0, blockText: "Saved earlier lesson." }, open: true, createdAt: at,
+			messages: [{ id: "side_raw", role: "assistant", text: "NEW_SIDE_CARGO ".repeat(8000), at }] }]));
+		const saved = (await chatStore.getChat(chat.id))!;
 		const promptTokens = Math.ceil(composeInstructions(practice ? "practice" : "teacher").length / 4);
 		assert.ok(projectedContextTokens(canonical, promptTokens) < 80000, "saved history alone does not trigger compaction");
 		assert.ok(projectedContextTokens([...canonical, ...sideConversationEntries(saved)], promptTokens) > 80000, "only new raw side cargo crosses the trigger");
@@ -98,9 +98,9 @@ for (const practice of [false, true]) test(`${practice ? "plugin practice submis
 		piModels().setProvider(createProvider({ id: model.provider, models: [model], auth: { apiKey: { name: "offline", resolve: async () => ({ auth: {} }) } },
 			api: { stream: (m, context, opts) => { contexts.push(structuredClone(context)); return modelFaux.streamSimple(m, context, opts); }, streamSimple: (m, context, opts) => { contexts.push(structuredClone(context)); return modelFaux.streamSimple(m, context, opts); } } }));
 		writeSettings({ graph: { enabled: false }, compaction: { thresholdTokens: 80000 }, models: { strong: { model: { provider: model.provider, id: model.id } } } });
-		chatStore.saveSettings(chat.id, { model: { provider: model.provider, id: model.id } });
+		(await chatStore.saveSettings(chat.id, { model: { provider: model.provider, id: model.id } }));
 		environmentVariables.NODE_ENV = "production"; // exercise the real gate, not its test-mode fast path
-		const response = await handleChatInput(chat.id, input, opts => practice ? createPracticeAgent({ chatId: chat.id, chatStore }, opts) : createProberAgent({ chatId: chat.id } as never, opts));
+		const response = await handleChatInput(chat.id, input, opts => practice ? createPracticeAgent({ chatId: chat.id, chatStore: chatStore as unknown as Parameters<typeof createPracticeAgent>[0]["chatStore"] }, opts) : createProberAgent({ chatId: chat.id } as never, opts));
 		assert.equal(response.status, 200, await response.clone().text());
 		const live = runningTurn(chat.id); if (live) await new Response(live.subscribe()).text();
 		await response.text();
@@ -111,7 +111,7 @@ for (const practice of [false, true]) test(`${practice ? "plugin practice submis
 		assert.match(JSON.stringify(contexts[0]!.messages), /SAVED_HISTORY_PUBLIC/);
 		assert.doesNotMatch(JSON.stringify(contexts[0]!.messages), /NEW_SIDE_CARGO|Host Thinking|observed/);
 		assert.match(JSON.stringify(contexts[1]!.messages), /NEW_SIDE_CARGO/);
-		const final = chatStore.getChat(chat.id)!;
+		const final = (await chatStore.getChat(chat.id))!;
 		const accepted = final.messages.find(m => practice ? m.role === "custom" && m.customType === "plugin-problem-submission" : m.role === "toolResult" && m.toolCallId === question!.occurrence.toolCallId);
 		const outcome = (accepted as { details?: { processing?: unknown; grading?: unknown } } | undefined)?.details;
 		assert.deepEqual(practice ? outcome?.processing : outcome?.grading, { result: { observed: true } });

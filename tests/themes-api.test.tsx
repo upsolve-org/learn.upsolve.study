@@ -44,8 +44,8 @@ const del = (id: string) => deleteTheme(new Request(`http://x/api/themes/${id}`,
 const list = async () => ((await (await getThemes()).json()) as { themes: Theme[] }).themes;
 
 /** The Settings section exactly as the app mounts it after a reload. */
-function renderSection(): string {
-	const { appearance, theme } = readThemeBoot();
+async function renderSection(): Promise<string> {
+	const { appearance, theme } = await readThemeBoot();
 	return renderToStaticMarkup(
 		<InteractionLayersProvider>
 			<AppearanceProvider initialAppearance={appearance} initialTheme={theme}>
@@ -81,11 +81,11 @@ describe("picking a preset recolors the app and keeps my overrides", () => {
 		assert.equal(stored.theme, "catppuccin-latte");
 		assert.equal(stored.background, "#101010");
 
-		const html = renderSection();
+		const html = await renderSection();
 		assert.ok(pressed(html, "catppuccin-latte"));
 		assert.ok(!pressed(html, "default"));
 
-		const { theme } = readThemeBoot();
+		const { theme } = await readThemeBoot();
 		assert.equal(theme.mode, "light");
 		const vars = appearanceVars(resolveAppearance(stored), theme);
 		assert.equal(vars["--background"], "#101010");
@@ -100,7 +100,7 @@ describe("picking a preset recolors the app and keeps my overrides", () => {
 			await put("appearance", { theme: "my-ayu", background: "#123456", codeLigatures: true });
 			if (missing === "deleted") fs.unlinkSync(path.join(THEMES_DIR, "my-ayu.json"));
 			else fs.writeFileSync(path.join(THEMES_DIR, "my-ayu.json"), "{truncated");
-			assert.equal(readThemeBoot().theme.id, "default");
+			assert.equal((await readThemeBoot()).theme.id, "default");
 			const res = await put("appearance", { ...readSettingsRecord()!.appearance, proseFontSize: 20 });
 			assert.equal(res.status, 200);
 			assert.deepEqual(readSettingsRecord()!.appearance, {
@@ -123,7 +123,7 @@ describe("importing a theme file makes it a selectable card; a bad file leaves n
 		await post(ayu);
 		await put("appearance", { theme: "my-ayu" });
 		t.mock.method(themeStore, "listThemes", () => { throw new Error("Must not enumerate for first paint"); });
-		assert.equal(readThemeBoot().theme.id, "my-ayu");
+		assert.equal((await readThemeBoot()).theme.id, "my-ayu");
 	});
 
 	it("storage failure cannot return import success, and invalid store ids fail loudly", async t => {
@@ -143,7 +143,7 @@ describe("importing a theme file makes it a selectable card; a bad file leaves n
 		const themes = await list();
 		assert.deepEqual(themes.map((t) => t.id), [...BUILTIN_THEMES.map((t) => t.id), "my-ayu"]);
 		assert.equal((await put("appearance", { theme: "my-ayu" })).status, 200);
-		assert.ok(pressed(renderSection(), "my-ayu"));
+		assert.ok(pressed(await renderSection(), "my-ayu"));
 	});
 
 	it("long names, truncation at a separator, and collisions always save valid selectable ids", async () => {
@@ -156,7 +156,7 @@ describe("importing a theme file makes it a selectable card; a bad file leaves n
 				assert.match(theme.id, /^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 				assert.ok(fs.existsSync(path.join(THEMES_DIR, `${theme.id}.json`)));
 				assert.equal((await put("appearance", { theme: theme.id })).status, 200);
-				assert.equal(readThemeBoot().theme.id, theme.id);
+				assert.equal((await readThemeBoot()).theme.id, theme.id);
 			}
 		}
 	});
@@ -188,7 +188,7 @@ describe("removing the active custom theme falls back to Default without losing 
 		const stored = readSettingsRecord()!.appearance!;
 		assert.equal(stored.theme, "default");
 		assert.deepEqual(stored.colors, { warning: "#123456" });
-		assert.ok(pressed(renderSection(), "default"));
+		assert.ok(pressed(await renderSection(), "default"));
 	});
 
 	it("presets cannot be removed; unknown ids are a 404", async () => {
@@ -201,13 +201,13 @@ describe("export reflects what I see", () => {
 	it("Mocha + a warning override exports Mocha's 12 with that warning, and re-imports to the same vars", async () => {
 		const appearance: AppearanceSettings = { theme: "catppuccin-mocha", colors: { warning: "#fab387" } };
 		await put("appearance", appearance);
-		const exported = exportThemeFile(readThemeBoot().theme, readSettingsRecord()!.appearance);
+		const exported = exportThemeFile((await readThemeBoot()).theme, readSettingsRecord()!.appearance);
 		assert.deepEqual(exported, { name: "Catppuccin Mocha", mode: "dark", colors: { ...mocha.colors, warning: "#fab387" } });
 
 		const res = await post(exported);
 		assert.equal(res.status, 201);
 		const { theme } = (await res.json()) as { theme: Theme };
 		assert.equal(theme.id, "catppuccin-mocha-2", "the preset's id stays reserved");
-		assert.deepEqual(themeVars(effectiveColors(theme, undefined), theme.mode), readThemeBoot().vars);
+		assert.deepEqual(themeVars(effectiveColors(theme, undefined), theme.mode), (await readThemeBoot()).vars);
 	});
 });

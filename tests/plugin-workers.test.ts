@@ -68,7 +68,7 @@ test("acceptance is synchronous, durable and independent of subscribers; native 
 	gate.resolve(final);
 	assert.deepEqual(await f.service.wait(initial.id), { id: initial.id, status: "succeeded", result: "answer" });
 	await tick();
-	const saved = f.store.get(initial.id)!;
+	const saved = (await f.store.get(initial.id))!;
 	assert.equal(saved.status, "succeeded"); assert.deepEqual(saved.messages[1], final);
 	assert(saved.messages.some(m => m.role === "toolResult" && !m.isError));
 	assert.equal(saved.usage?.steps, 1); assert.equal(f.billed.length, 1); assert(f.changes() > 0);
@@ -116,7 +116,7 @@ for (const result of [false, 0, "", null]) test(`falsy JSON result ${JSON.string
 	const started = f.service.start("worker", options());
 	assert.deepEqual(await f.service.wait(started.id), { id: started.id, status: "succeeded", result });
 	f.service.cancel(started.id); await f.service.dispose();
-	assert.equal(f.store.get(started.id)?.status, "succeeded");
+	assert.equal((await f.store.get(started.id))?.status, "succeeded");
 	assert.equal(f.service.get(started.id).result, result);
 });
 
@@ -127,7 +127,7 @@ test("batched duplicate submissions cannot overwrite accepted result or run late
 	const started = f.service.start("worker", options());
 	assert.equal((await f.service.wait(started.id)).status, "succeeded"); await tick();
 	assert.equal(f.service.get(started.id).result, "first"); assert.equal(effects, 0); assert.equal(validations, 1); assert.equal(f.calls.length, 1);
-	assert.equal(f.store.get(started.id)?.messages.filter(m => m.role === "toolResult").length, 3);
+	assert.equal((await f.store.get(started.id))?.messages.filter(m => m.role === "toolResult").length, 3);
 });
 
 test("completed parallel tool results checkpoint immediately, without replay and in source order", async t => {
@@ -139,11 +139,11 @@ test("completed parallel tool results checkpoint immediately, without replay and
 		return { content: [{ type: "text" as const, text: name }], details: { native: name } };
 	} })) });
 	const started = f.service.start("worker", options()); await done.promise; await tick();
-	assert(f.store.get(started.id)?.messages.some(m => m.role === "toolResult" && m.toolName === "fast"));
-	assert(!f.store.get(started.id)?.messages.some(m => m.role === "toolResult" && m.toolName === "slow"));
+	assert((await f.store.get(started.id))?.messages.some(m => m.role === "toolResult" && m.toolName === "fast"));
+	assert(!(await f.store.get(started.id))?.messages.some(m => m.role === "toolResult" && m.toolName === "slow"));
 	slow.resolve(); await f.service.wait(started.id); await tick();
 	assert.equal(count, 2);
-	assert.deepEqual(f.store.get(started.id)?.messages.filter(m => m.role === "toolResult").map(m => m.toolName), ["slow", "fast", "submit_result"]);
+	assert.deepEqual((await f.store.get(started.id))?.messages.filter(m => m.role === "toolResult").map(m => m.toolName), ["slow", "fast", "submit_result"]);
 });
 
 test("natural completion, correction exhaustion and provider errors have explicit failed outcomes", async t => {
@@ -186,9 +186,9 @@ test("timeout and activation disposal persist first terminal outcomes without re
 
 test("restart interrupts both queued and running records, retains completed outcomes, and never invokes an engine", async t => {
 	const f = fixture(t); const now = new Date().toISOString();
-	for (const status of ["queued", "running"] as const) f.store.save({ ...options({ requestId: status }), version: 1, id: status, definitionId: "missing_definition", createdAt: now, updatedAt: now, status, turns: 0, messages: [{ role: "user", content: "accepted", timestamp: 1 }] });
+	for (const status of ["queued", "running"] as const) (await f.store.save({ ...options({ requestId: status }), version: 1, id: status, definitionId: "missing_definition", createdAt: now, updatedAt: now, status, turns: 0, messages: [{ role: "user", content: "accepted", timestamp: 1 }] }));
 	const service = createPluginWorkerService(f.deps); t.after(() => service.dispose());
-	assert.deepEqual(service.list().map(s => s.status), ["interrupted", "interrupted"]); assert.equal(f.calls.length, 0);
+	assert.deepEqual((await service.list()).map(s => s.status), ["interrupted", "interrupted"]); assert.equal(f.calls.length, 0);
 	assert.equal((await service.wait("running")).status, "interrupted");
 });
 
@@ -208,14 +208,14 @@ test("terminal result write failure cannot acknowledge success or execute subseq
 	const service = createPluginWorkerService({ ...f.deps, store: { ...f.store, save(r) { if (r.status === "succeeded") throw new Error("result disk failure"); f.store.save(r); } } }); t.after(() => service.dispose());
 	service.register({ id: "worker", instructions: "Do work", resultSchema: Type.String(), tools: () => [{ name: "effect", label: "effect", description: "effect", parameters: Type.Object({}), execute: async () => { effects++; return { content: [], details: null }; } }] });
 	const s = service.start("worker", options()); const out = await service.wait(s.id); assert.equal(out.status, "failed"); assert.equal(effects, 0);
-	assert(!Object.hasOwn(f.store.get(s.id)!, "result"));
+	assert(!Object.hasOwn((await f.store.get(s.id))!, "result"));
 });
 
 test("accepted success survives a later native acknowledgment checkpoint failure", async t => {
 	const f = fixture(t); const service = createPluginWorkerService({ ...f.deps, store: { ...f.store, save(r) { if (r.status === "succeeded" && r.messages.some(m => m.role === "toolResult")) throw new Error("ack disk failure"); f.store.save(r); } } }); t.after(() => service.dispose());
 	service.register({ id: "worker", instructions: "Do work", resultSchema: Type.String() });
 	const s = service.start("worker", options()); assert.equal((await service.wait(s.id)).status, "succeeded"); await tick(); service.cancel(s.id);
-	assert.equal(f.store.get(s.id)?.status, "succeeded"); assert.equal(f.store.get(s.id)?.result, "answer");
+	assert.equal((await f.store.get(s.id))?.status, "succeeded"); assert.equal((await f.store.get(s.id))?.result, "answer");
 });
 
 test("denied usage is not accounted; accounting storage errors stop before tools", async t => {
@@ -232,7 +232,7 @@ test("definition/input/options/identifier hygiene rejects before acceptance", as
 	for (const patch of [{ requestId: "" }, { input: undefined }, { input: { bad: Infinity } }, { maxTurns: 0 }, { model: { id: "offline" } }, { purpose: "other" }, { timeoutMs: -1 }, { options: { apiKey: "secret" } }, { options: { maxTokens: Infinity } }]) {
 		assert.throws(() => f.service.start("worker", options(patch as never)));
 	}
-	assert.equal(f.service.list().length, 0); assert.equal(f.calls.length, 0);
+	assert.equal((await f.service.list()).length, 0); assert.equal(f.calls.length, 0);
 	assert.throws(() => f.service.get("../unsafe"), /id/);
 	assert.throws(() => f.service.start("missing", options()), /unavailable/);
 });
@@ -250,7 +250,7 @@ test("stream subscriptions coalesce current progress and reattach without replay
 	const partial = f.service.get(started.id).partial; assert.equal((partial?.content[0] as { text: string }).text.length, 2000);
 	let current: PluginTaskSnapshot | undefined; const reattach = f.service.subscribe(started.id, value => { current = value; });
 	assert.equal((current?.partial?.content[0] as { text: string }).text.length, 2000); assert(observations < 10);
-	assert.equal(f.store.get(started.id)?.messages.length, 1);
+	assert.equal((await f.store.get(started.id))?.messages.length, 1);
 	detach(); reattach(); gate.resolve(message([submit("done")])); await f.service.wait(started.id); await tick();
 	assert.equal(f.service.get(started.id).partial, undefined);
 });
@@ -263,7 +263,7 @@ test("disposal wakes an existing waiter even if interruption persistence permane
 	fail = true;
 	const rejected = assert.rejects(waited, /storage failed/);
 	await assert.rejects(service.dispose(), /storage failed/); await rejected;
-	assert.equal(f.calls.length, 0); assert.equal(f.store.get(started.id)?.status, "queued");
+	assert.equal(f.calls.length, 0); assert.equal((await f.store.get(started.id))?.status, "queued");
 });
 
 test("initial acceptance failure poisons later acceptance and never invokes engines or factories", async t => {
@@ -272,15 +272,15 @@ test("initial acceptance failure poisons later acceptance and never invokes engi
 	service.register({ id: "worker", instructions: "Do work", resultSchema: Type.String(), tools() { factories++; return []; } });
 	assert.throws(() => service.start("worker", options()), /acceptance storage failed/);
 	assert.throws(() => service.start("worker", options({ requestId: "second" })), /acceptance storage failed/);
-	await tick(); assert.equal(factories, 0); assert.equal(f.calls.length, 0); assert.deepEqual(service.list(), []);
+	await tick(); assert.equal(factories, 0); assert.equal(f.calls.length, 0); assert.deepEqual((await service.list()), []);
 });
 
 test("an uncertain post-commit failure never overwrites canonical accepted success or returns a false durable acknowledgment", async t => {
 	const f = fixture(t); const service = createPluginWorkerService({ ...f.deps, store: { ...f.store, save(r) { f.store.save(r); if (r.status === "succeeded") throw new Error("directory fsync uncertain"); } } }); t.after(() => service.dispose().catch(() => {}));
 	service.register({ id: "worker", instructions: "Do work", resultSchema: Type.String() });
 	const started = service.start("worker", options()); await assert.rejects(service.wait(started.id), /storage failed/);
-	assert.equal(f.store.get(started.id)?.status, "succeeded"); assert.equal(f.store.get(started.id)?.result, "answer");
-	await service.dispose().catch(() => {}); assert.equal(f.store.get(started.id)?.status, "succeeded");
+	assert.equal((await f.store.get(started.id))?.status, "succeeded"); assert.equal((await f.store.get(started.id))?.result, "answer");
+	await service.dispose().catch(() => {}); assert.equal((await f.store.get(started.id))?.status, "succeeded");
 });
 
 test("cancelled queued tasks never run a factory or engine, and timeout detaches stalled engine resolution", async t => {
