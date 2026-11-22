@@ -6,7 +6,7 @@ import childProcess from "node:child_process";
 import { syncBuiltinESMExports } from "node:module";
 import puppeteer from "puppeteer-core";
 import { Resvg } from "@resvg/resvg-js";
-import * as photon from "@silvia-odwyer/photon-node";
+import sharp from "sharp";
 import { realHeadless } from "../src/agent/subagents/headless.ts";
 
 function pngFacts(buf: Buffer): { w: number; h: number; idats: number } {
@@ -47,12 +47,11 @@ describe("native renderSvg (resvg only)", () => {
 		const original = RED.replace(' xmlns="http://www.w3.org/2000/svg"', "");
 		const png = await realHeadless.renderSvg(original);
 		assert.deepEqual(pngFacts(png), { w: 80, h: 40, idats: 1 });
-		const image = photon.PhotonImage.new_from_byteslice(png);
-		try {
-			const pixels = image.get_raw_pixels();
-			assert.equal(pixels.length, 80 * 40 * 4);
-			for (let i = 0; i < pixels.length; i++) assert.equal(pixels[i], [255, 0, 0, 255][i % 4]);
-		} finally { image.free(); }
+		const { data: pixels, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
+		assert.equal(info.width, 80);
+		assert.equal(info.height, 40);
+		assert.equal(pixels.length, 80 * 40 * info.channels);
+		for (let i = 0; i < pixels.length; i++) assert.equal(pixels[i], [255, 0, 0][i % info.channels] ?? 255);
 		assert.equal(original.includes("xmlns"), false, "rendering does not rewrite the original source");
 	});
 

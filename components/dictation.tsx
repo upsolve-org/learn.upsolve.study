@@ -99,6 +99,8 @@ const METER_CEILING_DB = -10;
 export const METER_TICK_MS = 60;
 /** Rolling history: 48 cells × 60ms ≈ 2.9s of recent loudness. */
 export const METER_CELLS = 48;
+/** 5 minutes of 16kHz 16-bit mono PCM — the local batch upload cap. */
+const MAX_LOCAL_PCM_BYTES = 9_600_000;
 
 /** The Deepgram key's id in the keys store (the env-var name — the Keys
  *  section's openRow state and the PUT /api/keys/:id seam). */
@@ -144,20 +146,55 @@ function registerController(id: symbol, controller: { primary: boolean; toggle: 
 	};
 }
 
+/** Encode captured linear16 PCM frames as a standard 44-byte RIFF/WAVE file
+ *  (16-bit signed mono). Pure so the wire format can be asserted in tests. */
+export function encodePcm16Wav(chunks: readonly ArrayBuffer[], sampleRate = 16000): Blob {
+	const dataLength = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
+	const buffer = new ArrayBuffer(44 + dataLength);
+	const view = new DataView(buffer);
+	const writeAscii = (offset: number, text: string) => {
+		for (let i = 0; i < text.length; i++) view.setUint8(offset + i, text.charCodeAt(i));
+	};
+	writeAscii(0, "RIFF");
+	view.setUint32(4, 36 + dataLength, true);
+	writeAscii(8, "WAVE");
+	writeAscii(12, "fmt ");
+	view.setUint32(16, 16, true); // PCM fmt chunk length
+	view.setUint16(20, 1, true); // PCM (uncompressed)
+	view.setUint16(22, 1, true); // mono
+	view.setUint32(24, sampleRate, true);
+	view.setUint32(28, sampleRate * 2, true); // byte rate = rate * block align
+	view.setUint16(32, 2, true); // block align
+	view.setUint16(34, 16, true); // bits per sample
+	writeAscii(36, "data");
+	view.setUint32(40, dataLength, true);
+	let offset = 44;
+	for (const chunk of chunks) {
+		new Uint8Array(buffer, offset, chunk.byteLength).set(new Uint8Array(chunk));
+		offset += chunk.byteLength;
+	}
+	return new Blob([buffer], { type: "audio/wav" });
+}
+
+/** What the token route authorizes: a Deepgram JWT, or local batch mode. */
+export type DictationToken = { mode: "deepgram"; token: string } | { mode: "local" };
+
 /** Mint a fresh short-lived token (the route holds the real key
  *  server-side). Module-level: the start path's warm cache and the
  *  reconnect path both bottom out here. The keyless 503 (no
- *  DEEPGRAM_API_KEY) is the route's ONLY 503 — the raw message is
- *  dev-speak, so the error becomes the short client-authored line
+ *  DEEPGRAM_API_KEY and no local gateway) is the route's ONLY 503 — the raw
+ *  message is dev-speak, so the error becomes the short client-authored line
  *  (zero-keys wave, owner 2026-09-25). */
-async function mintFreshToken(): Promise<string> {
+async function mintFreshToken(): Promise<DictationToken> {
 	const res = await fetch("/api/stt/token");
-	const data = (await res.json()) as { token?: string; message?: string };
-	if (!res.ok || !data.token) {
+	const data = (await res.json()) as { token?: string; mode?: string; message?: string };
+	if (!res.ok) {
 		if (res.status === 503) throw new Error(DICTATION_KEYLESS);
 		throw new Error(data.message ?? `token route ${res.status}`);
 	}
-	return data.token;
+	if (data.mode === "local") return { mode: "local" };
+	if (!data.token) throw new Error(data.message ?? "No dictation token");
+	return { mode: "deepgram", token: data.token };
 }
 
 /** Warm-token cache (mitigation D, owner 2026-09-27): the click path takes
@@ -169,15 +206,15 @@ async function mintFreshToken(): Promise<string> {
  *  failures are silently tolerated (a keyless pre-mint just doesn't warm). */
 export const WARM_TOKEN_TTL_MS = 3 * 60_000;
 
-export type WarmMinter = { mint: () => Promise<string>; refresh: () => void };
+export type WarmMinter<T = string> = { mint: () => Promise<T>; refresh: () => void };
 
-export function createWarmMinter(
-	mint: () => Promise<string>,
+export function createWarmMinter<T = string>(
+	mint: () => Promise<T>,
 	now: () => number = Date.now,
 	ttlMs: number = WARM_TOKEN_TTL_MS,
-): WarmMinter {
-	let warm: { p: Promise<string>; at: number } | null = null;
-	const m: WarmMinter = {
+): WarmMinter<T> {
+	let warm: { p: Promise<T>; at: number } | null = null;
+	const m: WarmMinter<T> = {
 		mint: () => {
 			if (!warm || now() - warm.at > ttlMs) {
 				const p = mint().catch((e: unknown) => {
@@ -394,6 +431,14 @@ export function useDictation({ append, destination = "primary", disabled = false
 	const waitersRef = useRef<Array<{ resolve: () => void; reject: (error: unknown) => void }>>([]);
 	const appendFailureRef = useRef<{ error: unknown } | null>(null);
 	const appendPendingRef = useRef(false);
+	/** Local batch mode (Parakeet gateway). null until the token route answers;
+	 *  audio frames captured in the meantime go to BOTH buffers so switching
+	 *  modes never drops the first spoken words. */
+	const localModeRef = useRef<boolean | null>(null);
+	const localPcmRef = useRef<ArrayBuffer[]>([]);
+	const localPcmBytesRef = useRef(0);
+	const localAbortRef = useRef<AbortController | null>(null);
+	const languageRef = useRef<DictationLanguage | null>(null);
 
 	/** Flush into this run's fixed destination. Called exactly once at cleanup; the
 	 *  buffer clears itself so double-cleanup is a no-op. */
@@ -424,6 +469,13 @@ export function useDictation({ append, destination = "primary", disabled = false
 			safetyRef.current = null;
 		}
 		pendingRef.current = [];
+		// Cancel + discard any in-flight local batch upload on every terminal
+		// path (cancel, unmount, stale run). The aborted handler is gen-guarded.
+		localAbortRef.current?.abort();
+		localAbortRef.current = null;
+		localPcmRef.current = [];
+		localPcmBytesRef.current = 0;
+		localModeRef.current = null;
 		for (const track of streamRef.current?.getTracks() ?? []) track.stop();
 		streamRef.current = null;
 		sourceRef.current?.disconnect();
@@ -513,7 +565,7 @@ export function useDictation({ append, destination = "primary", disabled = false
 					reconnectsRef.current++;
 					mintFreshToken() // always FRESH — a stale warm token is the likely culprit
 						.then((t) => {
-							if (gen === genRef.current) openSocket(gen, t, language);
+							if (gen === genRef.current && t.mode === "deepgram") openSocket(gen, t.token, language);
 						})
 						.catch(() => {
 							if (gen === genRef.current) {
@@ -548,6 +600,9 @@ export function useDictation({ append, destination = "primary", disabled = false
 		reconnectsRef.current = 0;
 		bufferRef.current = []; // fresh run, fresh buffer (round 2)
 		pendingRef.current = []; // fresh run, fresh queue (mitigation A)
+		localPcmRef.current = []; // fresh local batch (no-op in Deepgram mode)
+		localPcmBytesRef.current = 0;
+		localModeRef.current = null;
 		const gen = ++genRef.current;
 		let language: DictationLanguage;
 		try {
@@ -559,6 +614,7 @@ export function useDictation({ append, destination = "primary", disabled = false
 			return;
 		}
 		if (gen !== genRef.current) return;
+		languageRef.current = language;
 
 		// Mitigation D: the warm token (pre-minted at mount / after the last
 		// run) resolves ~instantly; a cold/keyless mint surfaces below. The
@@ -595,13 +651,23 @@ export function useDictation({ append, destination = "primary", disabled = false
 				if (msg.type === "level") {
 					levelRef.current = msg.rms ?? 0; // never reset to zero (dictate pattern)
 				} else if (msg.type === "audio") {
-					const ws = wsRef.current;
-					if (ws && ws.readyState === WebSocket.OPEN) ws.send(msg.buffer!);
-					// Mitigation A: not OPEN yet (handshake or reconnect gap) —
-					// queue, capped; the open handler flushes in order.
-					else {
-						pendingRef.current.push(msg.buffer!);
-						if (pendingRef.current.length > 256) pendingRef.current.shift();
+					const frame = msg.buffer!;
+					// Local batch: accumulate PCM until stop(); the same worklet
+					// and meter drive both modes. Before the token route answers
+					// we buffer in BOTH places so no frame is lost either way.
+					if (localModeRef.current !== false && localPcmBytesRef.current + frame.byteLength <= MAX_LOCAL_PCM_BYTES) {
+						localPcmRef.current.push(frame);
+						localPcmBytesRef.current += frame.byteLength;
+					}
+					if (localModeRef.current !== true) {
+						const ws = wsRef.current;
+						if (ws && ws.readyState === WebSocket.OPEN) ws.send(frame);
+						// Mitigation A: not OPEN yet (handshake or reconnect gap) —
+						// queue, capped; the open handler flushes in order.
+						else {
+							pendingRef.current.push(frame);
+							if (pendingRef.current.length > 256) pendingRef.current.shift();
+						}
 					}
 				}
 			};
@@ -624,9 +690,9 @@ export function useDictation({ append, destination = "primary", disabled = false
 			return;
 		}
 		if (gen !== genRef.current) return;
-		let token: string;
+		let auth: DictationToken;
 		try {
-			token = await tokenPromise;
+			auth = await tokenPromise;
 		} catch (e) {
 			if (gen !== genRef.current) return;
 			setError(e instanceof Error ? e.message : "token unavailable");
@@ -634,9 +700,20 @@ export function useDictation({ append, destination = "primary", disabled = false
 			return;
 		}
 		if (gen !== genRef.current) return;
+		if (auth.mode === "local") {
+			// No WebSocket: the mic and worklet are already live, so recording
+			// starts now and PCM accumulates until stop() uploads one WAV.
+			localModeRef.current = true;
+			pendingRef.current = [];
+			setPhase("recording");
+			return;
+		}
+		localModeRef.current = false;
+		localPcmRef.current = [];
+		localPcmBytesRef.current = 0;
 		// Mitigation B: the handshake fires the moment the graph is live,
 		// overlapping any remaining token wait — mic-gated, never before it.
-		openSocket(gen, token, language);
+		openSocket(gen, auth.token, language);
 	}, [openSocket, cleanup, getLanguage, owner, primary, setPhase]);
 
 	const stop = useCallback(() => {
@@ -652,6 +729,37 @@ export function useDictation({ append, destination = "primary", disabled = false
 		sourceRef.current = null;
 		workletRef.current?.disconnect();
 		workletRef.current = null;
+
+		if (localModeRef.current === true) {
+			// Local batch: one WAV upload, then the single deferred append via
+			// cleanup() (same buffer/flush/finish semantics as Deepgram).
+			const wav = encodePcm16Wav(localPcmRef.current);
+			localPcmRef.current = [];
+			localPcmBytesRef.current = 0;
+			const controller = new AbortController();
+			localAbortRef.current = controller;
+			const language = languageRef.current;
+			void (async () => {
+				try {
+					const form = new FormData();
+					form.append("file", wav, "dictation.wav");
+					if (language && language !== "multi") form.append("language", language);
+					const res = await fetch("/api/stt/transcribe", { method: "POST", body: form, signal: controller.signal });
+					const data = (await res.json()) as { text?: string; message?: string };
+					if (!res.ok) throw new Error(data.message ?? `transcribe route ${res.status}`);
+					const text = (data.text ?? "").trim();
+					if (gen !== genRef.current) return;
+					if (text) bufferRef.current.push(text);
+				} catch (e) {
+					if (gen !== genRef.current) return;
+					setError(e instanceof Error ? e.message : "Transcription failed");
+				} finally {
+					if (localAbortRef.current === controller) localAbortRef.current = null;
+				}
+				if (gen === genRef.current) cleanup();
+			})();
+			return;
+		}
 
 		const ws = wsRef.current;
 		if (ws && ws.readyState === WebSocket.OPEN) {

@@ -1,12 +1,12 @@
-// Ported from @earendil-works/pi-coding-agent 1.1.0, dist/utils/image-resize-core.js (MIT).
-// Runtime .mjs resources stay unbundled for Next's Node/Electron worker packaging.
-import { applyExifOrientation } from "./exif-orientation.mjs";
-import { loadPhoton } from "./photon.mjs";
-/**
- * Tag on image resize worker replies. Node can post its own messages on the worker channel
- * (for example `{ "watch:require": [...] }` under `node --watch`), so replies must be identifiable.
- */
-export const IMAGE_RESIZE_WORKER_RESPONSE_TYPE = "pi:image-resize-response";
+// Image resizing via native sharp (libvips). sharp runs decode/encode/resize
+// on libuv's thread pool, so no per-image node:worker_threads spawning is
+// needed. Read EXIF orientation from the metadata for the oriented source
+// dimensions (sharp reports raw width/height before .rotate()). For WebP,
+// libvips does not expose the EXIF tag through metadata(), so fall back to
+// the small pure-JS reader (both "Exif\0\0"-prefixed and bare TIFF layouts).
+import sharp from "sharp";
+import { getExifOrientation } from "./exif-orientation.mjs";
+
 // 4.5MB of base64 payload. Provides headroom below Anthropic's 5MB limit.
 const DEFAULT_MAX_BYTES = 4.5 * 1024 * 1024;
 const DEFAULT_OPTIONS = {
@@ -27,32 +27,29 @@ function encodeCandidate(buffer, mimeType) {
  * Resize an image to fit within the specified max dimensions and encoded file size.
  * Returns null if the image cannot be resized below maxBytes.
  *
- * Uses Photon (Rust/WASM) for image processing. If Photon is not available,
- * returns null.
- *
  * Strategy for staying under maxBytes:
  * 1. First resize to maxWidth/maxHeight
  * 2. Try PNG first, then JPEG qualities in insertion order (first under cap wins)
- * 3. If still too large, try the remaining JPEG qualities
- * 4. If still too large, progressively reduce dimensions until 1x1
+ * 3. If still too large, progressively reduce dimensions until 1x1
  */
 export async function resizeImageInProcess(inputBytes, mimeType, options) {
     const opts = { ...DEFAULT_OPTIONS, ...options };
     const inputBase64Size = Math.ceil(inputBytes.byteLength / 3) * 4;
-    const photon = await loadPhoton();
-    if (!photon) {
-        return null;
-    }
-    let image;
     try {
-        const rawImage = photon.PhotonImage.new_from_byteslice(inputBytes);
-        image = applyExifOrientation(photon, rawImage, inputBytes);
-        if (image !== rawImage)
-            rawImage.free();
-        const originalWidth = image.get_width();
-        const originalHeight = image.get_height();
+        const metadata = await sharp(inputBytes).metadata();
+        let originalWidth = metadata.width;
+        let originalHeight = metadata.height;
+        if (!(originalWidth > 0) || !(originalHeight > 0)) return null;
+        const orientation = metadata.orientation ?? getExifOrientation(inputBytes);
+        // sharp reports width/height BEFORE rotation; transposing orientations
+        // swap the oriented source dimensions.
+        if (orientation >= 5 && orientation <= 8) {
+            const swapped = originalWidth;
+            originalWidth = originalHeight;
+            originalHeight = swapped;
+        }
         const format = mimeType.split("/")[1] ?? "png";
-        // Check if already within all limits (dimensions AND encoded size)
+        // Check if already within all limits (dimensions AND encoded size).
         if (originalWidth <= opts.maxWidth && originalHeight <= opts.maxHeight && inputBase64Size < opts.maxBytes) {
             return {
                 data: Buffer.from(inputBytes).toString("base64"),
@@ -64,7 +61,7 @@ export async function resizeImageInProcess(inputBytes, mimeType, options) {
                 wasResized: false,
             };
         }
-        // Calculate initial dimensions respecting max limits
+        // Calculate initial dimensions respecting max limits (sequential rounding).
         let targetWidth = originalWidth;
         let targetHeight = originalHeight;
         if (targetWidth > opts.maxWidth) {
@@ -75,29 +72,20 @@ export async function resizeImageInProcess(inputBytes, mimeType, options) {
             targetWidth = Math.round((targetWidth * opts.maxHeight) / targetHeight);
             targetHeight = opts.maxHeight;
         }
-        function tryEncodings(width, height, jpegQualities) {
-            const resized = photon.resize(image, width, height, photon.SamplingFilter.Lanczos3);
-            try {
-                const candidates = [encodeCandidate(resized.get_bytes(), "image/png")];
-                for (const quality of jpegQualities) {
-                    candidates.push(encodeCandidate(resized.get_bytes_jpeg(quality), "image/jpeg"));
-                }
-                return candidates;
-            }
-            finally {
-                resized.free();
-            }
-        }
         const qualitySteps = Array.from(new Set([opts.jpegQuality, 85, 70, 55, 40]));
         let currentWidth = targetWidth;
         let currentHeight = targetHeight;
         while (true) {
-            const candidates = tryEncodings(currentWidth, currentHeight, qualitySteps);
-            for (const candidate of candidates) {
-                if (candidate.encodedSize < opts.maxBytes) {
+            try {
+                const base = sharp(inputBytes).rotate().resize(currentWidth, currentHeight, {
+                    fit: "fill",
+                    kernel: sharp.kernel.lanczos3,
+                });
+                const pngCandidate = encodeCandidate(await base.clone().png().toBuffer(), "image/png");
+                if (pngCandidate.encodedSize < opts.maxBytes) {
                     return {
-                        data: candidate.data,
-                        mimeType: candidate.mimeType,
+                        data: pngCandidate.data,
+                        mimeType: pngCandidate.mimeType,
                         originalWidth,
                         originalHeight,
                         width: currentWidth,
@@ -105,26 +93,32 @@ export async function resizeImageInProcess(inputBytes, mimeType, options) {
                         wasResized: true,
                     };
                 }
+                for (const quality of qualitySteps) {
+                    const candidate = encodeCandidate(await base.clone().jpeg({ quality }).toBuffer(), "image/jpeg");
+                    if (candidate.encodedSize < opts.maxBytes) {
+                        return {
+                            data: candidate.data,
+                            mimeType: candidate.mimeType,
+                            originalWidth,
+                            originalHeight,
+                            width: currentWidth,
+                            height: currentHeight,
+                            wasResized: true,
+                        };
+                    }
+                }
+            } catch {
+                return null;
             }
-            if (currentWidth === 1 && currentHeight === 1) {
-                break;
-            }
+            if (currentWidth === 1 && currentHeight === 1) break;
             const nextWidth = currentWidth === 1 ? 1 : Math.max(1, Math.floor(currentWidth * 0.75));
             const nextHeight = currentHeight === 1 ? 1 : Math.max(1, Math.floor(currentHeight * 0.75));
-            if (nextWidth === currentWidth && nextHeight === currentHeight) {
-                break;
-            }
+            if (nextWidth === currentWidth && nextHeight === currentHeight) break;
             currentWidth = nextWidth;
             currentHeight = nextHeight;
         }
         return null;
-    }
-    catch {
+    } catch {
         return null;
-    }
-    finally {
-        if (image) {
-            image.free();
-        }
     }
 }

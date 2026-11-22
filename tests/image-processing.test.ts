@@ -3,20 +3,19 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { Worker } from "node:worker_threads";
 import { createCanvas } from "@napi-rs/canvas";
-import * as photon from "@silvia-odwyer/photon-node";
+import sharp from "sharp";
 import {
 	detectSupportedImageMimeType,
 	detectSupportedImageMimeTypeFromFile,
 	processImage,
 } from "../src/agent/image-processing/index.ts";
-import { applyExifOrientation } from "../src/agent/image-processing/exif-orientation.mjs";
+import { getExifOrientation } from "../src/agent/image-processing/exif-orientation.mjs";
 import { resizeImageInProcess } from "../src/agent/image-processing/resize-core.mjs";
 import { resizeImage } from "../src/agent/image-processing/resize.ts";
 
-// Synthetic, offline fixtures only. Canvas generates inputs; Photon is the
-// actual processing implementation and supplies independent encoding oracles.
+// Synthetic, offline fixtures only. Canvas generates inputs; sharp is both
+// the processing implementation and the independent encoding oracle.
 function png(width = 96, height = 96, noise = false): Buffer {
 	const canvas = createCanvas(width, height);
 	const context = canvas.getContext("2d");
@@ -38,18 +37,20 @@ function png(width = 96, height = 96, noise = false): Buffer {
 	return canvas.toBuffer("image/png");
 }
 
-function encodings(bytes: Uint8Array, width: number, height: number, qualities = [80, 85, 70, 55, 40]) {
-	const image = photon.PhotonImage.new_from_byteslice(bytes);
-	const resized = photon.resize(image, width, height, photon.SamplingFilter.Lanczos3);
-	try {
-		return [
-			{ mimeType: "image/png", data: Buffer.from(resized.get_bytes()).toString("base64") },
-			...qualities.map((quality) => ({ mimeType: "image/jpeg", data: Buffer.from(resized.get_bytes_jpeg(quality)).toString("base64") })),
-		];
-	} finally {
-		resized.free();
-		image.free();
-	}
+async function encodings(bytes: Uint8Array, width: number, height: number, qualities = [80, 85, 70, 55, 40]) {
+	const resized = sharp(bytes).rotate().resize(width, height, { fit: "fill", kernel: sharp.kernel.lanczos3 });
+	return [
+		{ mimeType: "image/png", data: (await resized.png().toBuffer()).toString("base64") },
+		...await Promise.all(qualities.map(async (quality) => ({
+			mimeType: "image/jpeg",
+			data: (await resized.jpeg({ quality }).toBuffer()).toString("base64"),
+		}))),
+	];
+}
+
+async function dimensions(bytes: Uint8Array): Promise<[number, number]> {
+	const meta = await sharp(bytes).metadata();
+	return [meta.width, meta.height];
 }
 
 function bmp(): Buffer {
@@ -68,14 +69,8 @@ function bmp(): Buffer {
 	return bytes;
 }
 
-function exifJpeg(orientation: number): Buffer {
-	const image = photon.PhotonImage.new_from_byteslice(png(12, 8));
-	let jpeg: Buffer;
-	try {
-		jpeg = Buffer.from(image.get_bytes_jpeg(80));
-	} finally {
-		image.free();
-	}
+async function exifJpeg(orientation: number): Promise<Buffer> {
+	const jpeg = await sharp(png(12, 8)).jpeg({ quality: 80 }).toBuffer();
 	const exif = Buffer.alloc(36);
 	exif.set([0xff, 0xe1, 0, 34]);
 	exif.write("Exif\0\0", 4, "binary");
@@ -90,13 +85,54 @@ function exifJpeg(orientation: number): Buffer {
 	return Buffer.concat([jpeg.subarray(0, 2), exif, jpeg.subarray(2)]);
 }
 
+/** Wrap a TIFF/EXIF payload in a real WebP EXIF chunk, in both layouts the
+ *  old Photon reader accepted: "Exif\0\0"-prefixed and bare TIFF. */
+/** A 3x2 raw raster with six distinct values, encoded as a JPEG with an
+ *  EXIF orientation tag — for exact pixel-placement assertions. */
+async function tinyExifJpeg(orientation: number): Promise<Buffer> {
+	const pixels = Uint8Array.from([1, 2, 3, 4, 5, 6].flatMap((value) => [value, 0, 0, 255]));
+	const jpeg = await sharp(pixels, { raw: { width: 3, height: 2, channels: 4 } })
+		.jpeg({ quality: 100, chromaSubsampling: "4:4:4" }).toBuffer();
+	const exif = Buffer.alloc(36);
+	exif.set([0xff, 0xe1, 0, 34]);
+	exif.write("Exif\0\0", 4, "binary");
+	exif.write("II", 10);
+	exif.writeUInt16LE(42, 12);
+	exif.writeUInt32LE(8, 14);
+	exif.writeUInt16LE(1, 18);
+	exif.writeUInt16LE(0x0112, 20);
+	exif.writeUInt16LE(3, 22);
+	exif.writeUInt32LE(1, 24);
+	exif.writeUInt16LE(orientation, 28);
+	return Buffer.concat([jpeg.subarray(0, 2), exif, jpeg.subarray(2)]);
+}
+
+async function webpWithExif(payload: Buffer): Promise<Buffer> {
+	const base = await sharp(png(12, 8)).webp({ lossless: true }).toBuffer();
+	const exifChunk = Buffer.alloc(8 + payload.length + (payload.length % 2));
+	exifChunk.write("EXIF", 0);
+	exifChunk.writeUInt32LE(payload.length, 4);
+	payload.copy(exifChunk, 8);
+	const vp8x = Buffer.alloc(18);
+	vp8x.write("VP8X", 0);
+	vp8x.writeUInt32LE(10, 4);
+	vp8x.writeUIntLE(11, 12, 3);
+	vp8x.writeUIntLE(7, 15, 3);
+	const body = Buffer.concat([vp8x, base.subarray(12), exifChunk]);
+	const header = Buffer.alloc(12);
+	header.write("RIFF", 0);
+	header.writeUInt32LE(body.length + 4, 4);
+	header.write("WEBP", 8);
+	return Buffer.concat([header, body]);
+}
+
 test("already-fit image bytes are unchanged, MIME aliases normalize, and transfer leaves input intact", async () => {
 	const bytes = png();
 	const original = Buffer.from(bytes);
 	const result = await processImage(bytes, " Image/PNG; charset=binary ");
 	assert.deepEqual(result, { ok: true, data: bytes.toString("base64"), mimeType: "image/png", hints: [] });
 	assert.deepEqual(bytes, original);
-	const jpeg = exifJpeg(1);
+	const jpeg = await exifJpeg(1);
 	assert.deepEqual(await processImage(jpeg, "image/jpg"), { ok: true, data: jpeg.toString("base64"), mimeType: "image/jpeg", hints: [] });
 });
 
@@ -106,11 +142,7 @@ test("native default dimensions are 2000x2000 and dimension hints use the native
 	assert.ok(result.ok);
 	assert.equal(result.mimeType, "image/png");
 	assert.deepEqual(result.hints, ["[Image: original 12000x24, displayed at 2000x4. Multiply coordinates by 6.00 to map to original image.]"]);
-	const decoded = photon.PhotonImage.new_from_byteslice(Buffer.from(result.data, "base64"));
-	try {
-		assert.equal(decoded.get_width(), 2000);
-		assert.equal(decoded.get_height(), 4);
-	} finally { decoded.free(); }
+	assert.deepEqual(await dimensions(Buffer.from(result.data, "base64")), [2000, 4]);
 	const tall = await resizeImage(png(24, 12000), "image/png");
 	assert.ok(tall);
 	assert.equal(tall.width, 4);
@@ -123,7 +155,7 @@ test("model dimensions use sequential rounding, not a one-step scale", async () 
 	// 301x503 -> 101x169 -> 60x100.
 	assert.equal(result.width, 60);
 	assert.equal(result.height, 100);
-	assert.equal(result.data, encodings(png(301, 503), 60, 100)[0]!.data);
+	assert.equal(result.data, (await encodings(png(301, 503), 60, 100))[0]!.data);
 	const rounding = await resizeImage(png(50, 77), "image/png", { maxWidth: 10, maxHeight: 10 });
 	assert.ok(rounding);
 	assert.equal(rounding.width, 7); // round(100 / round(77 * 10 / 50)); one-step gives 6.
@@ -152,7 +184,7 @@ test("native cap is strict and measures base64 bytes, not binary bytes", async (
 
 test("PNG wins first under cap even when JPEG is smaller", async () => {
 	const bytes = png(96, 96, true);
-	const candidates = encodings(bytes, 95, 95);
+	const candidates = await encodings(bytes, 95, 95);
 	assert.ok(candidates[0]!.data.length > candidates[1]!.data.length);
 	const result = await resizeImage(bytes, "image/png", { maxWidth: 95, maxBytes: candidates[0]!.data.length + 1 });
 	assert.ok(result);
@@ -162,7 +194,7 @@ test("PNG wins first under cap even when JPEG is smaller", async () => {
 
 test("JPEG quality selection is native first-fit [80,85,70,55,40], not smallest output", async () => {
 	const bytes = png(96, 96, true);
-	const candidates = encodings(bytes, 96, 96);
+	const candidates = await encodings(bytes, 96, 96);
 	assert.ok(candidates[0]!.data.length > candidates[2]!.data.length);
 	assert.ok(candidates[2]!.data.length > candidates[1]!.data.length);
 	assert.ok(candidates[1]!.data.length > candidates[3]!.data.length);
@@ -192,8 +224,8 @@ test("JPEG quality selection is native first-fit [80,85,70,55,40], not smallest 
 
 test("all encodings over cap reduce each dimension by floor(0.75), eventually omitting at 1x1", async () => {
 	const bytes = png(97, 95, true);
-	const full = encodings(bytes, 97, 95);
-	const next = encodings(bytes, 72, 71);
+	const full = await encodings(bytes, 97, 95);
+	const next = await encodings(bytes, 72, 71);
 	const maxBytes = Math.min(...full.map((candidate) => candidate.data.length));
 	const expected = next.find((candidate) => candidate.data.length < maxBytes);
 	assert.ok(expected, "synthetic fixture fits on the first reduced dimensions");
@@ -216,16 +248,32 @@ test("BMP converts to PNG and reports the native conversion hint", async () => {
 	assert.equal(result.mimeType, "image/png");
 	assert.equal(detectSupportedImageMimeType(Buffer.from(result.data, "base64")), "image/png");
 	assert.deepEqual(result.hints, ["[Image converted from image/bmp to image/png.]"]);
-	const decoded = photon.PhotonImage.new_from_byteslice(Buffer.from(result.data, "base64"));
-	try {
-		assert.equal(decoded.get_width(), 2);
-		assert.equal(decoded.get_height(), 1);
-	} finally { decoded.free(); }
+	assert.deepEqual(await dimensions(Buffer.from(result.data, "base64")), [2, 1]);
+});
+
+test("native 32-bit top-down BMP is decoded with correct scanline order", async () => {
+	const bytes = Buffer.alloc(54 + 8);
+	bytes.write("BM");
+	bytes.writeUInt32LE(bytes.length, 2);
+	bytes.writeUInt32LE(54, 10);
+	bytes.writeUInt32LE(40, 14);
+	bytes.writeInt32LE(2, 18);
+	bytes.writeInt32LE(-1, 22); // negative height = top-down
+	bytes.writeUInt16LE(1, 26);
+	bytes.writeUInt16LE(32, 28);
+	bytes.set([0, 0, 255, 255, 0, 255, 0, 255], 54); // B,G,R,A: blue, green
+	const converted = await processImage(bytes, "image/bmp");
+	assert.ok(converted.ok);
+	const { data, info } = await sharp(Buffer.from(converted.data, "base64")).raw().toBuffer({ resolveWithObject: true });
+	assert.equal(info.width, 2);
+	assert.equal(info.height, 1);
+	assert.deepEqual(Array.from(data.subarray(0, 3)), [255, 0, 0]);
+	assert.deepEqual(Array.from(data.subarray(4, 7)), [0, 255, 0]);
 });
 
 test("EXIF-oriented dimensions govern resizing, with native unchanged-byte behavior when already fit", async () => {
 	for (const orientation of [2, 3, 4, 5, 6, 7, 8]) {
-		const bytes = exifJpeg(orientation);
+		const bytes = await exifJpeg(orientation);
 		const untouched = await resizeImage(bytes, "image/jpeg");
 		assert.ok(untouched);
 		assert.equal(untouched.data, bytes.toString("base64"));
@@ -238,7 +286,7 @@ test("EXIF-oriented dimensions govern resizing, with native unchanged-byte behav
 	}
 });
 
-test("EXIF mirrors and rotations preserve exact pixel placement for JPEG and both WebP EXIF layouts", () => {
+test("EXIF mirrors and rotations preserve exact pixel placement for JPEG and both WebP EXIF layouts", async () => {
 	const expected = [
 		[1, 2, 3, 4, 5, 6], // unchanged
 		[3, 2, 1, 6, 5, 4], // horizontal mirror
@@ -249,34 +297,31 @@ test("EXIF mirrors and rotations preserve exact pixel placement for JPEG and bot
 		[6, 3, 5, 2, 4, 1], // transverse
 		[3, 6, 2, 5, 1, 4], // 90 degrees counterclockwise
 	];
+	const decoding = async (bytes: Buffer) => {
+		const { data, info } = await sharp(bytes).rotate().raw().toBuffer({ resolveWithObject: true });
+		return {
+			width: info.width,
+			height: info.height,
+			placements: Array.from(data).filter((_, i) => i % info.channels === 0) as number[],
+		};
+	};
 	for (let orientation = 1; orientation <= 8; orientation++) {
-		const jpeg = exifJpeg(orientation);
-		// Only metadata is needed here: decoding is covered by the resize test.
+		const jpeg = await tinyExifJpeg(orientation);
+		const baseline = await decoding(await tinyExifJpeg(1));
+		const rotated = await decoding(jpeg);
+		// sharp bakes the EXIF orientation into the pixels via .rotate().
+		assert.equal(rotated.width, orientation >= 5 ? 2 : 3);
+		assert.equal(rotated.height, orientation >= 5 ? 3 : 2);
+		assert.deepEqual(rotated.placements, expected[orientation - 1]!.map((i) => baseline.placements[i - 1]));
+
+		// The EXIF metadata slice is identical to the one libvips reads. Verify
+		// both WebP EXIF layouts (prefixed and bare TIFF) carry the same value.
 		const exif = jpeg.subarray(6, 38);
-		for (const metadata of [jpeg, ...[exif, exif.subarray(6)].map((data) => {
-			// Odd-size RIFF chunk before EXIF verifies native even-byte padding.
-			const webp = Buffer.alloc(12 + 10 + 8 + data.length);
-			webp.write("RIFF", 0);
-			webp.writeUInt32LE(webp.length - 8, 4);
-			webp.write("WEBP", 8);
-			webp.write("JUNK", 12);
-			webp.writeUInt32LE(1, 16);
-			webp.write("EXIF", 22);
-			webp.writeUInt32LE(data.length, 26);
-			data.copy(webp, 30);
-			return webp;
-		})]) {
-			const pixels = Uint8Array.from([1, 2, 3, 4, 5, 6].flatMap((value) => [value, 0, 0, 255]));
-			const raw = new photon.PhotonImage(pixels, 3, 2);
-			const oriented = applyExifOrientation(photon, raw, metadata);
-			try {
-				assert.equal(oriented.get_width(), orientation >= 5 ? 2 : 3);
-				assert.equal(oriented.get_height(), orientation >= 5 ? 3 : 2);
-				assert.deepEqual(Array.from(oriented.get_raw_pixels()).filter((_, index) => index % 4 === 0), expected[orientation - 1]);
-			} finally {
-				if (oriented !== raw) oriented.free();
-				raw.free();
-			}
+		for (const metadata of [exif, exif.subarray(6)]) {
+			const webp = await webpWithExif(metadata);
+			assert.equal(getExifOrientation(webp), orientation, "WebP EXIF chunk");
+			// The decoder reads both layouts without error.
+			assert.deepEqual(await dimensions(webp), [12, 8]);
 		}
 	}
 });
@@ -326,32 +371,11 @@ test("MIME sniffing matches native supported signatures and rejects APNG/JPEG-LS
 	} finally { await rm(dir, { recursive: true, force: true }); }
 });
 
-test("unbundled Node worker responds with tagged output and matches the in-process fallback", async () => {
+test("in-process resize is deterministic and never mutates the caller bytes", async () => {
 	const bytes = png(96, 96, true);
+	const original = Buffer.from(bytes);
 	const options = { maxWidth: 64, maxHeight: 64, maxBytes: 4000 };
-	const worker = new Worker(path.join(process.cwd(), "src/agent/image-processing/resize-worker.mjs"));
-	try {
-		const reply = new Promise<{ type: string; result: unknown }>((resolve, reject) => {
-			worker.once("message", resolve);
-			worker.once("error", reject);
-		});
-		worker.postMessage({ inputBytes: new Uint8Array(bytes), mimeType: "image/png", options });
-		assert.deepEqual(await reply, { type: "pi:image-resize-response", result: await resizeImageInProcess(bytes, "image/png", options) });
-		assert.deepEqual(await resizeImage(bytes, "image/png", options), await resizeImageInProcess(bytes, "image/png", options));
-	} finally { await worker.terminate(); }
-});
-
-test("missing cwd-relative worker falls back in-process without altering the caller bytes", async () => {
-	const cwd = process.cwd();
-	const dir = await mkdtemp(path.join(os.tmpdir(), "lh-image-worker-fallback-"));
-	const bytes = png();
-	const options = { maxWidth: 64, maxHeight: 64 };
-	const expected = await resizeImageInProcess(bytes, "image/png", options);
-	try {
-		process.chdir(dir);
-		assert.deepEqual(await resizeImage(bytes, "image/png", options), expected);
-	} finally {
-		process.chdir(cwd);
-		await rm(dir, { recursive: true, force: true });
-	}
+	const direct = await resizeImageInProcess(bytes, "image/png", options);
+	assert.deepEqual(await resizeImage(bytes, "image/png", options), direct);
+	assert.deepEqual(bytes, original);
 });

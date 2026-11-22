@@ -1,0 +1,17 @@
+[Unit]
+Description=learn.upsolve.study background job worker (pg-boss)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=learn
+Group=learn
+WorkingDirectory=/srv/learn
+EnvironmentFile=/srv/learn/.env.local
+ExecStart=/usr/local/bin/library-node node_modules/tsx/dist/cli.mjs --import tsx scripts/worker.ts
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

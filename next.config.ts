@@ -83,14 +83,15 @@ const nextConfig: NextConfig = {
 			// npm installs only the current platform's binary, so this glob
 			// resolves to exactly one Skia binary per build.
 			"node_modules/@napi-rs/canvas-*/**/*",
-			// Pi-compatible image resizing runs in an unbundled worker. Photon
-			// loads its colocated WASM through Node, also in packaged Electron.
+			// Pi-compatible image resizing uses native sharp; its per-platform
+			// libvips binaries are optional deps the tracer cannot see, so
+			// include them (one platform per build).
 			// Side questions (2026-11-02): the side model's base prompt is read
 			// from disk per ask — a directory no agent-composition read names.
 			"src/agent/prompts/side-chat/*.md",
 			"src/agent/image-processing/*.mjs",
 			"src/agent/image-processing/LICENSE",
-			"node_modules/@silvia-odwyer/photon-node/**/*",
+			"node_modules/@img/sharp-*/**/*",
 			// Wave E stage 2: resvg rasterizes visual-maker SVGs natively; same
 			// per-platform-binary story as the canvas above (one per build).
 			"node_modules/@resvg/resvg-js-*/**/*",
@@ -119,7 +120,7 @@ const nextConfig: NextConfig = {
 		"@earendil-works/pi-agent-core",
 		"pdfjs-dist", // sources v0: bundling breaks its node fake-worker path
 		"@napi-rs/canvas", // native binding — bundling breaks the .node require
-		"@silvia-odwyer/photon-node", // CJS loads its adjacent WASM from disk
+		"sharp", // native libvips binding — bundling breaks its platform binary
 		"@resvg/resvg-js", // native binding — same
 	],
 };

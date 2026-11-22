@@ -13,9 +13,13 @@
  * /auth/grant (their docs, token-based auth FAQ) — plain read/transcribe
  * keys return FORBIDDEN here.
  */
-import { keyValue, ownerScoped } from "@/src/server";
+import { keyValue, ownerScoped, sttGatewayUrl } from "@/src/server";
 
 async function GETHandler() {
+	// Local Parakeet gateway: no token is needed — the renderer uploads a
+	// batch WAV to /api/stt/transcribe instead of opening a Deepgram socket.
+	if (sttGatewayUrl()) return Response.json({ mode: "local" });
+
 	const key = keyValue("DEEPGRAM_API_KEY");
 	if (!key) {
 		return Response.json(

@@ -3,11 +3,10 @@ import { after, test } from "node:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Worker } from "node:worker_threads";
 import { createCanvas } from "@napi-rs/canvas";
+import sharp from "sharp";
 import { Type } from "typebox";
 import type { PluginQuestionSnapshot } from "../src/core/plugin-questions.ts";
-import * as photon from "@silvia-odwyer/photon-node";
 import { createFauxCore, createProvider, fauxAssistantMessage, fauxToolCall, type ImageContent, type StreamFunction } from "@earendil-works/pi-ai";
 import type { Agent } from "@earendil-works/pi-agent-core";
 import type { LhMessage } from "../src/core/native-messages.ts";
@@ -47,24 +46,25 @@ function image(width = 8, height = 4): ImageContent {
 	const ctx = canvas.getContext("2d"); ctx.fillStyle = "#11bb66"; ctx.fillRect(0, 0, width, height);
 	return { type: "image", mimeType: "image/png", data: canvas.toBuffer("image/png").toString("base64") };
 }
-function dimensions(value: Readonly<ImageContent>) {
-	const decoded = photon.PhotonImage.new_from_byteslice(Buffer.from(value.data, "base64"));
-	try { return [decoded.get_width(), decoded.get_height()]; } finally { decoded.free(); }
+async function dimensions(value: Readonly<ImageContent>): Promise<[number, number]> {
+	const meta = await sharp(Buffer.from(value.data, "base64")).metadata();
+	return [meta.width, meta.height];
 }
-// Observe the real image worker boundary, not timing or a replacement processor.
-// The mutation happens after capture and before its async processing returns.
+// Observe the real image-processing boundary: sharp reads metadata as the
+// first async step of resizeImageInProcess. The mutation happens after the
+// submission has captured its bytes and before processing returns.
 async function duringProcessing<T>(mutate: () => void, run: () => Promise<T>): Promise<T> {
-	const original = Worker.prototype.postMessage;
+	const original = sharp.prototype.metadata;
 	let observed = false;
-	Worker.prototype.postMessage = function (this: Worker, ...args: Parameters<typeof original>) {
-		Worker.prototype.postMessage = original;
+	sharp.prototype.metadata = function (this: unknown, ...args: unknown[]) {
+		sharp.prototype.metadata = original;
 		observed = true;
-		const result = original.apply(this, args);
+		const result = original.apply(this, args as Parameters<typeof original>);
 		mutate();
 		return result;
-	};
+	} as typeof original;
 	try { const result = await run(); assert(observed, "must exercise real asynchronous image processing"); return result; }
-	finally { Worker.prototype.postMessage = original; }
+	finally { sharp.prototype.metadata = original; }
 }
 function builtinPose(id = "pose", two = false): LhMessage {
 	return { ...fauxAssistantMessage([
@@ -91,10 +91,10 @@ test("strict admission verifies declared bytes and decodes images, rather than a
 	const canvas = createCanvas(1, 1);
 	for (const [mimeType, bytes] of [["image/jpeg", canvas.toBuffer("image/jpeg")], ["image/webp", canvas.toBuffer("image/webp")], ["image/gif", Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64")]] as const) {
 		const prepared = await prepareSubmissionImages([{ type: "image", mimeType, data: bytes.toString("base64") }], { model });
-		assert.deepEqual(dimensions(prepared![0]!), [1, 1]);
+		assert.deepEqual(await dimensions(prepared![0]!), [1, 1]);
 	}
 	const prepared = await prepareSubmissionImages([image()], { model });
-	assert.deepEqual(dimensions(prepared![0]!), [2, 1]);
+	assert.deepEqual(await dimensions(prepared![0]!), [2, 1]);
 	assert.equal(prepared!.length, 1);
 	assert.deepEqual(await prepareSubmissionImageChannels({ answer: [], thinking: [image()] }, { model }), { thinking: prepared });
 	assert.equal(await prepareSubmissionImageChannels({ answer: [] }, { model }), undefined);
@@ -105,7 +105,7 @@ test("strict admission verifies declared bytes and decodes images, rather than a
 test("image preparation reuses the processor defaults when the actual engine has no resize override", async () => {
 	const noOverride = { ...model, inputLimits: undefined };
 	const [prepared] = (await prepareSubmissionImages([image(2101, 2)], { model: noOverride }))!;
-	assert.deepEqual(dimensions(prepared!), [2000, 2]);
+	assert.deepEqual(await dimensions(prepared!), [2000, 2]);
 	assert(prepared!.data.length < 4.5 * 1024 * 1024);
 });
 
@@ -126,7 +126,7 @@ test("new turn admission uses the actual Strong conversation engine for prober, 
 		assert.equal(accepted.role, "user");
 		const acceptedImage = (accepted.content as ImageContent[])[0]!;
 		assert.notEqual(acceptedImage.data, original.data);
-		assert.deepEqual(dimensions(acceptedImage), [2, 1]);
+		assert.deepEqual(await dimensions(acceptedImage), [2, 1]);
 		assert(JSON.stringify(contexts).includes(acceptedImage.data), "normalized native bytes must actually reach the model");
 		assert(!JSON.stringify(accepted.content).includes("[Image"), "processor hints never become learner text");
 	}
@@ -149,7 +149,7 @@ test("save-only parallel answers normalize all channels before persistence witho
 	assert.equal(isTurnRunning(chat.id), false);
 	const saved = (await stores.chatStore.getChat(chat.id))!.messages.at(-1)! as any;
 	assert.equal(saved.role, "toolResult");
-	for (const channel of ["answer", "thinking", "readingThinking"]) assert.deepEqual(dimensions(saved.details.images[channel][0]), [2, 1]);
+	for (const channel of ["answer", "thinking", "readingThinking"]) assert.deepEqual(await dimensions(saved.details.images[channel][0]), [2, 1]);
 	assert.equal(saved.content.filter((block: any) => block.type === "image").length, 3);
 	const projected = toLlmMessages([saved])[0]!;
 	assert(Array.isArray(projected.content));
@@ -204,7 +204,7 @@ for (const change of ["settings", "replacement", "model", "resize", "settled"] a
 		}, async () => (await prepareAndSteerChat(chat.id, { type: "steer", id: "steer-fixture", text: "", images: [image()] })));
 		assert.equal(result, change === "settings" ? "accepted" : change === "settled" ? "settled" : "stale");
 		assert.equal(received.length, change === "settings" ? 1 : 0);
-		if (received.length) assert.deepEqual(dimensions((received[0]!.content as ImageContent[])[0]!), [2, 1]);
+		if (received.length) assert.deepEqual(await dimensions((received[0]!.content as ImageContent[])[0]!), [2, 1]);
 		assert.equal((await stores.chatStore.getChat(chat.id))!.messages.length, 0, "accepted busy steering retains existing memory-only queue tradeoff");
 	} finally { unregisterLiveAgent(chat.id); discardChatDeliveries(chat.id); model.inputLimits.images.resize.maxWidth = 2; }
 });
@@ -266,5 +266,5 @@ test("custom endpoint admission uses the existing effective-engine forced image 
 	configureProviderSource({ isCustom: id => id === provider, sync: models => models.setProvider(entry) });
 	const engine = piEngineForSpec({ provider, id: "text" });
 	assert(engine.model.input.includes("image"));
-	assert.deepEqual(dimensions((await prepareSubmissionImages([image()], engine))![0]!), [2, 1]);
+	assert.deepEqual(await dimensions((await prepareSubmissionImages([image()], engine))![0]!), [2, 1]);
 });

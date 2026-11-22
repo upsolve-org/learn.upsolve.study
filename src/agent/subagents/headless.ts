@@ -8,9 +8,11 @@ import { svgImageSource } from "../../../lib/svg-image-source";
  * puppeteer-core. SVGs use only resvg; PDFs use pdfjs + Skia (no browser).
  * No extra Chromium is shipped or downloaded.
  *
- * Chrome resolution: CHROME_PATH first, then common macOS, Windows and Linux
- * install paths. `available()` is a cheap executable check; the helper must
- * still prove it can launch at job time.
+ * Chrome resolution: CHROME_WS_ENDPOINT (a ws:// or wss:// CDP endpoint of a
+ * sandboxed container) first, then CHROME_PATH and common macOS, Windows and
+ * Linux install paths. `available()` is a cheap resolution check; the helper
+ * must still prove it can launch/connect at job time. A remote container is
+ * disconnected — never closed — after each page.
  *
  * Test seam: `headlessOverride.current` replaces the whole API (tests inject
  * a fake; nothing here touches a real browser). Builders call `getHeadless()`.
@@ -92,6 +94,15 @@ const CHROME_CANDIDATES = [
 	"/usr/bin/chromium-browser",
 ];
 
+/** A sandboxed Chromium can be supplied as a CDP WebSocket endpoint instead
+ *  of a local executable. Only ws:// and wss:// are accepted; anything else
+ *  (an http:// health URL, a blank value, a path) is treated as unconfigured. */
+export function resolveChromeWsEndpoint(env: Record<string, string | undefined> = process.env): string | null {
+	const value = env.CHROME_WS_ENDPOINT?.trim();
+	if (!value) return null;
+	return value.startsWith("ws://") || value.startsWith("wss://") ? value : null;
+}
+
 export function resolveChromeExecutablePath(): string | null {
 	const candidates = [process.env.CHROME_PATH, ...CHROME_CANDIDATES].filter(
 		(p): p is string => typeof p === "string" && p.length > 0,
@@ -108,7 +119,8 @@ export function resolveChromeExecutablePath(): string | null {
 
 const NO_CHROME_MESSAGE =
 	"No render engine available: no system Chrome/Chromium was found. " +
-	"Install Google Chrome or set CHROME_PATH to a Chrome executable. " +
+	"Install Google Chrome, set CHROME_PATH to a Chrome executable, or set " +
+	"CHROME_WS_ENDPOINT to a ws:// or wss:// sandboxed Chromium endpoint. " +
 	"(Verification is mandatory — demos are never delivered untested.)";
 
 // ─── Demo pages via system Chrome ────────────────────────────────────────────
@@ -127,6 +139,20 @@ function chromeLaunchOptions(executablePath: string | null) {
 
 async function withBrowserPage<T>(fn: (page: import("puppeteer-core").Page) => Promise<T>): Promise<T> {
 	const puppeteer = (await import("puppeteer-core")).default;
+	const wsEndpoint = resolveChromeWsEndpoint();
+	if (wsEndpoint !== null) {
+		// Remote sandboxed container: it is shared with other jobs. Disconnect
+		// our CDP session — NEVER close the container's browser.
+		const browser = await puppeteer.connect({ browserWSEndpoint: wsEndpoint });
+		let page: import("puppeteer-core").Page | undefined;
+		try {
+			page = await browser.newPage();
+			return await fn(page);
+		} finally {
+			await page?.close().catch(() => {});
+			await browser.disconnect();
+		}
+	}
 	const browser = await puppeteer.launch(chromeLaunchOptions(resolveChromeExecutablePath()));
 	try {
 		const page = await browser.newPage();
@@ -461,10 +487,10 @@ async function renderPdfPages(
 
 export const realHeadless: HeadlessApi = {
 	available() {
-		return resolveChromeExecutablePath() !== null;
+		return resolveChromeWsEndpoint() !== null || resolveChromeExecutablePath() !== null;
 	},
 	unavailableReason() {
-		return resolveChromeExecutablePath() === null ? NO_CHROME_MESSAGE : null;
+		return resolveChromeWsEndpoint() === null && resolveChromeExecutablePath() === null ? NO_CHROME_MESSAGE : null;
 	},
 	runDemo,
 	renderSvg,

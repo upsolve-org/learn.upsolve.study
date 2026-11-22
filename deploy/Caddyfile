@@ -1,0 +1,10 @@
+learn.upsolve.study {
+	encode zstd gzip
+
+	# PR 7: Supabase Auth is gone (standalone PostgreSQL + Better Auth).
+	# The GoTrue proxy was removed — every request, including /auth/*, is
+	# served by the app on 127.0.0.1:8300.
+	reverse_proxy 127.0.0.1:8300 {
+		flush_interval -1
+	}
+}
