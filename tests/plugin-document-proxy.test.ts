@@ -11,6 +11,7 @@ import { config, proxy } from "../proxy.ts";
 import { createPluginDocumentConverter, MAX_DOCUMENT_BODY_BYTES } from "../src/server/plugin-documents.ts";
 import { documentEndpointExempt, PROXY_MATCHER } from "../src/core/auth-routes.ts";
 import { createPluginDocumentRoute, createPluginTransport } from "../src/server/plugin-transport.ts";
+import { setAuthSessionResolver } from "../src/server/auth.ts";
 
 const origin = "http://localhost";
 const documentPath = "/api/plugins/document-one/documents/markdown";
@@ -251,10 +252,12 @@ it("authorized document route methods preserve POST dispatch, empty 405s and OPT
 	}
 });
 
-it("hosted page gate keeps unrelated cookies out of responses and admits a verified invite", async t => {
-	const names = ["HOSTED_PILOT_EMAIL", "HOSTED_MODE", "NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "SUPABASE_DB_URL"];
+it("hosted page gate keeps unrelated cookies out of responses and admits a verified invite", async () => {
+	const names = ["HOSTED_PILOT_EMAIL", "HOSTED_MODE", "DATABASE_URL", "BETTER_AUTH_SECRET"];
 	const saved = Object.fromEntries(names.map(name => [name, process.env[name]]));
-	Object.assign(process.env, { HOSTED_PILOT_EMAIL: "invited@example.test", HOSTED_MODE: "on", NEXT_PUBLIC_SUPABASE_URL: "https://supabase.invalid", NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test", SUPABASE_DB_URL: "postgresql://unused" });
+	Object.assign(process.env, { HOSTED_PILOT_EMAIL: "invited@example.test", HOSTED_MODE: "on", DATABASE_URL: "postgresql://unused", BETTER_AUTH_SECRET: "secret" });
+	let user: { id: string; email: string } | null = null;
+	setAuthSessionResolver(async () => user);
 	try {
 		const signedOut = await proxy(new NextRequest(new URL("/", origin), { headers: { cookie: "unrelated=value" } }));
 		assert.equal(signedOut.status, 307);
@@ -262,14 +265,13 @@ it("hosted page gate keeps unrelated cookies out of responses and admits a verif
 		assert.equal(signedOut.headers.getSetCookie().length, 0);
 		const login = await proxy(new NextRequest(new URL("/auth/login", origin)));
 		assert.equal(login.headers.get("x-middleware-next"), "1");
-		// Only the verified user response, not the cookie claim, admits a page.
-        t.mock.method(globalThis, "fetch", async () => Response.json({ id: "9d0409ac-ee31-4944-8cc8-56ef5eb1bed5", email: "invited@example.test" }));
-		const session = { access_token: "test", refresh_token: "test", expires_at: Math.floor(Date.now()/1000)+3600, user: { id: "9d0409ac-ee31-4944-8cc8-56ef5eb1bed5" } };
-		const value = `base64-${Buffer.from(JSON.stringify(session)).toString("base64url")}`;
-		const signedIn = await proxy(new NextRequest(new URL("/", origin), { headers: { cookie: `sb-supabase-auth-token=${value}` } }));
+		// Only the verified session user, not a cookie claim, admits a page.
+		user = { id: "9d0409ac-ee31-4944-8cc8-56ef5eb1bed5", email: "invited@example.test" };
+		const signedIn = await proxy(new NextRequest(new URL("/", origin), { headers: { cookie: "unrelated=value" } }));
 		assert.equal(signedIn.status, 200);
 		assert.equal(signedIn.headers.get("x-middleware-next"), "1");
 	} finally {
+		setAuthSessionResolver(undefined);
 		for (const [name, value] of Object.entries(saved)) {
 			if (value === undefined) delete process.env[name]; else process.env[name] = value;
 		}

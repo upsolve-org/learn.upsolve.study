@@ -11,9 +11,8 @@ const { issuedCredentials, recordIssued, forgetIssued } = await import("../src/c
 const { admittedEmails, requestSignup, pendingSignups } = await import("../src/core/hosted-admission.ts");
 const env = {
 	HOSTED_MODE: "on",
-	NEXT_PUBLIC_SUPABASE_URL: "https://supabase.invalid",
-	NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "public-test",
-	SUPABASE_SECRET_KEY: "secret-test",
+	DATABASE_URL: "postgresql://unused",
+	BETTER_AUTH_SECRET: "secret",
 	RESEND_API_KEY: "resend-test",
 	RESEND_FROM: "UPsolve <noreply@upsolve.study>",
 	APP_ORIGIN: "https://learn.upsolve.study",
@@ -21,6 +20,7 @@ const env = {
 const credential = {
 	email: "learner@example.test", password: "OriginalPassword123", userId: "user-1", issuedAt: "2026-11-21T00:00:00.000Z",
 };
+const goodProvision = async () => ({ ok: true as const, userId: "user-1" });
 
 beforeEach(() => {
 	for (const file of ["issued-credentials.json", "admissions.json", "signups.json"]) {
@@ -30,21 +30,20 @@ beforeEach(() => {
 afterEach(() => mock.restoreAll());
 after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
 
-it("approval creates a confirmed account before emailing the exact generated credentials", async () => {
+it("approval creates the account before emailing the exact generated credentials", async () => {
 	requestSignup("Learner@Example.test");
 	const calls: string[] = [];
 	let password = "";
+	const provision = async (email: string, generated: string) => {
+		assert.equal(email, credential.email);
+		password = generated;
+		return { ok: true as const, userId: "user-1" };
+	};
 	mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
 		const url = String(input);
 		calls.push(url);
+		assert.equal(url, "https://api.resend.com/emails", "provisioning must not use the network in this test");
 		const body = JSON.parse(String(init?.body));
-		if (url.endsWith("/auth/v1/admin/users")) {
-			assert.equal(body.email, credential.email);
-			assert.equal(body.email_confirm, true);
-			password = body.password;
-			return Response.json({ id: "user-1" });
-		}
-		assert.equal(url, "https://api.resend.com/emails");
 		assert.deepEqual(body.to, [credential.email]);
 		assert.equal(body.from, env.RESEND_FROM);
 		assert.equal(body.subject, "Your UPsolve Learn account is ready");
@@ -55,42 +54,40 @@ it("approval creates a confirmed account before emailing the exact generated cre
 		assert.ok(init?.signal);
 		return Response.json({ id: "email-1" });
 	});
-	const result = await approveAccount("Learner@Example.test", env);
+	const result = await approveAccount("Learner@Example.test", env, provision);
 	assert.ok(result.ok);
-	assert.equal(calls.length, 2);
+	assert.equal(calls.length, 1, "only the email request");
 	assert.ok(admittedEmails().includes(credential.email));
 	assert.equal(pendingSignups().length, 0);
 	assert.equal(issuedCredentials()[0]!.password, password);
 	assert.equal(issuedCredentials()[0]!.emailDelivery?.status, "accepted");
 	// A stale repeat of the Approve form neither resets the password nor sends twice.
-	await approveAccount(credential.email, env);
-	assert.equal(calls.length, 2);
+	await approveAccount(credential.email, env, provision);
+	assert.equal(calls.length, 1);
 });
 
 it("provisioning failure sends no email and reports failure", async () => {
-	const fetch = mock.method(globalThis, "fetch", async () => Response.json({ msg: "unavailable" }, { status: 503 }));
-	assert.equal((await approveAccount(credential.email, env)).ok, false);
-	assert.equal(fetch.mock.calls.length, 1);
+	const fetch = mock.method(globalThis, "fetch", async () => { throw new Error("Must not send"); });
+	const result = await approveAccount(credential.email, env, async () => ({ ok: false as const, error: "db down" }));
+	assert.equal(result.ok, false);
+	assert.equal(result.ok === false ? result.error : "", "db down");
+	assert.equal(fetch.mock.calls.length, 0);
 	assert.equal(issuedCredentials().length, 0);
 });
 
 it("concurrent approvals share one password and one email", async () => {
-	let finish!: (response: Response) => void;
-	const fetch = mock.method(globalThis, "fetch", async (input: string | URL | Request) => {
-		if (String(input).endsWith("/auth/v1/admin/users")) {
-			return new Promise<Response>(resolve => { finish = resolve; });
-		}
-		return Response.json({ id: "one-email" });
-	});
-	const first = approveAccount(credential.email, env);
-	const second = approveAccount(credential.email, env);
-	finish(Response.json({ id: "one-user" }));
+	let finish!: (result: { ok: true; userId: string }) => void;
+	const provision = async () => new Promise<{ ok: true; userId: string }>(resolve => { finish = resolve; });
+	const fetch = mock.method(globalThis, "fetch", async () => Response.json({ id: "one-email" }));
+	const first = approveAccount(credential.email, env, provision);
+	const second = approveAccount(credential.email, env, provision);
+	finish({ ok: true, userId: "user-1" });
 	const results = await Promise.all([first, second]);
 	assert.deepEqual(results[0], results[1]);
-	assert.equal(fetch.mock.calls.length, 2);
+	assert.equal(fetch.mock.calls.length, 1);
 });
 
-it("timeout and retry keep the password and request identity, without calling GoTrue", async () => {
+it("timeout and retry keep the password and request identity, without provisioning again", async () => {
 	recordIssued(credential);
 	const requests: { key: string | null; body: unknown }[] = [];
 	mock.method(globalThis, "fetch", async (input: string | URL | Request, init?: RequestInit) => {
@@ -132,7 +129,7 @@ it("missing key and invalid login origin fail without sending", async () => {
 it("invalid or unknown addresses cannot send a credential email", async () => {
 	recordIssued(credential);
 	const fetch = mock.method(globalThis, "fetch", async () => { throw new Error("Must not send"); });
-	assert.equal((await approveAccount("invalid", env)).ok, false);
+	assert.equal((await approveAccount("invalid", env, goodProvision)).ok, false);
 	assert.equal((await sendApprovalEmail("unknown@example.test", env)).status, "failed");
 	assert.equal(fetch.mock.calls.length, 0);
 });

@@ -1,7 +1,7 @@
 /**
  * Boot gates. Both run before the server serves anything.
  *
- * Hosted mode fails closed: one error naming every missing Supabase
+ * Hosted mode fails closed: one error naming every missing database/auth
  * variable, rather than a server that starts and silently trusts the
  * network (src/core/hosted.ts). Off, the check is a no-op.
  *

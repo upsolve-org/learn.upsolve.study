@@ -1,6 +1,6 @@
 import { isPluginHostError } from "./plugin-host.ts";
 import { apiRequestRefusal } from "./desktop-access.ts";
-import { hostedIdentity } from "../core/hosted-admission.ts";
+import { hostedIdentityFromHeaders } from "./auth.ts";
 import { runAsOwner } from "../core/owner-scope.ts";
 import type { PluginFrontendContext, PluginInfo } from "../core/plugins.ts";
 
@@ -66,7 +66,7 @@ export function createPluginTransport(deps: { getHost(): Promise<PluginTransport
  * work, including unsupported methods and framework-style OPTIONS responses. */
 export function createPluginDocumentRoute(
 	transport: Pick<ReturnType<typeof createPluginTransport>, "convertDocument">,
-	identify: typeof hostedIdentity = hostedIdentity,
+	identify: (request: Request) => Promise<{ owner: string } | { refusal: Response }> = (request) => hostedIdentityFromHeaders(request.headers),
 ) {
 	// TENANCY: this route bypasses the Proxy, so the client's x-lh-owner
 	// header is NOT overwritten here. The owner scope must come from the

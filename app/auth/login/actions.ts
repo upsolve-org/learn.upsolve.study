@@ -1,28 +1,17 @@
 "use server";
 
+import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { revalidatePath } from "next/cache";
-import { supabaseServer } from "@/src/server";
-import { CALLBACK_PATH, hostedConfig, hostedMode, LOGIN_PATH, safeReturnPath } from "@/src/core";
-import { hostedFetch } from "@/src/server";
+import { getAuth } from "@/src/server";
+import { hostedConfig, hostedMode, LOGIN_PATH, safeReturnPath } from "@/src/core";
 
 export type LoginState = { error?: string; notice?: string };
 
-/** Email + password only while Google is off; both once it is on. */
+/** Email + password only while Google is off; both once it is on. Pure config:
+ *  no network probe to an auth provider at render time. */
 export async function loginProviders(): Promise<boolean> {
-	const config = hostedConfig();
-	if (!config) return false;
-	try {
-		const response = await hostedFetch(config.url)(`${config.url}/auth/v1/settings`, {
-			headers: { apikey: config.publishableKey },
-			cache: "no-store",
-		});
-		if (!response.ok) return false;
-		const settings = (await response.json()) as { external?: { google?: boolean } };
-		return settings.external?.google === true;
-	} catch {
-		return false;
-	}
+	return hostedConfig()?.googleEnabled === true;
 }
 
 /** Only the codes the page can explain; everything else is generic. */
@@ -34,20 +23,20 @@ function codeFor(message: string): string {
 	return "invalid_credentials";
 }
 
-/** POST /auth/login - password grant, then home (or the ?next target). */
+/** POST /auth/login - email/password via Better Auth, then home (or ?next). */
 export async function signInAction(_previous: LoginState, formData: FormData): Promise<LoginState> {
 	const next = safeReturnPath(String(formData.get("next") ?? ""));
 	const email = String(formData.get("email") ?? "").trim();
 	const password = String(formData.get("password") ?? "");
 	if (!email || !password) return { error: "Enter your email and password." };
-
 	if (!hostedMode()) return { error: "This build has no accounts (HOSTED_MODE is off)." };
-	const supabase = await supabaseServer();
-	if (!supabase) return { error: "Supabase is not configured." };
 
-	const { error } = await supabase.auth.signInWithPassword({ email, password });
-	if (error) {
-		const back = new URLSearchParams({ next, error: codeFor(error.message) });
+	try {
+		// nextCookies() writes the session cookie into this action's response.
+		await getAuth().api.signInEmail({ body: { email, password }, headers: await headers() });
+	} catch (error) {
+		const message = error instanceof Error ? error.message : "";
+		const back = new URLSearchParams({ next, error: codeFor(message) });
 		redirect(`${LOGIN_PATH}?${back}`);
 	}
 
@@ -55,20 +44,25 @@ export async function signInAction(_previous: LoginState, formData: FormData): P
 	redirect(next);
 }
 
-/** POST /auth/login with intent=google - the OAuth redirect. Hidden until
- * GOOGLE_ENABLED is on; the page only renders the button then. */
+/** POST /auth/login with intent=google - Better Auth's OAuth redirect. Hidden
+ *  until Google credentials are configured; the page only renders it then. */
 export async function googleSignInAction(formData: FormData): Promise<void> {
 	const config = hostedConfig();
-	if (!config) redirect(LOGIN_PATH);
 	const next = safeReturnPath(String(formData.get("next") ?? ""));
-	const supabase = await supabaseServer();
-	if (!supabase) redirect(LOGIN_PATH);
-	const redirectTo = new URL(`${config.origin}${CALLBACK_PATH}`);
-	if (next !== "/") redirectTo.searchParams.set("next", next);
-	const { data, error } = await supabase.auth.signInWithOAuth({
-		provider: "google",
-		options: { redirectTo: redirectTo.toString() },
-	});
-	if (error || !data.url) redirect(`${LOGIN_PATH}?error=oauth&next=${encodeURIComponent(next)}`);
-	redirect(data.url);
+	if (!config?.googleEnabled) {
+		redirect(`${LOGIN_PATH}?${new URLSearchParams({ next, error: "oauth" })}`);
+	}
+	let url: string | undefined;
+	try {
+		const result = await getAuth().api.signInSocial({
+			body: { provider: "google", callbackURL: next },
+			headers: await headers(),
+		});
+		url = result?.url;
+	} catch {
+		// Fall through to the generic OAuth error below. redirect() throws a
+		// control-flow error, so it must stay OUTSIDE this catch.
+	}
+	if (!url) redirect(`${LOGIN_PATH}?error=oauth&next=${encodeURIComponent(next)}`);
+	redirect(url);
 }

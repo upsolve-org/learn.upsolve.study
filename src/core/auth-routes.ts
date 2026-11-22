@@ -9,6 +9,16 @@ export const CALLBACK_PATH = "/auth/callback";
 export const SIGNUP_PATH = "/auth/signup";
 export const DENIED_PATH = "/auth/denied";
 
+/** Better Auth's mount point. The Proxy must let it through unauthenticated:
+ *  it IS the login/callback/oauth endpoint the session gate would otherwise
+ *  redirect to itself. */
+export const AUTH_API_PREFIX = "/api/auth";
+
+/** True for the mount point itself and every endpoint beneath it. */
+export function authApiPath(pathname: string): boolean {
+	return pathname === AUTH_API_PREFIX || pathname.startsWith(`${AUTH_API_PREFIX}/`);
+}
+
 export function loginPath(pathname: string): boolean {
 	return pathname === LOGIN_PATH || pathname === `${LOGIN_PATH}/`;
 }

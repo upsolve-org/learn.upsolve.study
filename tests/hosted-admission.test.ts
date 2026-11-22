@@ -25,9 +25,8 @@ let saved: Record<string, string | undefined>;
 function env(overrides: Record<string, string | undefined> = {}) {
 	const base: Record<string, string | undefined> = {
 		HOSTED_MODE: "on",
-		NEXT_PUBLIC_SUPABASE_URL: "https://supabase.invalid",
-		NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "test",
-		SUPABASE_DB_URL: "postgresql://unused",
+		DATABASE_URL: "postgresql://unused",
+		BETTER_AUTH_SECRET: "secret",
 		HOSTED_PILOT_EMAIL: undefined,
 		ADMIN_EMAIL: undefined,
 		LH_DATA_DIR: dataDir,
@@ -50,7 +49,7 @@ function writeAdmissions(emails: string[]) {
 beforeEach(() => {
 	fs.rmSync(path.join(dataDir, "admissions.json"), { force: true });
 	fs.rmSync(path.join(dataDir, "signups.json"), { force: true });
-	saved = Object.fromEntries(["HOSTED_MODE", "NEXT_PUBLIC_SUPABASE_URL", "NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "SUPABASE_DB_URL", "HOSTED_PILOT_EMAIL", "ADMIN_EMAIL", "LH_DATA_DIR"].map((k) => [k, process.env[k]]));
+	saved = Object.fromEntries(["HOSTED_MODE", "DATABASE_URL", "BETTER_AUTH_SECRET", "HOSTED_PILOT_EMAIL", "ADMIN_EMAIL", "LH_DATA_DIR"].map((k) => [k, process.env[k]]));
 	env();
 });
 

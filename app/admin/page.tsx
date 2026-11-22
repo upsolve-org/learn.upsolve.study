@@ -16,8 +16,8 @@ export const dynamic = "force-dynamic";
  * than a redirect, so the surface is not advertised.
  *
  * Approving creates the account with a generated password and emails it.
- * Supabase keeps only a hash, so this page is the only place a password can be
- * read; "Done" drops it once it has been sent.
+ * Better Auth keeps only a hash, so this page is the only place a password can
+ * be read; "Done" drops it once it has been sent.
  */
 export default async function AdminPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
 	const email = await currentAccountEmail();
@@ -40,7 +40,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
 				<p className="text-muted-foreground text-sm">
 					{canProvision
 						? "Approving creates the account and emails its sign-in details. Check the email status below, then press Done to clear the saved password."
-						: "Approving admits the address only — SUPABASE_SECRET_KEY is unset, so create the account by hand."}
+						: "Approving admits the address only — DATABASE_URL is unset, so create the account by hand."}
 				</p>
 			</header>
 			{params.error === "provisioning" && (

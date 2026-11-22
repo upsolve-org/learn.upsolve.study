@@ -2,13 +2,13 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { hostedConfigurationError, hostedConfig, hostedMode } from "../src/core/hosted.ts";
 import { isOwnerId, ownerFromUnverified, unverifiedClaimsForTest } from "../src/core/owner.ts";
-import { loginErrorMessage, loginPath, safeReturnPath, signInCallbackPath } from "../src/core/auth-routes.ts";
+import { authApiPath, loginErrorMessage, loginPath, safeReturnPath, signInCallbackPath } from "../src/core/auth-routes.ts";
 
 const ID = "9d0409ac-ee31-4944-8cc8-56ef5eb1bed5";
 const sound = {
 	HOSTED_MODE: "on",
-	NEXT_PUBLIC_SUPABASE_URL: "http://127.0.0.1:8000/",
-	NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_x",
+	DATABASE_URL: "postgresql://localhost:5432/learn",
+	BETTER_AUTH_SECRET: "a-secret-of-at-least-32-characters",
 };
 
 describe("hosted mode", () => {
@@ -25,19 +25,27 @@ describe("hosted mode", () => {
 	it("fails closed naming EVERY missing variable, and stays silent when off", () => {
 		assert.equal(hostedConfigurationError({}), null, "off: no requirement");
 		const error = hostedConfigurationError({ HOSTED_MODE: "on" });
-		assert.match(error ?? "", /NEXT_PUBLIC_SUPABASE_URL/);
-		assert.match(error ?? "", /NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY/);
-		assert.equal(hostedConfigurationError({ ...sound, NEXT_PUBLIC_SUPABASE_URL: "  " }), hostedConfigurationError({ ...sound, NEXT_PUBLIC_SUPABASE_URL: "" }), "blank counts as missing");
-		assert.match(hostedConfigurationError({ ...sound, NEXT_PUBLIC_SUPABASE_URL: "" }) ?? "", /^HOSTED_MODE=on is missing NEXT_PUBLIC_SUPABASE_URL/);
+		assert.match(error ?? "", /DATABASE_URL/);
+		assert.match(error ?? "", /BETTER_AUTH_SECRET/);
+		assert.equal(hostedConfigurationError({ ...sound, DATABASE_URL: "  " }), hostedConfigurationError({ ...sound, DATABASE_URL: "" }), "blank counts as missing");
+		assert.match(hostedConfigurationError({ ...sound, DATABASE_URL: "" }) ?? "", /^HOSTED_MODE=on is missing DATABASE_URL/);
+		assert.equal(hostedConfigurationError(sound), null);
 	});
 
-	it("trims the trailing slash off the URL and defaults the origin", () => {
+	it("trims the URL/secret, defaults the origin and reads Google from credentials only", () => {
 		const config = hostedConfig(sound);
-		assert.equal(config?.url, "http://127.0.0.1:8000");
+		assert.equal(config?.databaseUrl, "postgresql://localhost:5432/learn");
+		assert.equal(config?.secret, "a-secret-of-at-least-32-characters");
 		assert.equal(config?.origin, "http://localhost:3000");
+		assert.equal(config?.googleEnabled, false);
 		assert.equal(hostedConfig({ ...sound, APP_ORIGIN: "https://learn.upsolve.study/" })?.origin, "https://learn.upsolve.study");
-		assert.equal(hostedConfig({}), null);
+		assert.equal(hostedConfig({}) , null);
 		assert.throws(() => hostedConfig({ HOSTED_MODE: "on" }), /missing/);
+
+		assert.equal(hostedConfig({ ...sound, GOOGLE_CLIENT_ID: "id", GOOGLE_CLIENT_SECRET: "secret" })?.googleEnabled, true);
+		assert.equal(hostedConfig({ ...sound, GOOGLE_CLIENT_ID: "id" })?.googleEnabled, false);
+		assert.equal(hostedConfig({ ...sound, GOOGLE_CLIENT_SECRET: "secret" })?.googleEnabled, false);
+		assert.equal(hostedConfig({ ...sound, GOOGLE_CLIENT_ID: "  ", GOOGLE_CLIENT_SECRET: "secret" })?.googleEnabled, false);
 	});
 });
 
@@ -60,12 +68,17 @@ describe("owner", () => {
 });
 
 describe("auth routes", () => {
-	it("recognises exactly the public auth paths", () => {
+	it("recognises exactly the public auth paths and the Better Auth mount", () => {
 		assert.equal(loginPath("/auth/login"), true);
 		assert.equal(loginPath("/auth/login/"), true);
 		assert.equal(loginPath("/auth/login/x"), false);
 		assert.equal(signInCallbackPath("/auth/callback"), true);
 		assert.equal(signInCallbackPath("/auth/callback/"), false);
+		assert.equal(authApiPath("/api/auth"), true);
+		assert.equal(authApiPath("/api/auth/sign-in/email"), true);
+		assert.equal(authApiPath("/api/auth/callback/google"), true);
+		assert.equal(authApiPath("/api/authx"), false);
+		assert.equal(authApiPath("/api/chats"), false);
 	});
 
 	it("keeps only same-origin absolute paths", () => {

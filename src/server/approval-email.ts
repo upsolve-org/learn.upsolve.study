@@ -3,29 +3,38 @@ import { normalizeEmail } from "../core/admission.ts";
 import { approveSignup } from "../core/hosted-admission.ts";
 import { LOGIN_PATH } from "../core/auth-routes.ts";
 import {
-	issuedCredentials, provisionAccount, recordCredentialEmail,
-	type CredentialEmailDelivery,
+	issuedCredentials, provisionAccount as provisionCore, recordCredentialEmail,
+	type AccountProvisioner, type CredentialEmailDelivery,
 } from "../core/hosted-credentials.ts";
+import { provisionDatabaseUser } from "./auth.ts";
 
 type Env = Record<string, string | undefined>;
 const approvals = new Map<string, ReturnType<typeof completeApproval>>();
 
+/**
+ * The server-side account write: Better Auth over PostgreSQL. The optional
+ * provisioner is the test seam; production always uses the real database.
+ */
+export function provisionAccount(rawEmail: unknown, env: Env = process.env, provisioner?: AccountProvisioner) {
+	return provisionCore(rawEmail, env, provisioner ?? ((email, password) => provisionDatabaseUser(email, password)));
+}
+
 /** Operator authorization is checked by the Server Actions before calling here. */
-export async function approveAccount(rawEmail: unknown, env: Env = process.env) {
+export async function approveAccount(rawEmail: unknown, env: Env = process.env, provisioner?: AccountProvisioner) {
 	const email = normalizeEmail(rawEmail);
 	if (!email) return { ok: false as const, error: "Invalid email address." };
 	const existing = approvals.get(email);
 	if (existing) return existing;
-	const approval = completeApproval(email, env).finally(() => approvals.delete(email));
+	const approval = completeApproval(email, env, provisioner).finally(() => approvals.delete(email));
 	approvals.set(email, approval);
 	return approval;
 }
 
-async function completeApproval(email: string, env: Env) {
+async function completeApproval(email: string, env: Env, provisioner?: AccountProvisioner) {
 	approveSignup(email);
 	// Repeated approval must not invalidate credentials already sent to the learner.
 	if (!issuedCredentials().some(entry => entry.email === email)) {
-		const provision = await provisionAccount(email, env);
+		const provision = await provisionAccount(email, env, provisioner);
 		if (!provision.ok) return provision;
 	}
 	return { ok: true as const, delivery: await sendApprovalEmail(email, env) };

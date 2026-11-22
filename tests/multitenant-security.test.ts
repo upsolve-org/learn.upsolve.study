@@ -43,8 +43,7 @@ const origin = "http://localhost";
 const tick = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 const ENV_KEYS = [
-	"HOSTED_MODE", "ADMIN_EMAIL", "NEXT_PUBLIC_SUPABASE_URL",
-	"NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY", "SUPABASE_DB_URL", "HOSTED_PILOT_EMAIL",
+	"HOSTED_MODE", "ADMIN_EMAIL", "DATABASE_URL", "BETTER_AUTH_SECRET", "HOSTED_PILOT_EMAIL",
 ] as const;
 const savedEnv = Object.fromEntries(ENV_KEYS.map((key) => [key, process.env[key]]));
 
@@ -52,8 +51,14 @@ beforeEach(() => {
 	for (const key of ENV_KEYS) delete process.env[key];
 	fs.rmSync(path.join(dataDir, "admissions.json"), { force: true });
 });
+/** Installed by the operator-header tests; cleared after each case so other
+ *  suites in this process never inherit a signed-in identity. */
+let clearResolver: (() => void) | undefined;
+
 afterEach(() => {
 	mock.restoreAll();
+	clearResolver?.();
+	clearResolver = undefined;
 	for (const key of ENV_KEYS) {
 		const value = savedEnv[key];
 		if (value === undefined) delete process.env[key];
@@ -64,9 +69,8 @@ afterEach(() => {
 function hostedEnv(): void {
 	Object.assign(process.env, {
 		HOSTED_MODE: "on",
-		NEXT_PUBLIC_SUPABASE_URL: "https://supabase.invalid",
-		NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: "sb_publishable_test",
-		SUPABASE_DB_URL: "postgresql://unused",
+		DATABASE_URL: "postgresql://unused",
+		BETTER_AUTH_SECRET: "secret",
 	});
 }
 
@@ -165,15 +169,10 @@ describe("owner-scoped SSE event bus", () => {
 // ─── 2. operator capability header ───────────────────────────────────────────
 
 describe("Proxy operator header", () => {
-	function sessionCookie(email: string, id = A): string {
-		const session = {
-			access_token: "t", refresh_token: "t", expires_at: Math.floor(Date.now() / 1000) + 3600,
-			user: { id, email },
-		};
-		return `sb-supabase-auth-token=base64-${Buffer.from(JSON.stringify(session)).toString("base64url")}`;
-	}
-	function mockGoTrue(email: string, id = A) {
-		return mock.method(globalThis, "fetch", async () => Response.json({ id, email }));
+	async function signInAs(email: string, id = A) {
+		const { setAuthSessionResolver } = await import("../src/server/auth.ts");
+		setAuthSessionResolver(async () => ({ id, email }));
+		clearResolver = () => setAuthSessionResolver(undefined);
 	}
 	function writeAdmissions(emails: string[]) {
 		fs.writeFileSync(path.join(dataDir, "admissions.json"), JSON.stringify({ version: 1, emails }));
@@ -183,11 +182,11 @@ describe("Proxy operator header", () => {
 		hostedEnv();
 		process.env.ADMIN_EMAIL = OPERATOR;
 		writeAdmissions([LEARNER, OPERATOR]);
-		mockGoTrue(LEARNER);
+		await signInAs(LEARNER);
 		const { proxy } = await import("../proxy.ts");
 		const { NextRequest } = await import("next/server");
 		const response = await proxy(new NextRequest(new URL("/api/keys", origin), {
-			headers: { cookie: sessionCookie(LEARNER), [OPERATOR_HEADER]: "1" },
+			headers: { [OPERATOR_HEADER]: "1" },
 		}));
 		assert.equal(response.status, 200);
 		const overrides = (response.headers.get("x-middleware-override-headers") ?? "")
@@ -201,12 +200,10 @@ describe("Proxy operator header", () => {
 		hostedEnv();
 		process.env.ADMIN_EMAIL = OPERATOR;
 		writeAdmissions([OPERATOR]);
-		mockGoTrue(OPERATOR);
+		await signInAs(OPERATOR);
 		const { proxy } = await import("../proxy.ts");
 		const { NextRequest } = await import("next/server");
-		const response = await proxy(new NextRequest(new URL("/api/keys", origin), {
-			headers: { cookie: sessionCookie(OPERATOR) },
-		}));
+		const response = await proxy(new NextRequest(new URL("/api/keys", origin)));
 		assert.equal(response.status, 200);
 		assert.equal(response.headers.get(`x-middleware-request-${OPERATOR_HEADER}`), "1");
 		assert.equal(response.headers.get(`x-middleware-request-${OWNER_HEADER}`), A);

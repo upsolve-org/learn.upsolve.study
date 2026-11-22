@@ -1,49 +1,24 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createServerClient } from "@supabase/ssr";
-import { hostedConfig, LOGIN_PATH, safeReturnPath } from "@/src/core";
-import { hostedFetch, cookieWrites } from "@/src/server";
+import { hostedMode, LOGIN_PATH, safeReturnPath } from "@/src/core";
 
 /**
- * GET /auth/callback - the PKCE code exchange for email links and Google.
- *
- * Cookies can only be written on a response here, so the redirect response
- * IS the carrier: @supabase/ssr hands the session cookies to setAll and
- * they are attached before the browser follows the Location.
- *
- * A missing code or a failed exchange lands on /auth/login?error=... with
- * the same generic message Supabase uses (no oracle for which half failed).
+ * GET /auth/callback - a compatibility redirect only. Better Auth completes
+ * OAuth itself at /api/auth/callback/google and sets the session cookie on
+ * THAT response, so there is no code exchange to do here. A stale email-link
+ * callback lands on sign-in with an explainable error instead of a loop.
  */
-export async function GET(request: NextRequest) {
-	const config = hostedConfig();
-	const login = new URL(LOGIN_PATH, request.url);
+export function GET(request: NextRequest) {
 	const next = safeReturnPath(request.nextUrl.searchParams.get("next"));
+	const login = new URL(LOGIN_PATH, request.url);
 	login.searchParams.set("next", next);
 
-	if (!config) {
+	let response: Response;
+	if (!hostedMode()) {
 		login.searchParams.set("error", "hosted_off");
-		return NextResponse.redirect(login);
+		response = NextResponse.redirect(login);
+	} else {
+		response = NextResponse.redirect(new URL(next, request.url));
 	}
-
-	const jar = cookieWrites();
-	const supabase = createServerClient(config.url, config.publishableKey, {
-		global: { fetch: hostedFetch(config.url) },
-		cookies: {
-			getAll: () => request.cookies.getAll(),
-			setAll: (list) => {
-				for (const { name, value } of list) request.cookies.set(name, value);
-				jar.setAll(list);
-			},
-		},
-	});
-
-	const code = request.nextUrl.searchParams.get("code");
-	const response =
-		code === null
-			? NextResponse.redirect(withError(login))
-			: await (async () => {
-					const { error } = await supabase.auth.exchangeCodeForSession(code);
-					return error ? NextResponse.redirect(withError(login)) : NextResponse.redirect(new URL(next, request.url));
-				})();
 
 	const cacheHeaders = {
 		"Cache-Control": "private, no-cache, no-store, must-revalidate, max-age=0",
@@ -51,10 +26,5 @@ export async function GET(request: NextRequest) {
 		Pragma: "no-cache",
 	};
 	for (const [key, value] of Object.entries(cacheHeaders)) response.headers.set(key, value);
-	return jar.landOn(response, response);
-}
-
-function withError(url: URL): URL {
-	url.searchParams.set("error", "oauth");
-	return url;
+	return response;
 }
