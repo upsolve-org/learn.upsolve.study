@@ -5,6 +5,7 @@
  */
 
 import type { Pool } from "pg";
+import type { BlobStore } from "../../core/ports.ts";
 import { createPostgresChatStore } from "./chats.ts";
 import { createPostgresGraphStore } from "./graph.ts";
 import { createPostgresJobStore } from "./jobs.ts";
@@ -13,9 +14,12 @@ import { createPostgresThemeStore } from "./themes.ts";
 import { createPostgresSourceOrganizationStore } from "./source-organization.ts";
 import { createPostgresPromptOverrideStore } from "./prompt-overrides.ts";
 
-export function createPostgresStores(pool: Pool) {
+export function createPostgresStores(
+	pool: Pool,
+	options?: { blobStore?: BlobStore; offloadSnapshots?: boolean },
+) {
 	return {
-		chatStore: createPostgresChatStore(pool),
+		chatStore: createPostgresChatStore(pool, options),
 		graphStore: createPostgresGraphStore(pool),
 		sourceOrganizationStore: createPostgresSourceOrganizationStore(pool),
 		jobStore: createPostgresJobStore(pool),

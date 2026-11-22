@@ -54,6 +54,34 @@ export function expectSync<T>(value: MaybePromise<T>, operation: string): T {
 	return value as T;
 }
 
+// ─── BlobStore — opaque bytes behind a validated key ────────────────────────
+
+/** A stored blob's bytes + the metadata needed to serve them over HTTP. */
+export interface BlobObject {
+	body: Uint8Array;
+	contentType: string;
+	contentLength: number;
+}
+
+/** Metadata-only view (HEAD), without downloading the bytes. */
+export interface BlobHead {
+	contentType: string;
+	contentLength: number;
+}
+
+/**
+ * Binary object storage (PR 6). The fs adapter keeps blobs on local disk;
+ * the S3/RustFS adapter keeps them in an object store. Keys are validated by
+ * the adapter (never by the caller's path concatenation), and the port stays
+ * type-only + browser-safe so it can ship through the core barrel.
+ */
+export interface BlobStore {
+	put(key: string, body: Uint8Array, contentType: string): MaybePromise<void>;
+	get(key: string): MaybePromise<BlobObject | null>;
+	head(key: string): MaybePromise<BlobHead | null>;
+	delete(key: string): MaybePromise<void>;
+}
+
 // ─── Plugin sessions — plugin-owned data, separate from core chats ──────────
 
 /** One writer per plugin directory. Failed atomic replacements must throw. */

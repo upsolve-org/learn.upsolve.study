@@ -13,6 +13,7 @@
  */
 
 import { chatStore } from "../store/chats.ts";
+import { fsBlobStore } from "../store/blobs-fs.ts";
 import { graphStore } from "../store/graph.ts";
 import { sourceOrganizationStore } from "../store/source-organization.ts";
 import { jobStore } from "../store/jobs.ts";
@@ -21,6 +22,7 @@ import { themeStore } from "../store/themes.ts";
 import { resolveSettings, type EffectiveSettings } from "../core/settings-resolution.ts";
 import { FACTORY_SETTINGS, type UserSettings } from "../core/settings.ts";
 import { runAsOwner, currentOwnerId } from "../core/owner-scope.ts";
+import type { BlobStore } from "../core/ports.ts";
 import { hostedMode } from "../core/hosted.ts";
 import { hasDatabaseUrl } from "./db.ts";
 import { syncCustomProvider } from "./custom-provider.ts";
@@ -32,6 +34,7 @@ export interface Stores {
 	jobStore: typeof jobStore;
 	settingsStore: typeof settingsStore;
 	themeStore: typeof themeStore;
+	blobStore: BlobStore;
 }
 
 const active: Stores = {
@@ -41,6 +44,7 @@ const active: Stores = {
 	jobStore,
 	settingsStore,
 	themeStore,
+	blobStore: fsBlobStore,
 };
 
 const liveProxies = new WeakSet<object>();
@@ -86,6 +90,7 @@ export const stores: Stores = {
 	jobStore: liveStore("jobStore"),
 	settingsStore: liveStore("settingsStore"),
 	themeStore: liveStore("themeStore"),
+	blobStore: liveStore("blobStore"),
 };
 
 /**

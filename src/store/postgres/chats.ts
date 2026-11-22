@@ -15,7 +15,7 @@
 import { createHash } from "node:crypto";
 import type { Pool, PoolClient } from "pg";
 import { emit } from "../../core/events.ts";
-import type { ChatStore } from "../../core/ports.ts";
+import type { BlobStore, ChatStore } from "../../core/ports.ts";
 import type {
 	ChatRecord,
 	ChatSettings,
@@ -31,6 +31,7 @@ import type { LhMessage } from "../../core/native-messages.ts";
 import { activeProblemOf, danglingQuestionOf } from "../../core/native-messages.ts";
 import { phaseAt3Lh, type Phase3 } from "../../core/phases.ts";
 import { pgOwner } from "./owner.ts";
+import { extForMime, ownerBlobKey } from "../blobs-key.ts";
 
 interface ChatMetaRow {
 	id: string;
@@ -52,9 +53,17 @@ interface ChatFullRow extends Partial<ChatMetaRow> {
 interface SnapshotRow {
 	snapshot_id: string;
 	mime_type: string;
-	data: string;
+	/** Legacy inline base64. NULL once offloaded to the blob store. */
+	data: string | null;
+	blob_key: string | null;
 	width: number;
 	height: number;
+}
+
+export interface PostgresChatStoreOptions {
+	blobStore?: BlobStore;
+	/** When false (the default), snapshots keep the inline `data` insert (PR 5 behavior). */
+	offloadSnapshots?: boolean;
 }
 
 /** pg parses JSONB into objects; a driver/mock returning text still works. */
@@ -162,7 +171,7 @@ async function loadLocked(client: PoolClient, owner: string, id: string): Promis
 	return overlayMeta(record, row);
 }
 
-export function createPostgresChatStore(pool: Pool): ChatStore {
+export function createPostgresChatStore(pool: Pool, options?: PostgresChatStoreOptions): ChatStore {
 	return {
 		async createChat(title, kind) {
 			const owner = pgOwner();
@@ -210,21 +219,29 @@ export function createPostgresChatStore(pool: Pool): ChatStore {
 			}
 			const merged = overlayMeta(record, row);
 			const { rows: snapshots } = await pool.query<SnapshotRow>(
-				`SELECT snapshot_id, mime_type, data, width, height
+				`SELECT snapshot_id, mime_type, data, blob_key, width, height
 				   FROM chat_image_snapshots WHERE owner_id = $1 AND chat_id = $2`,
 				[owner, id],
 			);
 			if (snapshots.length > 0) {
 				const images: Record<string, ImageSnapshot> = {};
 				for (const snap of snapshots) {
+					// Legacy rows carry inline base64; offloaded rows carry a blob key.
+					let data = snap.data;
+					if (data === null && snap.blob_key && options?.blobStore) {
+						const blob = await options.blobStore.get(snap.blob_key);
+						if (blob) data = Buffer.from(blob.body).toString("base64");
+					}
+					if (data === null) continue; // a missing blob cannot be rendered
 					images[snap.snapshot_id] = {
 						mimeType: snap.mime_type as ImageSnapshot["mimeType"],
-						data: snap.data,
+						data,
 						width: snap.width,
 						height: snap.height,
 					};
 				}
-				merged.imageSnapshots = images;
+				if (Object.keys(images).length > 0) merged.imageSnapshots = images;
+				else delete merged.imageSnapshots;
 			} else {
 				// Match the fs shape: the key is absent until the first picture.
 				delete merged.imageSnapshots;
@@ -265,7 +282,8 @@ export function createPostgresChatStore(pool: Pool): ChatStore {
 		},
 
 		async saveImageSnapshot(id, snapshotId, image: ImageSnapshot) {
-			if (!/^[a-f0-9]{64}$/.test(snapshotId) || createHash("sha256").update(Buffer.from(image.data, "base64")).digest("hex") !== snapshotId) {
+			const bytes = Buffer.from(image.data, "base64");
+			if (!/^[a-f0-9]{64}$/.test(snapshotId) || createHash("sha256").update(bytes).digest("hex") !== snapshotId) {
 				throw new Error("Invalid image snapshot identity");
 			}
 			const owner = pgOwner();
@@ -274,6 +292,18 @@ export function createPostgresChatStore(pool: Pool): ChatStore {
 				if (!record) throw new Error(`Chat not found: ${id}`);
 				// A snapshot is immutable by its SHA-256 identity: a repeat is
 				// a no-op, and the picture never bumps conversation activity.
+				if (options?.blobStore && options.offloadSnapshots) {
+					const blobKey = ownerBlobKey(owner, "images", `${snapshotId}.${extForMime(image.mimeType)}`);
+					await options.blobStore.put(blobKey, new Uint8Array(bytes), image.mimeType);
+					await client.query(
+						`INSERT INTO chat_image_snapshots
+						 (owner_id, chat_id, snapshot_id, mime_type, data, blob_key, width, height)
+						 VALUES ($1, $2, $3, $4, NULL, $5, $6, $7)
+						 ON CONFLICT (owner_id, chat_id, snapshot_id) DO NOTHING`,
+						[owner, id, snapshotId, image.mimeType, blobKey, image.width, image.height],
+					);
+					return;
+				}
 				await client.query(
 					`INSERT INTO chat_image_snapshots
 					 (owner_id, chat_id, snapshot_id, mime_type, data, width, height)

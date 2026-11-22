@@ -25,7 +25,12 @@ export async function register() {
 			const pool = getPgPool();
 			await runMigrations(pool);
 			const { createPostgresStores } = await import("./src/store/postgres/index.ts");
-			configureStores(createPostgresStores(pool));
+			const { s3BlobConfigured, createS3BlobStore } = await import("./src/store/blobs-s3.ts");
+			const s3 = s3BlobConfigured() ? createS3BlobStore() : undefined;
+			configureStores({
+				...createPostgresStores(pool, s3 ? { blobStore: s3, offloadSnapshots: true } : undefined),
+				...(s3 ? { blobStore: s3 } : {}),
+			});
 			const { startPgEventsBridge, setJobDeliveryHandler } = await import("./src/server/pg-events.ts");
 			startPgEventsBridge();
 			// Sub-agent jobs run in the standalone worker (scripts/worker.ts):

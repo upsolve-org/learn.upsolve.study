@@ -20,6 +20,7 @@
 
 import { hasDatabaseUrl, getPgPool, runMigrations, closePgPool } from "../src/server/db.ts";
 import { createPostgresStores } from "../src/store/postgres/index.ts";
+import { createS3BlobStore, s3BlobConfigured } from "../src/store/blobs-s3.ts";
 import { configureStores, stores, withOwner } from "../src/server/stores.ts";
 import { publishJobDelivery, startPgEventsBridge, stopPgEventsBridge } from "../src/server/pg-events.ts";
 import {
@@ -74,7 +75,11 @@ async function main(): Promise<void> {
 	const applied = await runMigrations(pool);
 	console.info(`[worker] migrations applied: ${applied.length ? applied.join(", ") : "none (already current)"}`);
 
-	configureStores(createPostgresStores(pool));
+	const s3 = s3BlobConfigured() ? createS3BlobStore() : undefined;
+	configureStores({
+		...createPostgresStores(pool, s3 ? { blobStore: s3, offloadSnapshots: true } : undefined),
+		...(s3 ? { blobStore: s3 } : {}),
+	});
 	// Full bridge: the worker publishes its store events (job progress) to
 	// the web process's SSE subscribers, and announces finished jobs.
 	startPgEventsBridge();
