@@ -1,0 +1,16 @@
+[tools]
+node = "26"
+
+[tasks]
+dev = "npm run dev"
+build = "npm run build"
+start = "npm run start"
+typecheck = "npm run typecheck"
+lint = "npm run lint"
+fmt = "vp fmt"
+check = "vp lint && npm run typecheck && npm run lint"
+test = "npm test"
+"plugins:setup" = "npm run plugins:setup"
+"plugins:build" = "npm run plugins:build-core && npm run plugins:build-authoring"
+"db:up" = "docker compose -f deploy/docker-compose.yml up -d"
+"db:down" = "docker compose -f deploy/docker-compose.yml down"

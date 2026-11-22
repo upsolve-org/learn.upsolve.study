@@ -22,14 +22,13 @@ assert.ok(fs.statSync(path.join(source, "server.js")).isFile());
 const built = path.join(pluginRoot, "dist");
 const manifest = JSON.parse(fs.readFileSync(path.join(built, "manifest.json"), "utf8"));
 assert.equal(manifest.id, "coding-questions");
-const runtime = path.join(checkout, "node_modules/electron/dist/Electron.app/Contents/MacOS/Electron");
+const runtime = process.env.LH_NODE_RUNTIME || process.execPath;
 const chrome = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 for (const file of [runtime, chrome]) fs.accessSync(file, fs.constants.X_OK);
 const scratch = fs.realpathSync(fs.mkdtempSync("/tmp/lh-coding-native-"));
 const home = path.join(scratch, "home"), standalone = path.join(scratch, "standalone");
 const data = path.join(home, "data"), auth = path.join(home, "auth.json");
 const chatId = "chat_coding_native_smoke", model = "coding-native-fixture", route = `/api/chats/${chatId}`;
-assert.equal(process.versions.electron, undefined, "Launch this harness with installed Node; the host itself still runs under Electron.");
 const testNode = fs.realpathSync(process.execPath);
 const starter = "function example() {\n    return 0;  \n}\n";
 const modelSolution = "```javascript\nfunction example() { return 42; }\n```\n\n**Why:** Return the requested value.";
@@ -194,7 +193,7 @@ try {
   const guard = path.join(scratch, "imports.mjs");
   fs.writeFileSync(guard, `import {registerHooks} from 'node:module';import {realpathSync} from 'node:fs';import {fileURLToPath} from 'node:url';import path from 'node:path';\nconst roots=${JSON.stringify([standalone, path.join(data, "plugins")])};registerHooks({resolve(specifier,context,next){const result=next(specifier,context);if(result.url.startsWith('file:')){const file=realpathSync(fileURLToPath(result.url));if(!roots.some(root=>file===root||file.startsWith(root+path.sep)))throw Error('Import escaped disposable payload: '+file)}return result}});\n`);
   const serverLog = fs.openSync(path.join(scratch, "server.log"), "w");
-  child = spawn(runtime, ["--import", guard, path.join(standalone, "server.js")], { cwd: standalone, env: { ...cleanEnv, ELECTRON_RUN_AS_NODE: "1", HOSTNAME: "127.0.0.1", PORT: String(port) }, stdio: ["ignore", serverLog, serverLog] });
+  child = spawn(runtime, ["--import", guard, path.join(standalone, "server.js")], { cwd: standalone, env: { ...cleanEnv, HOSTNAME: "127.0.0.1", PORT: String(port) }, stdio: ["ignore", serverLog, serverLog] });
   fs.closeSync(serverLog);
   child.on("error", error => { fixtureError = error; });
   await until(async () => {

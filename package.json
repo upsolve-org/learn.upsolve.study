@@ -16,6 +16,9 @@
 		"start": "next start -H localhost",
 		"test": "node --env-file-if-exists=tests/test.env node_modules/tsx/dist/cli.mjs --import tsx --test tests/*.test.ts tests/*.test.tsx",
 		"lint": "eslint .",
+		"fmt": "vp fmt",
+		"lint:ox": "vp lint",
+		"check": "vp lint && npm run typecheck && npm run lint",
 		"typecheck": "tsc --noEmit",
 		"plugins:setup": "node scripts/setup-plugins.mjs",
 		"plugins:build-authoring": "node scripts/build-plugin-authoring.mjs",
@@ -97,6 +100,7 @@
 		"eslint-plugin-import": "^2.32.0",
 		"tailwindcss": "^4.3.3",
 		"tsx": "^4.19.0",
-		"typescript": "^5.6.0"
+		"typescript": "^5.6.0",
+		"vite-plus": "^1.7.0"
 	}
 }

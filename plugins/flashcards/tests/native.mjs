@@ -65,11 +65,11 @@ try {
   });
   const portProbe = http.createServer(), port = await listen(portProbe); await new Promise(resolve => portProbe.close(resolve));
   const base = `http://127.0.0.1:${port}`;
-  const runtime = process.env.LH_NODE_RUNTIME || path.join(repo, 'node_modules/electron/dist/Electron.app/Contents/MacOS/Electron');
+  const runtime = process.env.LH_NODE_RUNTIME || process.execPath;
   const guard = path.join(scratch, 'imports.mjs');
   fs.writeFileSync(guard, `import {registerHooks} from 'node:module';import {realpathSync} from 'node:fs';import {fileURLToPath} from 'node:url';import path from 'node:path';const roots=${JSON.stringify([standalone, path.join(data, 'plugins')])};registerHooks({resolve(s,c,n){const r=n(s,c);if(r.url.startsWith('file:')){const f=realpathSync(fileURLToPath(r.url));if(!roots.some(root=>f===root||f.startsWith(root+path.sep)))throw Error('Import escaped disposable payload: '+f)}return r}});`);
   const log = fs.openSync(path.join(scratch, 'server.log'), 'w');
-  child = spawn(runtime, ['--import', guard, path.join(standalone, 'server.js')], { cwd: standalone, env: { ...env, ELECTRON_RUN_AS_NODE: '1', PORT: String(port), HOSTNAME: '127.0.0.1' }, stdio: ['ignore', log, log] }); fs.closeSync(log);
+  child = spawn(runtime, ['--import', guard, path.join(standalone, 'server.js')], { cwd: standalone, env: { ...env, PORT: String(port), HOSTNAME: '127.0.0.1' }, stdio: ['ignore', log, log] }); fs.closeSync(log);
   child.on('error', error => evidence.errors.push(error.message));
   const deadline = Date.now() + 30000;
   while (true) { assert.equal(child.exitCode, null); try { const response = await fetch(base, { signal: AbortSignal.timeout(1000) }); await response.text(); if (response.ok) break; } catch {} assert.ok(Date.now() < deadline, 'Server boot timeout'); await delay(100); }
