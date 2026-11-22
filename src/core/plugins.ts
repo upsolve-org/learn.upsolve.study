@@ -137,8 +137,16 @@ export interface PluginBackendContext {
 	readonly manifest: PluginManifest;
 	/** Absolute code directory: app core-plugins/<id> or community plugins/<id>/dist. */
 	readonly directory: string;
-	/** Writable records: core-plugin-data/<id> or community plugins/<id>/data. */
+	/** Writable records: core-plugin-data/<id> or community plugins/<id>/data.
+	 * Resolved ONCE at activation, so it is the UNSCOPED root and is shared by
+	 * every learner. Anything per-learner must go through `ownerDirectory`.
+	 * Kept for host-owned records that are naturally per-activation (tasks). */
 	readonly dataDirectory: string;
+	/** The same directory for the CALLER's owner (tenant), resolved at call
+	 * time. Falls back to the unscoped `dataDirectory` outside any owner
+	 * scope (desktop, plain dev). Any per-learner plugin record (card decks,
+	 * notes, saved files) belongs under this one. */
+	ownerDirectory(pluginId: string): string;
 	/** Aborted when this backend activation ends. Recheck after awaits before
 	 * plugin-owned side effects; abort does not force-stop arbitrary code. */
 	readonly signal: AbortSignal;

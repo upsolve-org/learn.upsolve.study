@@ -68,6 +68,7 @@ export { customProviderGet, customProviderMutation } from "./custom-provider-htt
 
 // Hosted session plumbing (webapp wave, 2026-11-15).
 export * from "./supabase.ts";
+export { approveAccount, sendApprovalEmail } from "./approval-email.ts";
 export { hostedFetch } from "../core/hosted-fetch.ts";
 export { cookieWrites } from "../core/hosted-cookies.ts";
 // Tenancy (2026-11-16): the request boundary that enters the owner's scope.

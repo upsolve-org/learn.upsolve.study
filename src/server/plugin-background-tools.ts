@@ -5,6 +5,7 @@ import type { TSchema } from "typebox";
 import { buildJobFailureSteer, buildSubagentSteer, type JobRecord, type SteerMessage } from "../core/contracts/jobs.ts";
 import type { JobStore } from "../core/ports.ts";
 import type { PluginToolContext } from "../core/plugins.ts";
+import { currentOwnerId } from "../core/owner-scope.ts";
 import type { PluginBackgroundResult, PluginBackgroundTool, PluginTaskOutcome, PluginTaskRecord, PluginWorkerService } from "../core/plugin-workers.ts";
 
 interface JobDeliveryDeps {
@@ -93,10 +94,15 @@ export function createPluginBackgroundTool<T extends TSchema>(deps: PluginBackgr
 		if (preacceptSignal.aborted) throw new Error("Background tool call aborted: plugin disabled or operation cancelled");
 		if (!deps.isActive()) throw new Error("Plugin is disabled");
 		const requestId = `background_${createHash("sha256").update(JSON.stringify([context.chatId, toolCallId])).digest("hex")}`;
+		// TENANCY: stamp the accepting owner here, not at `workers.start`.
+		// `execute` yields between this line and the start (prepare, the job
+		// lookup), and by then the calling turn's scope is gone. Derived from
+		// the same inputs as requestId so a replayed acceptance keeps the owner.
+		const owner = currentOwnerId();
 		// An accepted standalone task can survive a failed job write. Never replay
 		// preparation or execution when this host-derived acceptance is known.
 		let snapshot = workers.list().find((task) => task.requestId === requestId);
-		if (snapshot && (snapshot.definitionId !== workerId || snapshot.purpose !== "background")) throw new Error("Background request identity belongs to a different worker or purpose");
+		if (snapshot && (snapshot.definitionId !== workerId || snapshot.purpose !== "background" || snapshot.owner !== owner)) throw new Error("Background request identity belongs to a different worker or purpose");
 		const options = snapshot ? undefined : await abortable(() => prepare.call(definition, input, context), preacceptSignal);
 		const accepted = jobStore.findJobByToolCallId(context.chatId, toolCallId);
 		if (accepted) return acknowledge(accepted);

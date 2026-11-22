@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import type { PluginTaskRecordStore } from "../core/ports.ts";
 import type { PluginTaskRecord } from "../core/plugin-workers.ts";
 import { validatePluginInferenceOptions } from "../core/plugin-validation.ts";
+import { isOwnerId } from "../core/owner.ts";
 import { safePluginDataDirectory, type CorePluginDataLocation } from "./plugin-data-paths.ts";
 
 const safeId = (value: unknown): value is string => typeof value === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(value);
@@ -23,6 +24,7 @@ function validate(value: unknown, expected: string): PluginTaskRecord {
 	if (r.timeoutMs !== undefined && (!Number.isSafeInteger(r.timeoutMs) || (r.timeoutMs as number) < 1)) return invalid();
 	try { validatePluginInferenceOptions(r.options as never); } catch { return invalid(); }
 	if (r.activity !== undefined && typeof r.activity !== "string") return invalid();
+	if (r.owner !== undefined && !isOwnerId(r.owner)) return invalid();
 	if (!["queued", "running", "succeeded", "failed", "cancelled", "interrupted"].includes(r.status as string)) return invalid();
 	if (r.status === "succeeded") {
 		if (!Object.hasOwn(r, "result") || !timestamp(r.completedAt) || r.error !== undefined) return invalid();

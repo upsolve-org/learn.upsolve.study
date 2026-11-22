@@ -36,6 +36,10 @@ export interface PluginWorkerStartOptions {
 	options?: PluginInferenceOptions;
 	/** Wall-clock lifetime from acceptance, including admission waits. */
 	timeoutMs?: number;
+	/** The accepting caller's owner (tenancy). Omitted when unscoped, which
+	 * keeps desktop and plain-dev records byte-for-byte. Not part of the
+	 * caller's options: the service stamps it from the active scope. */
+	owner?: string;
 }
 export type PluginTaskStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled" | "interrupted";
 export interface PluginTaskError {

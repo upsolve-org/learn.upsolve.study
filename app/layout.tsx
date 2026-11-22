@@ -10,6 +10,7 @@ import { AppearanceProvider } from "@/components/settings/appearance";
 import { PluginsProvider } from "@/components/plugins";
 import { asRequestOwner, currentOwner, readThemeBoot } from "@/src/server";
 import { hostedMode } from "@/src/core";
+import { signOutAction } from "@/app/auth/actions";
 
 // Chrome = JetBrains Mono, teaching prose = Source Sans 3, titles = Barlow
 // Condensed (matching www.upsolve.study & comprog.upsolve.study).
@@ -51,7 +52,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 					<AppearanceProvider initialAppearance={appearance} initialTheme={theme}>
 						<SidebarProvider>
 							<ActivityProvider>
-								<AppShell>{children}</AppShell>
+								<AppShell logoutAction={hostedMode() ? signOutAction : undefined}>{children}</AppShell>
 							</ActivityProvider>
 						</SidebarProvider>
 					</AppearanceProvider>

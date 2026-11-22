@@ -14,7 +14,7 @@ import type { PluginAgentKind, PluginBackendContext, PluginBackendModule, Plugin
 import type { PluginAgentService } from "../core/plugin-agents.ts";
 import type { PluginWorkerService } from "../core/plugin-workers.ts";
 import type { ServerEvent } from "../core/events.ts";
-import { safePluginDataDirectory } from "../store/plugin-data-paths.ts";
+import { safePluginDataDirectory, ownerScopedDirectory } from "../store/plugin-data-paths.ts";
 
 /** Expected host/transport failure. Exceptions thrown by plugin handlers stay ordinary 500 errors. */
 export class PluginHostError extends Error {
@@ -247,6 +247,7 @@ export function createPluginHost(deps: PluginHostDependencies) {
 				cleanup(() => services.workers.dispose());
 				const ctx: PluginBackendContext = {
 					manifest, directory: pkg.directory, dataDirectory, signal: activation.controller.signal, cleanup, ...services,
+					ownerDirectory: (pluginId: string) => ownerScopedDirectory(directory, pluginId, coreData),
 					createBackgroundTool(context, definition) { requireLive(); return services.createBackgroundTool(context, definition); },
 					registerInstructions(contribution: PluginInstructions) {
 						requireLive();

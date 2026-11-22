@@ -22,7 +22,12 @@ export interface IssuedCredential {
 	password: string;
 	userId: string;
 	issuedAt: string;
+	emailDelivery?: CredentialEmailDelivery;
 }
+
+export type CredentialEmailDelivery =
+	| { status: "accepted"; messageId: string; acceptedAt: string }
+	| { status: "failed"; error: string };
 
 type Env = Record<string, string | undefined>;
 
@@ -95,6 +100,16 @@ export function recordIssued(entry: IssuedCredential): void {
 /** Issued credentials, newest first. */
 export function issuedCredentials(): IssuedCredential[] {
 	return readIssued().sort((a, b) => b.issuedAt.localeCompare(a.issuedAt));
+}
+
+/** A delayed send must not restore a forgotten password or overwrite a reset. */
+export function recordCredentialEmail(credential: IssuedCredential, delivery: CredentialEmailDelivery): void {
+	const list = readIssued();
+	const current = list.find(entry => entry.email === credential.email &&
+		entry.password === credential.password && entry.issuedAt === credential.issuedAt);
+	if (!current || current.emailDelivery?.status === "accepted") return;
+	current.emailDelivery = delivery;
+	writeIssued(list);
 }
 
 /** Forget one address (after handing it over and changing the password). */

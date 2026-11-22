@@ -11,6 +11,7 @@ import { accumulateJobUsage, piUsageToStep } from "../core/contracts/jobs.ts";
 import type { PiEngine } from "./models.ts";
 import { usageWasAdmitted } from "./subscription-request-cycle.ts";
 import { runSubagent } from "./subagents/pi-run.ts";
+import { currentOwnerId, runAsOwner } from "../core/owner-scope.ts";
 
 /** Host observability only: never project prompts, inputs, transcripts or results. */
 export type PluginWorkerActivityMetadata = Pick<PluginTaskRecord,
@@ -151,6 +152,15 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 	const expired = (t: Task) => t.record.timeoutMs !== undefined && Date.now() - Date.parse(t.record.createdAt) >= t.record.timeoutMs;
 	const timeoutError: PluginTaskError = { code: "timeout", message: "Worker task timed out" };
 	const execute = async (t: Task, d: PluginWorkerDefinition) => {
+		// TENANCY: the run is detached from any request, so it re-enters the
+		// ACCEPTING owner's scope from its own record, never ambient state.
+		// Task-record writes are host-level (fixed directory); what needs the
+		// scope is plugin code and its worker tools resolving owner paths.
+		const owner = t.record.owner;
+		if (owner === undefined) return await executeScoped(t, d);
+		return await runAsOwner(owner, () => executeScoped(t, d));
+	};
+	const executeScoped = async (t: Task, d: PluginWorkerDefinition) => {
 		const active = () => {
 			if (disposed || t.closed || t.poisoned || t.controller.signal.aborted || t.record.status !== "running") throw t.poisoned ?? new Error("Task is no longer running");
 			if (expired(t)) { finish(t, "failed", timeoutError); throw new Error(timeoutError.message); }
@@ -267,6 +277,10 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 			const d = definitions.get(definitionId); if (!d) throw new Error(`Worker definition unavailable: ${definitionId}`);
 			const now = new Date().toISOString();
 			const record: PluginTaskRecord = { ...options, version: 1, id: randomUUID(), definitionId, createdAt: now, updatedAt: now, status: "queued", messages: [{ role: "user", content: options.prompt, timestamp: Date.now() }], turns: 0 };
+			// Stamped from the ACCEPTING scope, not acceptedOptions: the request-id
+			// equality check above compares the caller's options only.
+			const owner = currentOwnerId();
+			if (owner !== undefined) record.owner = owner;
 			// A post-rename fsync failure has an uncertain durable outcome. Stop
 			// further acceptance rather than risking duplicate request identities.
 			try { deps.store.save(clone(record)); }

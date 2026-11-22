@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { PATHS, GRAPH_FORMAT_FILE, RENDER_SETTINGS_FILE } from "../../config.ts";
+import { PATHS, ownerPaths } from "../../config.ts";
 import packageJson from "../../package.json";
 import { emit, subscribe } from "../core/events.ts";
 import { createPluginAgentService } from "../agent/plugin-agents.ts";
@@ -41,11 +41,14 @@ function runtime(): Runtime {
 	const global = globalThis as typeof globalThis & PluginGlobal;
 	if (global.__lhPlugins) return global.__lhPlugins;
 	const learning = createPluginLearningData({
-		directory: PATHS.data, chatStore: stores.chatStore, graphStore: stores.graphStore,
+		get directory() { return ownerPaths().data; }, chatStore: stores.chatStore, graphStore: stores.graphStore,
 		isBusy: isTurnRunning, isCompacting: compactionInFlight,
 		readMetadata(name) {
 			assertGraphFormat();
-			try { return JSON.parse(fs.readFileSync(name === "format.json" ? GRAPH_FORMAT_FILE : RENDER_SETTINGS_FILE, "utf8")); }
+			// ownerPaths(), not the module-load GRAPH_FORMAT_FILE: the graph root
+			// moves with the owner scope, and this runs inside a caller's scope.
+			const file = path.join(/* turbopackIgnore: true */ ownerPaths().graph, name);
+			try { return JSON.parse(fs.readFileSync(file, "utf8")); }
 			catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return null; throw error; }
 		},
 	});

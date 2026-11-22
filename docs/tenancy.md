@@ -83,9 +83,15 @@ Two operator files, both outside any owner root:
 
 **Approving provisions the account.** With `SUPABASE_SECRET_KEY` set, the approve
 action creates the GoTrue user with a generated 14-character password, marks the
-address confirmed, and lists the password on the page under "Credentials to send".
-Send it, then press **Done** to drop it. Supabase stores only a bcrypt hash, so a
-password cannot be read back afterwards — **Reset** issues a new one.
+address confirmed, and sends the saved password and login link through Resend.
+`RESEND_API_KEY` stays in server environment configuration; `RESEND_FROM` is
+`UPsolve <noreply@upsolve.study>`. The domain must be verified in Resend.
+The credential record stores the send result. Admin shows Resend acceptance or
+a sending error, with **Retry email** to reuse the same password. Acceptance is
+not an inbox-delivery confirmation. Requests carry an idempotency key for Resend's
+24-hour deduplication window, and recorded acceptance suppresses later retries.
+Press **Done** to drop the saved credential. **Reset** issues a new password;
+use **Send email** afterwards. Deploying does not send existing credentials.
 
 The plaintext lives in `data/issued-credentials.json` (operator-level, `0600`) because
 this is the only place it can survive. Without the secret key, approving admits the

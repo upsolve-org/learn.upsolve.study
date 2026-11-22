@@ -1,4 +1,5 @@
 'use strict';
+const { AsyncLocalStorage } = require('node:async_hooks');
 const { randomUUID, createHash } = require('node:crypto');
 const path = require('node:path');
 const { openStore } = require('./store.cjs');
@@ -97,7 +98,23 @@ function pack(graph, ids, state) {
 
 function activate(ctx) {
   if (!ctx.workers?.register || !ctx.learning?.graph) fail('This app build does not provide the plugin capabilities required by Flashcards.');
-  const store = openStore(ctx.dataDirectory);
+  const ownerDir = () => ctx.ownerDirectory?.(ctx.manifest?.id ?? 'flashcards') ?? ctx.dataDirectory;
+  const stores = new Map(), cleaned = new Set(), callStore = new AsyncLocalStorage();
+  function storeFor(directory) {
+    let opened = stores.get(directory);
+    if (!opened) { opened = openStore(directory); stores.set(directory, opened); }
+    return opened;
+  }
+  function libraryOf() {
+    return callStore.getStore() ?? storeFor(ownerDir());
+  }
+  const store = {
+    get: () => libraryOf().get(),
+    change: (fn) => libraryOf().change(fn),
+    writeSource: (id, md) => libraryOf().writeSource(id, md),
+    readSource: (id) => libraryOf().readSource(id),
+    removeSource: (id) => libraryOf().removeSource(id),
+  };
   const preflights = new Map(), tickets = new Map(), observers = new Map(), applicationErrors = new Map();
   let disposed = false, sourceCleanupError = null;
   const alive = () => { if (disposed || ctx.signal.aborted) fail('Flashcards is disabled.'); };
@@ -106,11 +123,14 @@ function activate(ctx) {
   // Commit metadata removal first; a durable queue makes file cleanup retryable
   // after unlink/save failures without resurrecting decks or source records.
   function finishSourceCleanup() {
-    const pending = store.get().pendingSourceRemovals ?? [];
-    if (!pending.length) { sourceCleanupError = null; return; }
+    const current = libraryOf();
+    const pending = current.get().pendingSourceRemovals ?? [];
+    if (!pending.length) { cleaned.add(current); sourceCleanupError = null; return; }
     try {
-      for (const id of pending) store.removeSource(id);
-      change(s => { delete s.pendingSourceRemovals; });
+      for (const id of pending) current.removeSource(id);
+      current.change(s => { delete s.pendingSourceRemovals; });
+      cleaned.add(current);
+      notify('changed');
       sourceCleanupError = null;
     } catch (error) {
       sourceCleanupError = `Content was deleted, but saved-file cleanup is pending: ${error.message}. Retry deletion or reload Flashcards to finish cleanup.`;
@@ -192,6 +212,7 @@ function activate(ctx) {
   }
   function watch(batchId, chunkId, taskId) {
     if (observers.has(taskId)) return;
+    const bound = libraryOf();
     let last = '';
     const unsubscribe = ctx.workers.subscribe(taskId, task => {
       const current = `${task.status}:${task.turns}:${task.activity}`;
@@ -200,7 +221,7 @@ function activate(ctx) {
     observers.set(taskId, unsubscribe);
     ctx.workers.wait(taskId, ctx.signal).then(() => {
       if (disposed || ctx.signal.aborted) return;
-      applyOutcome(batchId, chunkId, ctx.workers.get(taskId));
+      callStore.run(bound, () => applyOutcome(batchId, chunkId, ctx.workers.get(taskId)));
       observers.get(taskId)?.(); observers.delete(taskId);
     }).catch(error => { if (!disposed && !ctx.signal.aborted) { applicationErrors.set(chunkId, error.message); notify('batch-changed'); } });
   }
@@ -234,7 +255,19 @@ function activate(ctx) {
     if (thinkingLevel && !entry.supportedLevels.includes(thinkingLevel)) fail('The selected thinking level is not supported by this model.');
     return { spec: { ...pin.model, ...(thinkingLevel ? { thinkingLevel } : {}) }, entry };
   }
-  function register(name, handler) { ctx.handle(name, (input = {}) => { alive(); if (!input || typeof input !== 'object' || Array.isArray(input)) fail('Invalid operation input.'); return handler(input); }); }
+  function register(name, handler) {
+    ctx.handle(name, (input = {}) => {
+      alive();
+      if (!input || typeof input !== 'object' || Array.isArray(input)) fail('Invalid operation input.');
+      const bound = libraryOf();
+      return callStore.run(bound, () => {
+        if (!cleaned.has(bound)) {
+          try { finishSourceCleanup(); } catch { /* expose pending cleanup in view */ }
+        }
+        return handler(input);
+      });
+    });
+  }
   register('get-state', view);
   register('get-catalog', () => ctx.inference.catalog());
   register('save-settings', patch => { change(s => { s.settings = validateSettings(patch, s.settings); }); return view(); });
@@ -568,7 +601,7 @@ function activate(ctx) {
     });
     tickets.delete(ticketId); return { ok: true };
   });
-  const cleanup = () => { disposed = true; for (const stop of observers.values()) stop(); observers.clear(); preflights.clear(); tickets.clear(); };
+  const cleanup = () => { disposed = true; for (const stop of observers.values()) stop(); observers.clear(); preflights.clear(); tickets.clear(); stores.clear(); cleaned.clear(); };
   ctx.cleanup(cleanup);
 }
 module.exports = { activate, pack, validateResult, estimate, instructions, resultSchema, validateSettings };

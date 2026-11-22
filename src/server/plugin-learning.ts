@@ -3,7 +3,8 @@ import type { ChatStore, GraphStore } from "../core/ports.ts";
 import { graphSnapshot } from "../core/graph.ts";
 
 export interface PluginLearningDeps {
-	directory: string;
+	/** Resolved on every access: the caller's registry, not one snapshot. */
+	readonly directory: string;
 	chatStore: ChatStore;
 	graphStore: GraphStore;
 	isBusy(id: string): boolean;
