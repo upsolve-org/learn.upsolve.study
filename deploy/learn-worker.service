@@ -1,6 +1,6 @@
 [Unit]
-Description=learn.upsolve.study background job worker (pg-boss)
-After=network-online.target
+Description=learn.upsolve.study sub-agent job worker (pg-boss)
+After=network-online.target docker.service learn.service
 Wants=network-online.target
 
 [Service]
@@ -8,10 +8,17 @@ Type=simple
 User=learn
 Group=learn
 WorkingDirectory=/srv/learn
-EnvironmentFile=/srv/learn/.env.local
-ExecStart=/usr/local/bin/library-node node_modules/tsx/dist/cli.mjs --import tsx scripts/worker.ts
-Restart=on-failure
+# /usr/local/bin/node is a symlink into /root (mode 700); use the real path.
+Environment=NODE_ENV=production
+Environment=NODE_OPTIONS=--max-old-space-size=2048
+# Node loads the same .env.local the web app (next start) reads.
+ExecStart=/usr/local/bin/library-node --env-file=/srv/learn/.env.local node_modules/tsx/dist/cli.mjs --import tsx scripts/worker.ts
+Restart=always
 RestartSec=5
+KillSignal=SIGTERM
+TimeoutStopSec=20
+NoNewPrivileges=yes
+PrivateTmp=yes
 
 [Install]
 WantedBy=multi-user.target

@@ -1,10 +1,32 @@
+# The learn.upsolve.study site block for /etc/caddy/Caddyfile on flow-vps.
+#
+# Replace ONLY this site block in the live file — keep every other site block
+# and `import` line there (e.g. `import /etc/caddy/comprog/comprog.caddyfile`
+# serves another site on the same box). The only change from the Supabase-era
+# block is the removed `handle /auth/v1/*` GoTrue proxy: Better Auth now
+# serves /api/auth/* from the app itself.
 learn.upsolve.study {
 	encode zstd gzip
-
-	# PR 7: Supabase Auth is gone (standalone PostgreSQL + Better Auth).
-	# The GoTrue proxy was removed — every request, including /auth/*, is
-	# served by the app on 127.0.0.1:8300.
+	# Long-lived document conversions and chat streams.
 	reverse_proxy 127.0.0.1:8300 {
 		flush_interval -1
+		# The box drops a share of inbound SYNs on :443. Retry only the
+		# connection; a request that streams is never replayed.
+		lb_try_duration 10s
+		lb_try_interval 250ms
+	}
+	log {
+		format json
+		output file /var/log/caddy/learn.log {
+			roll_size 20mb
+			roll_keep 5
+		}
+		level INFO
+	}
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		-Server
 	}
 }

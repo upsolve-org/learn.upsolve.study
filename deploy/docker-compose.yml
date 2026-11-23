@@ -1,16 +1,20 @@
 # VPS side-car stack for learn.upsolve.study (PR 7).
 # Every published port is bound to loopback ONLY — Supabase stays on 5432 and
-# must not be displaced. Start from /srv/learn with the hosted .env.local.
+# must not be displaced. Start it with the hosted env file, e.g.
+#   docker compose --env-file /srv/learn/.env.local -f deploy/docker-compose.yml up -d
+# Images are pinned: bump them deliberately, never via :latest.
 name: learn-hosted
 
 services:
   postgres:
-    image: postgres:17-alpine
+    image: postgres:17.12-alpine
     ports:
       - "127.0.0.1:5433:5432"
     environment:
       POSTGRES_DB: learn
       POSTGRES_USER: learn
+      # Only read on FIRST initialisation of pg_data; changing it later
+      # requires ALTER ROLE inside the database.
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?required}
     volumes:
       - pg_data:/var/lib/postgresql/data
@@ -19,11 +23,12 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+    networks: [data]
     mem_limit: 1g
     restart: unless-stopped
 
   rustfs:
-    image: rustfs/rustfs:latest
+    image: rustfs/rustfs:1.0.6
     ports:
       - "127.0.0.1:9000:9000"
       - "127.0.0.1:9001:9001"
@@ -32,19 +37,28 @@ services:
       RUSTFS_SECRET_KEY: ${S3_SECRET_ACCESS_KEY:?required}
     volumes:
       - rustfs_data:/data
+    networks: [data]
     mem_limit: 512m
     restart: unless-stopped
 
   chromium:
-    image: ghcr.io/browserless/chromium:latest
+    image: ghcr.io/browserless/chromium:v2.64.3
     ports:
       - "127.0.0.1:3003:3000"
     environment:
       CONCURRENT: 2
       TIMEOUT: 60000
     shm_size: 512m
+    # Its own network: learner-authored demo pages run here, so the browser
+    # must not share a network with Postgres or RustFS (request interception
+    # in the app is the first guard; this is the second).
+    networks: [browser]
     mem_limit: 1g
     restart: unless-stopped
+
+networks:
+  data:
+  browser:
 
 volumes:
   pg_data:
