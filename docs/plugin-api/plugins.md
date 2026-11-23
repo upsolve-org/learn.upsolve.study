@@ -1520,14 +1520,14 @@ a cross-file transaction; keep plugin-derived data in plugin-owned storage.
 ```ts
 export interface PluginLearningData {
     readonly directory: string;
-    listSessions(): ChatListItem[];
-    getSession(id: string): ChatRecord | null;
-    graph(): GraphSnapshot;
-    readGraphFile<K extends keyof PluginGraphFileData>(name: K): PluginGraphFileData[K];
+    listSessions(): MaybePromise<ChatListItem[]>;
+    getSession(id: string): MaybePromise<ChatRecord | null>;
+    graph(): MaybePromise<GraphSnapshot>;
+    readGraphFile<K extends keyof PluginGraphFileData>(name: K): MaybePromise<PluginGraphFileData[K]>;
 }
 ```
 
-**Related types:** [ChatListItem](contracts-chat.md#chatlistitem), [ChatRecord](contracts-chat.md#chatrecord), [GraphSnapshot](contracts-graph.md#graphsnapshot), [PluginGraphFileData](plugins.md#plugingraphfiledata).
+**Related types:** [ChatListItem](contracts-chat.md#chatlistitem), [ChatRecord](contracts-chat.md#chatrecord), [GraphSnapshot](contracts-graph.md#graphsnapshot), [MaybePromise](ports.md#maybepromise), [PluginGraphFileData](plugins.md#plugingraphfiledata).
 
 **Member index** (including nested object members; inherited members are defined in the linked base types):
 
@@ -1550,10 +1550,10 @@ readonly directory: string;
 List saved session summaries with current busy/compacting flags; no model work.
 
 ```ts
-listSessions(): ChatListItem[];
+listSessions(): MaybePromise<ChatListItem[]>;
 ```
 
-**Returns:** `ChatListItem[]`.
+**Returns:** `MaybePromise<ChatListItem[]>`.
 
 ### PluginLearningData getSession
 
@@ -1561,14 +1561,14 @@ Read a complete saved native session, or null when absent. Invalid IDs throw.
 Transcripts preserve learner answers/thinking not represented by the graph.
 
 ```ts
-getSession(id: string): ChatRecord | null;
+getSession(id: string): MaybePromise<ChatRecord | null>;
 ```
 
 | Parameter | Type |
 | --- | --- |
 | `id` | `string` |
 
-**Returns:** `ChatRecord \| null`.
+**Returns:** `MaybePromise<ChatRecord \| null>`.
 
 ### PluginLearningData graph
 
@@ -1576,10 +1576,10 @@ Read the current graph projection and raw records, without a second query
 language. This is not a complete learner-response transcript.
 
 ```ts
-graph(): GraphSnapshot;
+graph(): MaybePromise<GraphSnapshot>;
 ```
 
-**Returns:** `GraphSnapshot`.
+**Returns:** `MaybePromise<GraphSnapshot>`.
 
 ### PluginLearningData readGraphFile
 
@@ -1587,14 +1587,14 @@ Read graph ledger/metadata JSON using the host's current file interpretation.
 Host validation/version guards apply; unknown file names throw.
 
 ```ts
-readGraphFile<K extends keyof PluginGraphFileData>(name: K): PluginGraphFileData[K];
+readGraphFile<K extends keyof PluginGraphFileData>(name: K): MaybePromise<PluginGraphFileData[K]>;
 ```
 
 | Parameter | Type |
 | --- | --- |
 | `name` | `K` |
 
-**Returns:** `PluginGraphFileData[K]`.
+**Returns:** `MaybePromise<PluginGraphFileData[K]>`.
 
 ## PluginManifest
 

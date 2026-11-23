@@ -72,8 +72,9 @@ backend.registerTools({ agents:["teacher"], create:context=>[backend.createBackg
 })] });
 // @ts-expect-error workers require an explicit model-call turn budget
 backend.workers.start("note", {requestId:"missing-budget", input:null, prompt:"Write it", model:{provider:"fixture", id:"fixture"}, purpose:"background"});
-const snapshot: GraphSnapshot = backend.learning.graph();
-const node: GraphNode | undefined = backend.learning.readGraphFile("nodes.jsonl")[0];
+// The learning reads are MaybePromise (async-capable storage ports): await them.
+const snapshot: GraphSnapshot = await backend.learning.graph();
+const node: GraphNode | undefined = (await backend.learning.readGraphFile("nodes.jsonl"))[0];
 // @ts-expect-error A typed graph ledger is not an unvalidated arbitrary record.
 const wrong: number = node?.statement;
 void [snapshot, node, wrong];
