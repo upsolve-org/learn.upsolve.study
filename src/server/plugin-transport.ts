@@ -1,6 +1,7 @@
 import { isPluginHostError } from "./plugin-host.ts";
 import { apiRequestRefusal } from "./desktop-access.ts";
-import { hostedRequestRefusal } from "../core/hosted-admission.ts";
+import { hostedIdentity } from "../core/hosted-admission.ts";
+import { runAsOwner } from "../core/owner-scope.ts";
 import type { PluginFrontendContext, PluginInfo } from "../core/plugins.ts";
 
 /** Thin HTTP adapter, separately injectable so its tests never boot plugins. */
@@ -63,17 +64,29 @@ export function createPluginTransport(deps: { getHost(): Promise<PluginTransport
 /** This one streamed route must avoid Proxy's silently truncated body clone.
  * Preserve the identical mode-aware API policy before ANY params/body/host
  * work, including unsupported methods and framework-style OPTIONS responses. */
-export function createPluginDocumentRoute(transport: Pick<ReturnType<typeof createPluginTransport>, "convertDocument">) {
-	const refusal = async (request: Request) => {
+export function createPluginDocumentRoute(
+	transport: Pick<ReturnType<typeof createPluginTransport>, "convertDocument">,
+	identify: typeof hostedIdentity = hostedIdentity,
+) {
+	// TENANCY: this route bypasses the Proxy, so the client's x-lh-owner
+	// header is NOT overwritten here. The owner scope must come from the
+	// VERIFIED session, never from that header.
+	const verify = async (request: Request): Promise<{ owner: string } | { refusal: Response }> => {
 		const error = apiRequestRefusal(request);
-		return error ? json({ error }, 403) : await hostedRequestRefusal(request);
+		return error ? { refusal: json({ error }, 403) } : await identify(request);
+	};
+	const refusal = async (request: Request) => {
+		const result = await verify(request);
+		return "refusal" in result ? result.refusal : undefined;
 	};
 	const unsupported = async (request: Request) => await refusal(request) ?? new Response(null, { status: 405 });
 	return {
 		async POST(request: Request, context: { params: Promise<{ id: string }> }) {
-			const denied = await refusal(request);
-			if (denied) return denied;
-			return transport.convertDocument((await context.params).id, request);
+			const identity = await verify(request);
+			if ("refusal" in identity) return identity.refusal;
+			const dispatch = async () => transport.convertDocument((await context.params).id, request);
+			// Hosted mode off: owner is "" and the desktop path stays unscoped.
+			return identity.owner ? runAsOwner(identity.owner, dispatch) : dispatch();
 		},
 		OPTIONS: async (request: Request) => await refusal(request) ?? new Response(null, { status: 204, headers: { Allow: "OPTIONS, POST" } }),
 		GET: unsupported, HEAD: unsupported, PUT: unsupported, PATCH: unsupported, DELETE: unsupported,

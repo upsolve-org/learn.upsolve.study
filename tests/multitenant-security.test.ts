@@ -360,3 +360,39 @@ describe("owner-scoped plugin worker activity", () => {
 		assert.equal(changes[0]?.owner, A, "the metadata carries the owner for activity filtering");
 	});
 });
+
+// ─── Proxy-exempt document route ──────────────────────────────────────────────
+
+describe("Proxy-exempt document route owner scope", () => {
+	const url = "http://localhost/api/plugins/flashcards/documents/markdown";
+	const params = { params: Promise.resolve({ id: "flashcards" }) };
+
+	it("runs in the VERIFIED owner's scope, never a client-forged x-lh-owner", async () => {
+		hostedEnv();
+		const { createPluginDocumentRoute } = await import("../src/server/plugin-transport.ts");
+		let seen: string | undefined = "unset";
+		const route = createPluginDocumentRoute(
+			{ convertDocument: async () => { seen = currentOwnerId(); return Response.json({ ok: true }); } },
+			async () => ({ owner: A, operator: false }),
+		);
+		const response = await route.POST(new Request(url, { method: "POST", headers: { [OWNER_HEADER]: B } }), params);
+		assert.equal(response.status, 200);
+		assert.equal(seen, A, "the forged header for B must not select B's scope");
+	});
+
+	it("refuses before dispatch when the session is not verified", async () => {
+		hostedEnv();
+		const { createPluginDocumentRoute } = await import("../src/server/plugin-transport.ts");
+		const route = createPluginDocumentRoute(
+			{ convertDocument: async () => { throw new Error("Must not dispatch"); } },
+			async () => ({ refusal: Response.json({ error: "no" }, { status: 401 }) }),
+		);
+		const response = await route.POST(new Request(url, { method: "POST", headers: { [OWNER_HEADER]: A } }), params);
+		assert.equal(response.status, 401);
+	});
+
+	it("the route module does not wrap the handlers in header-trusting ownerScoped()", () => {
+		const source = fs.readFileSync(path.join(process.cwd(), "app/api/plugins/[id]/documents/markdown/route.ts"), "utf8");
+		assert.equal(/ownerScoped\(/.test(source), false);
+	});
+});
