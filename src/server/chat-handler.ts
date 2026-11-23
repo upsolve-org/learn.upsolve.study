@@ -13,7 +13,9 @@ import { chatGPTStreamError } from "../agent/chatgpt-stream.ts";
 import { SubscriptionRequestCycle, type SubscriptionDispatchLifecycle } from "../agent/subscription-request-cycle.ts";
 import { reconstructRequestCause } from "../core/native-messages.ts";
 import type { MaybePromise } from "../core/ports.ts";
-import { createJobRunner } from "../agent/subagents/runner.ts";
+import { createJobRunner, type JobToolInput } from "../agent/subagents/runner.ts";
+import { currentOwnerId } from "../core/owner-scope.ts";
+import { enqueueSubagentJob, isJobQueueActive } from "./pg-queue.ts";
 import { createExtractionPipeline } from "../agent/subagents/extraction.ts";
 import type { ModelRole } from "../../config.ts";
 import {
@@ -184,7 +186,28 @@ function retentionForSlot(slot: ModelSlotName) {
 	return () => cachedSettings()?.models?.[slot]?.cacheRetention;
 }
 
-setJobRespawn((jobId) => void jobRunner.runJob(jobId));
+/**
+ * Start one sub-agent job loop. With PostgreSQL storage the durable queue is
+ * active and the standalone worker (scripts/worker.ts) runs it; otherwise —
+ * or if enqueueing fails — it runs in this process exactly as before. The
+ * owner rides the payload so the worker re-enters the same storage scope.
+ */
+export function spawnSubagentJob(jobId: string, input?: JobToolInput): void {
+	if (!isJobQueueActive()) {
+		void jobRunner.runJob(jobId, input);
+		return;
+	}
+	const owner = currentOwnerId();
+	void enqueueSubagentJob({ ...(owner ? { owner } : {}), jobId, ...(input === undefined ? {} : { input }) }).then(
+		(queued) => { if (!queued) void jobRunner.runJob(jobId, input); },
+		(error: unknown) => {
+			console.error(`[job ${jobId}] enqueue failed; running in-process instead:`, error);
+			void jobRunner.runJob(jobId, input);
+		},
+	);
+}
+
+setJobRespawn((jobId) => spawnSubagentJob(jobId));
 // The learner-filesystem policy (file-access wave): every tool registry is
 // built in this composition root, so the seam is installed here — the
 // tools read it fresh per call (allowed folders + the app's private paths).
@@ -777,7 +800,7 @@ export async function handleChatInput(
 						jobs: {
 							chatId,
 							jobStore: stores.jobStore,
-							spawn: (job, input) => void jobRunner.runJob(job.id, input),
+							spawn: (job, input) => spawnSubagentJob(job.id, input),
 							searchAvailable,
 						},
 						...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: stores.graphStore } } : {}),
@@ -790,7 +813,7 @@ export async function handleChatInput(
 						chatId,
 						chatStore: stores.chatStore,
 						jobStore: stores.jobStore,
-						spawn: (job, input) => void jobRunner.runJob(job.id, input),
+						spawn: (job, input) => spawnSubagentJob(job.id, input),
 						// The registry drop's signal (2026-09-20): no live engine
 						// = no research tool in the teacher's registry.
 						searchAvailable,
@@ -806,7 +829,7 @@ export async function handleChatInput(
 						// dispatch (owner ruling — phase-omnipresent), so its ctx
 						// needs the same job wiring as the teacher's.
 						jobStore: stores.jobStore,
-						spawn: (job, input) => void jobRunner.runJob(job.id, input),
+						spawn: (job, input) => spawnSubagentJob(job.id, input),
 						searchAvailable,
 						// The map reader (wave 7): the prober reads the learner's
 						// knowledge graph through tools when the gate opens —

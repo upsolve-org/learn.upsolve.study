@@ -17,7 +17,7 @@ const { settingsStore } = await import("../src/store/settings.ts");
 const { jobStore } = await import("../src/store/jobs.ts");
 const { graphStore } = await import("../src/store/graph.ts");
 const { themeStore } = await import("../src/store/themes.ts");
-const { withOwner, forOwner, activeOwner } = await import("../src/server/stores.ts");
+const { withOwner, forOwner, activeOwner, stores: appStores } = await import("../src/server/stores.ts");
 const { THEME_COLOR_KEYS } = await import("../src/core/themes.ts");
 const { expectSync } = await import("../src/core/ports.ts");
 
@@ -131,7 +131,10 @@ describe("composition helpers", () => {
 	it("forOwner runs the callback inside the owner scope", () => {
 		const seen = forOwner(B, (stores) => {
 			assert.equal(activeOwner(), B);
-			assert.equal(stores.chatStore, chatStore);
+			// The app's stores are live proxies (PR 5) that delegate to the
+			// active adapter — the fs chat store when no database is wired.
+			assert.equal(stores.chatStore, appStores.chatStore);
+			assert.deepEqual(Reflect.ownKeys(stores.chatStore).sort(), Reflect.ownKeys(chatStore).sort());
 			return currentOwnerId();
 		});
 		assert.equal(seen, B);

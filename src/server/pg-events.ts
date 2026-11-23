@@ -23,6 +23,8 @@ import { deliverRemoteEvent, registerEventBridge, type EventEnvelope, type Serve
 import { hasDatabaseUrl } from "./db.ts";
 
 const CHANNEL = "lh_events";
+/** Worker → web: "a sub-agent job of this chat has a pending delivery". */
+const JOB_DELIVERY_CHANNEL = "lh_job_delivery";
 /** PostgreSQL caps a NOTIFY payload at 8000 bytes including overhead. */
 const MAX_PAYLOAD_BYTES = 7500;
 const RECONNECT_MS = 2_000;
@@ -39,10 +41,64 @@ interface BridgeState {
 
 interface PgEventsGlobal {
 	__lhPgEventsBridge?: BridgeState;
+	__lhJobDeliveryHandler?: JobDeliveryHandler;
+}
+
+export interface JobDeliveryNotice {
+	/** Absent for unscoped (desktop/plain-dev) work. */
+	owner?: string;
+	chatId: string;
+}
+export type JobDeliveryHandler = (notice: JobDeliveryNotice) => void;
+
+/** Web process: react to the worker's finished-job announcements. The
+ *  handler survives bridge restarts; pass undefined to remove it. */
+export function setJobDeliveryHandler(handler: JobDeliveryHandler | undefined): void {
+	(globalThis as typeof globalThis & PgEventsGlobal).__lhJobDeliveryHandler = handler;
+}
+
+function onJobDeliveryNotification(bridge: BridgeState, payload: string): void {
+	let notice: { origin?: unknown; owner?: unknown; chatId?: unknown };
+	try {
+		notice = JSON.parse(payload) as typeof notice;
+	} catch {
+		return;
+	}
+	if (!notice || notice.origin === bridge.instanceId || typeof notice.chatId !== "string") return;
+	const handler = (globalThis as typeof globalThis & PgEventsGlobal).__lhJobDeliveryHandler;
+	if (!handler) return; // e.g. the worker itself: it never delivers
+	try {
+		handler({ chatId: notice.chatId, ...(typeof notice.owner === "string" ? { owner: notice.owner } : {}) });
+	} catch (error) {
+		console.warn("[pg-events] job delivery handler failed:", error);
+	}
+}
+
+/**
+ * Worker process: announce that `chatId` has a pending job delivery. Best
+ * effort — false when there is no listener connection; the delivery is
+ * already durable on the job record and the web sweep restores it.
+ */
+export async function publishJobDelivery(notice: JobDeliveryNotice): Promise<boolean> {
+	const bridge = (globalThis as typeof globalThis & PgEventsGlobal).__lhPgEventsBridge;
+	const client = bridge?.client;
+	if (!bridge || !client) return false;
+	const payload = JSON.stringify({ origin: bridge.instanceId, owner: notice.owner, chatId: notice.chatId });
+	try {
+		await client.query("SELECT pg_notify($1, $2)", [JOB_DELIVERY_CHANNEL, payload]);
+		return true;
+	} catch (error) {
+		console.warn("[pg-events] job delivery NOTIFY failed:", error);
+		return false;
+	}
 }
 
 function onNotification(bridge: BridgeState, client: Client, msg: Notification): void {
 	if (bridge.client !== client || !msg) return;
+	if (msg.channel === JOB_DELIVERY_CHANNEL && msg.payload) {
+		onJobDeliveryNotification(bridge, msg.payload);
+		return;
+	}
 	if (msg.channel !== CHANNEL || !msg.payload) return;
 	let envelope: { origin?: unknown; type?: unknown; payload?: unknown; owner?: unknown };
 	try {
@@ -104,6 +160,7 @@ async function connect(bridge: BridgeState): Promise<void> {
 			return;
 		}
 		await client.query(`LISTEN ${CHANNEL}`);
+		await client.query(`LISTEN ${JOB_DELIVERY_CHANNEL}`);
 	} catch (error) {
 		if (!bridge.stopped) console.warn("[pg-events] LISTEN setup failed; retrying:", error);
 		await client.end().catch(() => undefined);

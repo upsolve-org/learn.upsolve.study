@@ -145,6 +145,14 @@ interface WakeState {
 	lastSweepAt: Map<string, number>;
 	stopConnectionWatch?: () => void;
 	automaticDeferred: WeakSet<Agent>;
+	/** Set only in the standalone job worker (scripts/worker.ts): a finished
+	 *  job's steer is handed to the web process instead of waking a turn
+	 *  here — the web process owns live agents and the turn pump. */
+	remoteDelivery?: RemoteJobDelivery;
+	/** Set in the web process when sub-agent jobs run in the worker: true
+	 *  while the durable queue still holds (queued/active) this job, so the
+	 *  sweep never re-runs or relabels a loop executing in another process. */
+	remoteLiveness?: RemoteJobLiveness;
 }
 
 interface LhWakeGlobal {
@@ -169,6 +177,19 @@ export function setTurnRunner(run: TurnRunner): void {
 }
 
 /** chat-handler wires this at module init: its job runner's runJob. */
+export type RemoteJobDelivery = (steer: SteerMessage) => Promise<void>;
+export type RemoteJobLiveness = (jobId: string) => Promise<boolean>;
+
+/** Worker-only: route job deliveries to the web process (see WakeState). */
+export function setRemoteJobDelivery(deliver: RemoteJobDelivery | undefined): void {
+	state().remoteDelivery = deliver;
+}
+
+/** Web-only: report jobs the durable queue is still running elsewhere. */
+export function setRemoteJobLiveness(liveness: RemoteJobLiveness | undefined): void {
+	state().remoteLiveness = liveness;
+}
+
 export function setJobRespawn(respawn: JobRespawn): void {
 	state().respawn = respawn;
 }
@@ -262,6 +283,10 @@ function finalizeSteer(steer: SteerMessage): void {
  * failed starts stay pending. Non-job probe handoffs keep their existing
  * wake-acceptance/error semantics. Workers never await this promise. */
 export function deliverJobResult(steer: SteerMessage): Promise<void> {
+	// Standalone worker: the outcome and its pending delivery are already
+	// durable on the job record; only announce it to the web process.
+	const remote = state().remoteDelivery;
+	if (remote) return remote(steer);
 	const chatId = chatIdOf(steer);
 	if (!isPromiseLike(chatId)) {
 		// Sync adapters: identical to the historical path — one registry
@@ -786,6 +811,27 @@ function normalizeLegacyResult(job: JobRecord): MaybePromise<JobRecord> {
 	return isPromiseLike(written) ? written.then((updated) => updated ?? job) : written ?? job;
 }
 
+/**
+ * Plugin result preparation persists an honest generic fallback before
+ * awaiting the author formatter. Do not deliver that fallback early while the
+ * live formatter still owns preparation; a restart has no registration and
+ * can restore it without replaying author code.
+ */
+function pluginStillPreparing(chatId: string, stored: JobRecord, live: boolean): boolean {
+	return stored.kind === "plugin" && live && !(state().queues.get(key(chatId)) ?? []).some((entry) => jobIdOf(entry.steer) === stored.id);
+}
+
+/** Queue (or finalize, when already in the transcript) one job's pending steer. */
+function restoreJobSteer(chatId: string, record: ChatRecord, job: JobRecord): void {
+	if (job.delivery?.status !== "pending") return;
+	const steer = job.delivery.kind === "abort" ? buildAbortSteer(job)
+		: job.delivery.kind === "failure" ? buildJobFailureSteer(job, job.error ?? "Background job recovery or delivery failed")
+		: job.result ? buildSubagentSteer(job, job.result as never) : undefined;
+	if (!steer) return;
+	if (steerDelivered(record.messages, steer.id)) finalizeSteer(steer);
+	else queueSteer(chatId, steer);
+}
+
 /** Restore known obligations only; old terminal records are never replayed. */
 function restorePendingDeliveries(chatId: string): void {
 	const fail = (error: unknown) => {
@@ -797,26 +843,34 @@ function restorePendingDeliveries(chatId: string): void {
 		onReady(stores.jobStore.listJobs(chatId), (jobs) => {
 			for (const stored of jobs) {
 				const live = isJobLive(stored.id);
-				// Plugin result preparation persists an honest generic fallback before
-				// awaiting the author formatter. Do not deliver that fallback early
-				// while the live formatter still owns preparation; a restart has no
-				// registration and can restore it without replaying author code.
-				if (stored.kind === "plugin" && live && !(state().queues.get(key(chatId)) ?? []).some((entry) => jobIdOf(entry.steer) === stored.id)) continue;
-				const finish = (job: JobRecord): void => {
-					if (job.delivery?.status !== "pending") return;
-					const steer = job.delivery.kind === "abort" ? buildAbortSteer(job)
-						: job.delivery.kind === "failure" ? buildJobFailureSteer(job, job.error ?? "Background job recovery or delivery failed")
-						: job.result ? buildSubagentSteer(job, job.result as never) : undefined;
-					if (!steer) return;
-					if (steerDelivered(record.messages, steer.id)) finalizeSteer(steer);
-					else queueSteer(chatId, steer);
-				};
+				if (pluginStillPreparing(chatId, stored, live)) continue;
+				const finish = (job: JobRecord): void => restoreJobSteer(chatId, record, job);
 				if (live) finish(stored);
 				else onReady(normalizeLegacyResult(stored), finish, fail);
 			}
 		}, fail);
 	};
 	onReady(stores.chatStore.getChat(chatId), withRecord, fail);
+}
+
+/**
+ * Restore every pending job delivery of `chatId` and start its pump — the
+ * awaited form of restorePendingDeliveries. Under an async backend the
+ * restore must FINISH before the pump looks at the registry, or the pump
+ * would find nothing and exit. Used by the stale-job sweep and by the web
+ * process when the job worker announces a finished job (lh_job_delivery).
+ * Must run inside the chat owner's scope.
+ */
+export async function resumeChatDelivery(chatId: string): Promise<void> {
+	const record = await stores.chatStore.getChat(chatId);
+	if (!record) return;
+	noteSteersDurable(chatId, record.messages);
+	for (const stored of await stores.jobStore.listJobs(chatId)) {
+		const live = isJobLive(stored.id);
+		if (pluginStillPreparing(chatId, stored, live)) continue;
+		restoreJobSteer(chatId, record, live ? stored : await normalizeLegacyResult(stored));
+	}
+	void pump(chatId);
 }
 
 /**
@@ -881,12 +935,13 @@ export async function recoverStaleJobs(): Promise<void> {
 		for (const chat of await stores.chatStore.listChats()) {
 			for (const job of await stores.jobStore.listJobs(chat.id)) {
 				if (isJobLive(job.id)) continue; // never re-run beside live computation
+				// Nor beside a loop the job worker is executing (or will claim).
+				if (job.kind !== "plugin" && s.remoteLiveness && await s.remoteLiveness(job.id)) continue;
 				if (!(await stores.chatStore.getChat(job.chatId))) continue;
 				if (isTurnRunning(job.chatId)) continue;
 				const recovered = await normalizeLegacyResult(job);
 				if (recovered.delivery?.status === "pending") {
-					restorePendingDeliveries(job.chatId);
-					void pump(job.chatId);
+					await resumeChatDelivery(job.chatId);
 				} else if (job.status === "running" && !job.result) {
 					if (job.kind === "plugin") {
 						// Canonical task reads only; never respawn plugin tools/code.

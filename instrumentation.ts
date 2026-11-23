@@ -26,9 +26,23 @@ export async function register() {
 			await runMigrations(pool);
 			const { createPostgresStores } = await import("./src/store/postgres/index.ts");
 			configureStores(createPostgresStores(pool));
-			const { startPgEventsBridge } = await import("./src/server/pg-events.ts");
+			const { startPgEventsBridge, setJobDeliveryHandler } = await import("./src/server/pg-events.ts");
 			startPgEventsBridge();
-			console.info("[postgres] storage backend active; SSE bridge listening");
+			// Sub-agent jobs run in the standalone worker (scripts/worker.ts):
+			// this process enqueues them, asks the queue whether a job is still
+			// running elsewhere (stale-job sweep), and performs the delivery
+			// when the worker announces a finished job.
+			const { startJobQueue, subagentJobPending } = await import("./src/server/pg-queue.ts");
+			const { resumeChatDelivery, setRemoteJobLiveness } = await import("./src/server/jobs.ts");
+			const { withOwner } = await import("./src/server/stores.ts");
+			await startJobQueue();
+			setRemoteJobLiveness(subagentJobPending);
+			setJobDeliveryHandler(({ owner, chatId }) => {
+				void withOwner(owner, () => resumeChatDelivery(chatId)).catch((error: unknown) => {
+					console.error(`[chat ${chatId}] worker job delivery failed (the sweep will retry):`, error);
+				});
+			});
+			console.info("[postgres] storage backend active; SSE bridge listening; sub-agent jobs dispatched to the worker");
 		} catch (error) {
 			if (hostedMode()) throw error;
 			console.warn("[postgres] storage startup failed; continuing with filesystem stores:", error);
