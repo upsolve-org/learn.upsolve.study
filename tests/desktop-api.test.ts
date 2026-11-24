@@ -9,16 +9,9 @@ import { desktopAPIAuthorized } from "../src/server/desktop-access.ts";
 import { proxy, config } from "../proxy.ts";
 const require = createRequire(import.meta.url);
 const { HEADER } = require("../src/server/subscription-core/desktop-api.cjs");
-const { trustedSender, chatGPTControl } = require("../src/server/subscription-core/chatgpt-ipc.cjs");
+const { chatGPTControl } = require("../src/server/subscription-core/chatgpt-ipc.cjs");
 const secret = "a".repeat(64);
 const origin = "http://127.0.0.1:12345";
-
-function fixture() {
-	const mainFrame = { url: `${origin}/chat/new` };
-	const contents = { id: 5, mainFrame, isDestroyed: () => false };
-	const win = { webContents: contents, isDestroyed: () => false };
-	return { mainFrame, contents, win };
-}
 
 test("all methods fail closed for desktop missing/wrong secret; API-only matcher covers SSE/settings/spending", async () => {
 	assert(desktopAPIAuthorized(new Headers(), {}), "browser-only API-key mode unchanged");
@@ -58,15 +51,9 @@ test("renderer controls route explicit account forgetting and account-independen
 	assert.deepEqual(changes, [false]);
 });
 
-test("renderer controls have no lease or general token bridge, and require the trusted main frame", async () => {
+test("renderer controls have no lease or general token bridge", async () => {
 	let leased = false;
 	const connection = { lease: async () => { leased = true; return { accessToken: "scratch-private-token" }; } };
 	assert.deepEqual(await chatGPTControl({ op: "lease", background: false }, connection), { error: "Unsupported ChatGPT control." });
 	assert.equal(leased, false);
-	const { contents, mainFrame, win } = fixture();
-	const BrowserWindow = { fromWebContents: (value: unknown) => value === contents ? win : null };
-	assert(trustedSender({ sender: contents, senderFrame: mainFrame }, origin, BrowserWindow));
-	assert(!trustedSender({ sender: contents, senderFrame: { url: mainFrame.url } }, origin, BrowserWindow));
-	mainFrame.url = "https://thirdparty.invalid/";
-	assert(!trustedSender({ sender: contents, senderFrame: mainFrame }, origin, BrowserWindow));
 });

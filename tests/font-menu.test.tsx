@@ -139,24 +139,20 @@ describe("the emphasis-ink factory ruling (globals.css)", () => {
 		assert.ok(!css.includes("--lh-ink-italic: #6fa9d6"), "italic factory is not the old blue");
 	});
 
-	it("the Default theme's inks are the regular text color", () => {
+	it("the Default theme's inks are the UPsolve green/crimson emphasis tokens", () => {
 		const css = fs.readFileSync("app/globals.css", "utf-8");
-		const text = css.match(/--foreground: (#[0-9a-f]{6});/)?.[1];
-		assert.ok(text, "the factory text color");
-		assert.ok(css.includes(`--lh-ink-strong: ${text};`), "bold ink = text");
-		assert.ok(css.includes(`--lh-ink-italic: ${text};`), "italic ink = text");
+		assert.ok(css.includes("--lh-ink-strong: #46c94c;"), "bold ink = UPsolve green");
+		assert.ok(css.includes("--lh-ink-italic: #f26b61;"), "italic ink = UPsolve crimson");
 	});
 
-	it("the bold and italic override rows' empty-state hints name the text color", () => {
+	it("the bold and italic override rows' empty-state hints name the UPsolve emphasis inks", () => {
 		const html = renderToStaticMarkup(
 			<AppearanceSection appearance={undefined} onSectionChange={() => true} />,
 		);
-		const text = html.match(/data-testid="row-color-text"[\s\S]*?Empty = (#[0-9a-f]{6})/)?.[1];
-		assert.ok(text, "the text row's hint");
-		for (const key of ["bold", "italic"]) {
-			const hint = html.match(new RegExp(`data-testid="row-color-${key}"[\\s\\S]*?Empty = (#[0-9a-f]{6})`))?.[1];
-			assert.equal(hint, text, `${key} row`);
-		}
+		const boldHint = html.match(/data-testid="row-color-bold"[\s\S]*?Empty = (#[0-9a-f]{6})/)?.[1];
+		const italicHint = html.match(/data-testid="row-color-italic"[\s\S]*?Empty = (#[0-9a-f]{6})/)?.[1];
+		assert.equal(boldHint, "#46c94c", "bold row hint");
+		assert.equal(italicHint, "#f26b61", "italic row hint");
 		assert.ok(!html.includes("#ee928c"));
 		assert.ok(!html.includes("#6fa9d6"));
 	});

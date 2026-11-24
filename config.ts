@@ -77,6 +77,7 @@ export function ownerPaths() {
 		prompts: path.join(/* turbopackIgnore: true */ root, "prompts"),
 		themes: path.join(/* turbopackIgnore: true */ root, "themes"),
 		jobs: path.join(/* turbopackIgnore: true */ root, "jobs"),
+		uploads: path.join(/* turbopackIgnore: true */ root, "uploads"),
 		corePluginData: path.join(/* turbopackIgnore: true */ root, "core-plugin-data"),
 		communityPlugins: path.join(/* turbopackIgnore: true */ root, "plugins"),
 	} as const;

@@ -33,7 +33,17 @@ import {
 import { setRemoteJobDelivery } from "../src/server/jobs.ts";
 import { jobRunner } from "../src/server/chat-handler.ts";
 import { fireJobAbort, isJobLive } from "../src/agent/subagents/aborts.ts";
+import { setUploadPathResolver } from "../src/agent/tools/file-access.ts";
+import { purgeExpiredAttachments, resolveUploadedAttachmentPath } from "../src/server/attachments.ts";
 import type { JobToolInput } from "../src/agent/subagents/runner.ts";
+
+setUploadPathResolver(resolveUploadedAttachmentPath);
+// Daily background cleanup for expired (> 7 day) web uploads.
+const ATTACHMENT_SWEEP_MS = 24 * 60 * 60 * 1000;
+const attachmentSweepTimer = setInterval(() => {
+	void purgeExpiredAttachments().catch((error: unknown) => console.warn("[worker] attachment cleanup failed:", error));
+}, ATTACHMENT_SWEEP_MS);
+attachmentSweepTimer.unref?.();
 
 /** How often a running job's record is checked for a learner abort. */
 const ABORT_POLL_MS = 3_000;

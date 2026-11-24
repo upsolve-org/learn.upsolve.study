@@ -30,6 +30,9 @@ const { runningTurn } = await import("../src/server/turn-runs.ts");
 const { activeProblemOf, modelSolutionForConclude, newUserMessage } = await import("../src/core/native-messages.ts");
 const { readPluginProblemSnapshot, readPluginProblemSubmission } = await import("../src/core/plugin-problems.ts");
 const host = await getPluginHost();
+if (host.list().some(plugin => plugin.id === "coding-questions" && plugin.enabled)) {
+  await host.setEnabled("coding-questions", false);
+}
 await host.setEnabled(pluginId, true);
 // This test crosses the real dynamic plugin boundary. Use the consumer's SDK
 // context type rather than equating two installations of TypeBox's generic types.

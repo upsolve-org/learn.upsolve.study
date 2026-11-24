@@ -15,6 +15,7 @@
 		"build": "npm run plugins:build-core && npm run plugins:build-authoring && next build && node scripts/postbuild.mjs",
 		"start": "next start -H localhost",
 		"test": "node --env-file-if-exists=tests/test.env node_modules/tsx/dist/cli.mjs --import tsx --test tests/*.test.ts tests/*.test.tsx",
+		"test:integration": "node --env-file-if-exists=tests/test.env node_modules/tsx/dist/cli.mjs --import tsx --test --test-concurrency=1 tests/integration/*.test.ts",
 		"lint": "eslint .",
 		"fmt": "vp fmt",
 		"lint:ox": "vp lint",

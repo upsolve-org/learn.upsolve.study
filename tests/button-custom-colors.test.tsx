@@ -26,14 +26,14 @@ const theme = "@theme { --spacing: 0.25rem; --color-primary: #123456; --color-pr
 
 it("custom defaults retain native primary colors, a transparent fixed border, focus geometry and disabled policy without automatic hover", async () => {
 	const { button } = render({ variant: "custom" }); const tokens = classes(button);
-	for (const token of ["border", "border-transparent", "bg-primary", "text-primary-foreground", "focus-visible:border-ring", "focus-visible:ring-[3px]", "focus-visible:ring-ring/50", "disabled:pointer-events-none", "disabled:opacity-50"]) assert.ok(tokens.includes(token), token);
+	for (const token of ["border", "border-transparent", "bg-primary", "text-primary-foreground", "focus-visible:border-ring", "focus-visible:ring-1", "focus-visible:ring-ring", "disabled:pointer-events-none", "disabled:opacity-50"]) assert.ok(tokens.includes(token), token);
 	assert.equal(tokens.some(token => /^(?:hover|active):/.test(token)), false, "no invented state hue calculations");
 	assert.deepEqual(variables(button), {}); assert.equal(button.hasAttribute("style"), false); assert.equal(button.hasAttribute("colors"), false);
 	assert.equal(button.dataset.variant, "custom"); assert.equal(button.dataset.slot, "button");
 	const compiler = await compile(theme); const css = compiler.build(tokens);
 	assert.match(css, /border-width: 1px/); assert.match(css, /border-color: transparent/);
 	assert.match(css, /background-color: var\(--color-primary\)/); assert.match(css, /color: var\(--color-primary-foreground\)/);
-	assert.match(css, /--tw-ring-color: color-mix\(in oklab, var\(--color-ring\) 50%, transparent\)/);
+	assert.match(css, /--tw-ring-color: var\(--color-ring\)/);
 	assert.match(css, /opacity: 50%/); assert.match(css, /pointer-events: none/);
 });
 
@@ -53,8 +53,8 @@ it("only supplied per-property slots create private variables and conditional st
 	for (const token of ["bg-[color:var(--button-custom-background)]", "text-[color:var(--button-custom-text)]", "border-[color:var(--button-custom-border)]", "hover:text-[color:var(--button-custom-hover-text)]", "active:border-[color:var(--button-custom-active-border)]", "focus-visible:ring-[color:var(--button-custom-focus-visible-ring)]", "disabled:bg-[color:var(--button-custom-disabled-background)]"]) assert.ok(tokens.includes(token), token);
 	for (const token of ["hover:bg-", "hover:border-", "active:bg-", "active:text-", "focus-visible:bg-", "focus-visible:text-", "disabled:text-", "disabled:border-"]) assert.equal(tokens.some(value => value.startsWith(token)), false, token);
 	assert.ok(tokens.includes("focus-visible:border-ring"), "a ring-only override does not replace the native focus border");
-	assert.ok(tokens.includes("focus-visible:ring-[3px]"), "ring color never replaces ring geometry");
-	assert.equal(tokens.includes("focus-visible:ring-ring/50"), false, "only the supplied native ring color is replaced");
+	assert.ok(tokens.includes("focus-visible:ring-1"), "ring color never replaces ring geometry");
+	assert.equal(tokens.includes("focus-visible:ring-ring"), false, "only the supplied native ring color is replaced");
 	assert.equal(button.hasAttribute("colors"), false);
 });
 
@@ -62,7 +62,7 @@ it("focus border overrides neither native ring color nor width when ring is omit
 	const { button } = render({ variant: "custom", colors: { focusVisible: { border: "gold" } } }); const tokens = classes(button);
 	assert.ok(tokens.includes("focus-visible:border-[color:var(--button-custom-focus-visible-border)]"));
 	assert.equal(tokens.includes("focus-visible:border-ring"), false);
-	assert.ok(tokens.includes("focus-visible:ring-ring/50")); assert.ok(tokens.includes("focus-visible:ring-[3px]"));
+	assert.ok(tokens.includes("focus-visible:ring-ring")); assert.ok(tokens.includes("focus-visible:ring-1"));
 	assert.deepEqual(variables(button), { "--button-custom-focus-visible-border": "gold" });
 });
 
@@ -89,7 +89,7 @@ it("actual Tailwind CSS resolves every color property in disabled > active > foc
 	assert.match(css, /@media \(hover: hover\)/);
 	assert.match(css, /--tw-ring-color: var\(--button-custom-focus-visible-ring\)/);
 	assert.ok(tokens.includes("disabled:opacity-50")); assert.ok(tokens.includes("disabled:pointer-events-none"));
-	assert.ok(tokens.includes("focus-visible:ring-[3px]"));
+	assert.ok(tokens.includes("focus-visible:ring-1"));
 });
 
 it("a partial higher state emits no fallback declaration that could erase another property's lower-state color", async () => {
@@ -119,7 +119,7 @@ it("native sizes and existing SVG/wrapped-icon padding are unchanged for custom 
 			for (const token of expected) assert.ok(classes(button).includes(token), `${variant}/${size}: ${token}`);
 		}
 	}
-	assert.equal(buttonVariants().includes("hover:bg-primary/90"), true);
+	assert.equal(buttonVariants().includes("hover:bg-[#1b9221]"), true);
 	assert.equal(buttonVariants({ variant: "custom" }).includes("hover:"), false);
 });
 
@@ -127,7 +127,7 @@ it("native caller className and style overrides still win without forwarding col
 	const style = { "--button-custom-background": "rebeccapurple", color: "teal", marginTop: 3 } as React.CSSProperties;
 	const { button } = render({ variant: "custom", colors: fullColors, className: "bg-green-500 text-red-500 hover:bg-blue-500 focus-visible:ring-yellow-500 px-1", style });
 	const tokens = classes(button);
-	for (const token of ["bg-green-500", "text-red-500", "hover:bg-blue-500", "focus-visible:ring-yellow-500", "px-1", "focus-visible:ring-[3px]"]) assert.ok(tokens.includes(token), token);
+	for (const token of ["bg-green-500", "text-red-500", "hover:bg-blue-500", "focus-visible:ring-yellow-500", "px-1", "focus-visible:ring-1"]) assert.ok(tokens.includes(token), token);
 	for (const token of ["bg-[color:var(--button-custom-background)]", "text-[color:var(--button-custom-text)]", "hover:bg-[color:var(--button-custom-hover-background)]", "focus-visible:ring-[color:var(--button-custom-focus-visible-ring)]"]) assert.equal(tokens.includes(token), false, token);
 	assert.equal(variables(button)["--button-custom-background"], "rebeccapurple");
 	assert.match(button.getAttribute("style")!, /color:teal/); assert.match(button.getAttribute("style")!, /margin-top:3px/);

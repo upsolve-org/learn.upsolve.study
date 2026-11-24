@@ -41,13 +41,13 @@ it("no compiled font-family declaration bypasses the reading setting via the loa
 	assert.doesNotMatch(css, /(?:^|[;{])\s*font-family:[^;{}]*var\(--font-sans3\)/m);
 });
 
-it("mono chrome/code and the independent serif title remain separate font contracts", () => {
+it("mono chrome/code and the independent display title remain separate font contracts", () => {
 	for (const selector of [".font-ui", ".font-mono"]) {
 		assert.match(rules(selector)[0]!, /font-family:\s*var\(--font-jetbrains\), ui-monospace, SFMono-Regular, monospace;/);
 	}
 	assert.match(rules("body")[0]!, /font-family:\s*var\(--font-ui\);/);
 	assert.match(rules(".font-title").join("\n"), /font-family:\s*var\(--font-title\);/);
-	assert.match(css, /--font-title:\s*"lh-cmu", serif;/);
+	assert.match(css, /--font-title:\s*var\(--font-barlow\), "Barlow Condensed", ui-sans-serif, system-ui, sans-serif;/);
 });
 
 it("reading-family repair does not change reading/input size, leading, or title weight", () => {
@@ -57,7 +57,7 @@ it("reading-family repair does not change reading/input size, leading, or title 
 	assert.match(rules(".lh-input")[0]!, /font-family:\s*var\(--font-prose\);/);
 	assert.match(rules(".lh-input")[0]!, /font-size:\s*var\(--lh-prose-size\);/);
 	assert.match(rules(".lh-input")[0]!, /line-height:\s*1\.25;/);
-	assert.match(rules(".font-title").join("\n"), /font-weight:\s*900;/);
+	assert.match(rules(".font-title").join("\n"), /font-weight:\s*700;/);
 	for (const selector of [".font-prose", ".font-sans"]) {
 		assert.doesNotMatch(rules(selector).join("\n"), /font-size:|line-height:/);
 	}
