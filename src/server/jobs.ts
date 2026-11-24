@@ -176,7 +176,6 @@ export function setTurnRunner(run: TurnRunner): void {
 	state().turnRunner = run;
 }
 
-/** chat-handler wires this at module init: its job runner's runJob. */
 export type RemoteJobDelivery = (steer: SteerMessage) => Promise<void>;
 export type RemoteJobLiveness = (jobId: string) => Promise<boolean>;
 
@@ -190,6 +189,7 @@ export function setRemoteJobLiveness(liveness: RemoteJobLiveness | undefined): v
 	state().remoteLiveness = liveness;
 }
 
+/** chat-handler wires this at module init: its job runner's runJob. */
 export function setJobRespawn(respawn: JobRespawn): void {
 	state().respawn = respawn;
 }
