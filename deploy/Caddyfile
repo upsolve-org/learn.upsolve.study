@@ -3,7 +3,7 @@
 # Replace ONLY this site block in the live file — keep every other site block
 # and `import` line there (e.g. `import /etc/caddy/comprog/comprog.caddyfile`
 # serves another site on the same box). The only change from the Supabase-era
-# block is the removed `handle /auth/v1/*` GoTrue proxy: Better Auth now
+# block is the removed GoTrue (Supabase Auth) proxy handle: Better Auth now
 # serves /api/auth/* from the app itself.
 learn.upsolve.study {
 	encode zstd gzip
