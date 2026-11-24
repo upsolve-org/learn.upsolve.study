@@ -274,4 +274,23 @@ describe("postgresStorageEnabled", () => {
 			restore();
 		}
 	});
+
+	// Next.js compiles instrumentation.ts and the routes as separate module
+	// entries: boot's configureStores() runs in one copy of stores.ts, the
+	// routes read another. Regression for the 2026-11-24 cutover, where the
+	// routes kept the fs adapters while the worker read PostgreSQL.
+	it("configureStores in one module copy reaches every other copy (instrumentation vs routes)", async () => {
+		const owner = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+		const routeCopy = await import(new URL("../src/server/stores.ts?route-entry", import.meta.url).href) as typeof import("../src/server/stores.ts");
+		assert.notEqual(routeCopy.stores, stores, "the test must exercise a distinct module instance");
+		const pool = makePool(() => ({ rows: [] }));
+		const restore = configureStores(createPostgresStores(pool));
+		try {
+			const list = await runAsOwner(owner, () => routeCopy.stores.chatStore.listChats());
+			assert.deepEqual(list, []);
+			assert.ok(pool.calls.some((c) => /FROM chats WHERE owner_id = \$1/.test(c.sql)));
+		} finally {
+			restore();
+		}
+	});
 });

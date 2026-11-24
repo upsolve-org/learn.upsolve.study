@@ -37,17 +37,38 @@ export interface Stores {
 	blobStore: BlobStore;
 }
 
-const active: Stores = {
-	chatStore,
-	graphStore,
-	sourceOrganizationStore,
-	jobStore,
-	settingsStore,
-	themeStore,
-	blobStore: fsBlobStore,
-};
+/**
+ * All mutable storage state lives on globalThis. Next.js compiles
+ * instrumentation.ts and the route handlers as SEPARATE module entries, each
+ * with its own copy of this file: module-level state set by boot's
+ * configureStores(...) would never reach the routes (the 2026-11-24 cutover
+ * bug — routes kept the fs adapters while the worker read PostgreSQL). Same
+ * discipline as the owner scope, event bus, job pipeline and pg pool.
+ */
+interface StoreState {
+	active: Stores;
+	liveProxies: WeakSet<object>;
+	settingsByOwner: Map<string, UserSettings | null>;
+	settingsAsync: boolean;
+	workerConcurrency: number;
+}
 
-const liveProxies = new WeakSet<object>();
+interface StoresGlobal {
+	__lhStoreState?: StoreState;
+}
+
+function storeState(): StoreState {
+	const g = globalThis as typeof globalThis & StoresGlobal;
+	return (g.__lhStoreState ??= {
+		// The first copy to load seeds the fs defaults; they are stateless
+		// (paths resolve per call), so whichever copy wins is equivalent.
+		active: { chatStore, graphStore, sourceOrganizationStore, jobStore, settingsStore, themeStore, blobStore: fsBlobStore },
+		liveProxies: new WeakSet<object>(),
+		settingsByOwner: new Map(),
+		settingsAsync: false,
+		workerConcurrency: FACTORY_SETTINGS.agent.workerRequestConcurrency,
+	});
+}
 
 /**
  * Each store on `stores` is a live delegating Proxy over `active[key]`.
@@ -60,25 +81,25 @@ const liveProxies = new WeakSet<object>();
 function liveStore<K extends keyof Stores>(key: K): Stores[K] {
 	const proxy = new Proxy({} as Stores[K], {
 		get(_target, prop) {
-			const target = active[key] as unknown as Record<PropertyKey, unknown>;
+			const target = storeState().active[key] as unknown as Record<PropertyKey, unknown>;
 			const value = Reflect.get(target, prop, target);
 			return typeof value === "function" ? value.bind(target) : value;
 		},
 		set(_target, prop, value) {
-			return Reflect.set(active[key] as unknown as Record<PropertyKey, unknown>, prop, value);
+			return Reflect.set(storeState().active[key] as unknown as Record<PropertyKey, unknown>, prop, value);
 		},
 		has(_target, prop) {
-			return prop in (active[key] as object);
+			return prop in (storeState().active[key] as object);
 		},
 		ownKeys() {
-			return Reflect.ownKeys(active[key] as object);
+			return Reflect.ownKeys(storeState().active[key] as object);
 		},
 		getOwnPropertyDescriptor(_target, prop) {
-			const desc = Reflect.getOwnPropertyDescriptor(active[key] as object, prop);
+			const desc = Reflect.getOwnPropertyDescriptor(storeState().active[key] as object, prop);
 			return desc ? { ...desc, configurable: true } : undefined;
 		},
 	});
-	liveProxies.add(proxy as object);
+	storeState().liveProxies.add(proxy as object);
 	return proxy;
 }
 
@@ -148,30 +169,26 @@ export function activeOwner(): string | undefined {
  * the next turn), and bootstrapped from the factory so the very first read
  * is valid even before settings are loaded.
  */
-let cachedWorkerConcurrency: number = FACTORY_SETTINGS.agent.workerRequestConcurrency;
-
-/**
- * Per-owner last-known settings record. Several synchronous seams (cache
- * retention, worker concurrency, search gating, Claude Code admission,
- * background consent) cannot await an async store adapter, so they read
- * through cachedSettings() instead. Keyed by owner — tenancy means one set
- * of store objects serves every learner, and a sync read must never observe
- * another owner's record.
+/*
+ * Settings cache (storeState()): `workerConcurrency` is cached so the
+ * synchronous worker-admission policy seam can read it — refreshed on every
+ * effectiveSettings() read and bootstrapped from the factory. `settingsByOwner`
+ * is the per-owner last-known record for seams that must stay synchronous
+ * (cache retention, worker concurrency, search gating, Claude Code admission,
+ * background consent); keyed by owner so a sync read never observes another
+ * owner's record. `settingsAsync` flips once a read returns a promise: from
+ * then on the sync seams use the cache instead of re-querying the database.
  */
-const settingsByOwner = new Map<string, UserSettings | null>();
 const settingsCacheKey = (): string => currentOwnerId() ?? "__default__";
-/** Once a read returns a promise we're on an async backend; from then on the
- *  sync seams must use the cache (reading on every call would re-query the
- *  database). With a sync adapter we keep the historical read-fresh behavior. */
-let settingsAsync = false;
 
 /** Refresh the per-owner cache from the authoritative read. Writes call
  *  invalidateCachedSettings() first so the next read is always current. */
 export async function effectiveSettings(): Promise<EffectiveSettings> {
 	const record = await stores.settingsStore.readSettings();
-	settingsByOwner.set(settingsCacheKey(), record);
+	const state = storeState();
+	state.settingsByOwner.set(settingsCacheKey(), record);
 	const effective = resolveSettings(record);
-	cachedWorkerConcurrency = effective.agent.workerRequestConcurrency;
+	state.workerConcurrency = effective.agent.workerRequestConcurrency;
 	return effective;
 }
 
@@ -184,28 +201,29 @@ export async function effectiveSettings(): Promise<EffectiveSettings> {
  */
 export function cachedSettings(): UserSettings | null {
 	const key = settingsCacheKey();
-	if (settingsAsync) {
-		const cached = settingsByOwner.get(key);
+	const state = storeState();
+	if (state.settingsAsync) {
+		const cached = state.settingsByOwner.get(key);
 		if (cached !== undefined) return cached ?? null;
 	}
 	const value = stores.settingsStore.readSettings();
 	if (value !== null && typeof value === "object" && typeof (value as PromiseLike<UserSettings | null>).then === "function") {
-		settingsAsync = true;
+		state.settingsAsync = true;
 		void (value as Promise<UserSettings | null>).then(
-			(resolved) => { settingsByOwner.set(key, resolved); },
+			(resolved) => { state.settingsByOwner.set(key, resolved); },
 			() => { /* a failed background read leaves this owner uncached */ },
 		);
-		return settingsByOwner.get(key) ?? null;
+		return state.settingsByOwner.get(key) ?? null;
 	}
 	const sync = value as UserSettings | null;
-	settingsByOwner.set(key, sync);
+	state.settingsByOwner.set(key, sync);
 	return sync;
 }
 
 /** Drop the current owner's cached record after a settings write. The route
  *  then calls effectiveSettings() to repopulate from the authoritative read. */
 export function invalidateCachedSettings(): void {
-	settingsByOwner.delete(settingsCacheKey());
+	storeState().settingsByOwner.delete(settingsCacheKey());
 }
 
 /** Swap one or more adapters (PR 5 Postgres wiring / tests). Because every
@@ -213,24 +231,26 @@ export function invalidateCachedSettings(): void {
  *  `stores.chatStore` at module-import time (like `jobRunner` and `extraction`)
  *  also see the swap immediately. Returns a restore callback for tests. */
 export function configureStores(next: Partial<Stores>): () => void {
+	const state = storeState();
+	const { active } = state;
 	const previous: Partial<Stores> = {};
 	for (const key of Object.keys(active) as Array<keyof Stores>) {
 		const value = next[key];
-		if (!value || liveProxies.has(value as object)) continue;
+		if (!value || state.liveProxies.has(value as object)) continue;
 		(previous as Record<keyof Stores, unknown>)[key] = active[key];
 		(active as Record<keyof Stores, unknown>)[key] = value;
 	}
-	settingsByOwner.clear();
-	settingsAsync = false;
+	state.settingsByOwner.clear();
+	state.settingsAsync = false;
 	return () => {
 		Object.assign(active, previous);
-		settingsByOwner.clear();
-		settingsAsync = false;
+		state.settingsByOwner.clear();
+		state.settingsAsync = false;
 	};
 }
 
 // Runtime policy is supplied at the composition root, never imported by agents.
-configureWorkerRequestAdmission(() => cachedWorkerConcurrency);
+configureWorkerRequestAdmission(() => storeState().workerConcurrency);
 
 // Boot: register the custom endpoint (when configured) into piModels(); the
 // POST /api/custom-provider route re-syncs after every connect.
