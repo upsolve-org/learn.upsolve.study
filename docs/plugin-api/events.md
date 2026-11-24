@@ -29,12 +29,6 @@ export type ServerEvent<K extends ServerEventType = ServerEventType> = {
 
 Supporting declaration used by a public type. This is not an additional runtime API or SDK helper.
 
-Live app notifications for turn, job, record and availability changes.
-Consumers fetch authoritative state after a notification and refetch on
-reconnect; notifications are not a durable replay log. The plugin-message
-channel additionally carries plugin-scoped JSON data, with the same
-live-only delivery limitation.
-
 The core event vocabulary plus the namespaced plugin extension channel.
 
 ```ts
