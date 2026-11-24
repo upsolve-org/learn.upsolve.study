@@ -39,10 +39,10 @@ describe("graph clusters", () => {
 });
 
 describe("LH mark", () => {
-	it("the ring follows the strong line ink; the spiral gray stays", () => {
+	it("renders the UPsolve Learn brand mark image", () => {
 		const html = renderToStaticMarkup(<LhMark />);
-		assert.equal((html.match(/fill:var\(--lh-line-strong\)/g) ?? []).length, 2);
-		assert.ok(!html.includes("#fff"));
-		assert.ok(html.includes("rgb(148,148,148)"));
+		assert.ok(html.includes('src="/logo-mark.png"'));
+		assert.ok(html.includes('alt="UPsolve Learn"'));
+		assert.ok(html.includes('aria-hidden="true"'));
 	});
 });

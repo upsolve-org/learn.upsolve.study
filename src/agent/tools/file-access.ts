@@ -21,6 +21,17 @@ let currentPolicy: () => FileAccessPolicy = () => OPEN_POLICY;
 
 export function setFileAccessPolicy(provider: () => FileAccessPolicy): void { currentPolicy = provider; }
 
+type UploadPathResolver = (rawPath: string) => Promise<string | null> | string | null;
+let currentUploadPathResolver: UploadPathResolver = () => null;
+
+/** Server-wired seam for owner-scoped web uploads (`/uploads/<uuid>/<name>`).
+ *  Agents never import config/stores; the server composition root installs it. */
+export function setUploadPathResolver(resolver: UploadPathResolver): void { currentUploadPathResolver = resolver; }
+
+export async function resolveUploadPath(rawPath: string): Promise<string | null> {
+	return await currentUploadPathResolver(rawPath);
+}
+
 export function fileAccessPolicy(): FileAccessPolicy {
 	let policy: FileAccessPolicy;
 	try { policy = currentPolicy(); }

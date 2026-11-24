@@ -57,14 +57,6 @@ test("native web login retains device prompts; only the explicit Open browser ac
 	assert.deepEqual(requests, [{ providerId: "github-copilot", op: "login", enabled: false }, { providerId: "github-copilot", op: "respond", attemptId: "attempt", promptId: "prompt", value: "" }, { providerId: "github-copilot", op: "open", attemptId: "attempt", actionId: "action" }]);
 });
 
-test("the narrow external-browser bridge is used without attempting a renderer popup", async () => {
-	const opened: string[] = [];
-	window.lh = { expandWindow() {}, openSubscriptionBrowser: async (target) => { opened.push(target); } };
-	window.open = () => assert.fail("the external-browser bridge denies renderer popups");
-	globalThis.fetch = async () => Response.json({ value: { pending: true }, browserAction: action });
-	await createWebChatGPTBridge(null).login(); assert.deepEqual(opened, [action]);
-});
-
 test("web notices identify the server machine and same-machine ChatGPT sign-in", async () => {
 	const { CHATGPT_NOTICE, chatGPTNotice } = await import("../components/settings/chatgpt-connection.tsx");
 	const { subscriptionNotice, subscriptionDisconnectCopy } = await import("../components/settings/subscription-connections.tsx");

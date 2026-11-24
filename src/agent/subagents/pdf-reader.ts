@@ -4,6 +4,7 @@ import { normalizeContext } from "@earendil-works/pi-ai";
 import { processImage, type ProcessImageResult } from "../image-processing/index.ts";
 import { Type } from "typebox";
 import { resolveSourcePath } from "../tools/fs-shared.ts";
+import { resolveUploadPath } from "../tools/file-access.ts";
 import { piEngineFor, type PiEngine, type ThinkingLevel } from "../models.ts";
 import { providerEventObserver, type ProviderEventObserver } from "../provider-events.ts";
 import { backgroundCaptureStream, createBackgroundCapture, type BackgroundCapture } from "../background-capture.ts";
@@ -174,7 +175,8 @@ export async function runPdfReaderAgent(
 	// Source denial is an ordinary upfront PDF failure, before parsing,
 	// rendering or any model request (including direct reader invocations).
 	try {
-		pdfPath = resolveSourcePath(input.path);
+		const uploaded = await resolveUploadPath(input.path);
+		pdfPath = uploaded ?? resolveSourcePath(input.path);
 		openError = await probeReadable(pdfPath);
 	} catch (err) {
 		openError = err instanceof Error ? err.message : String(err);

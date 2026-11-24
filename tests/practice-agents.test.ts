@@ -359,27 +359,23 @@ describe("practice prompt composition (own directory + the formatting appendix)"
 		assert.match(teacher, /Everything in this section deletes a default/);
 		assert.match(teacher, /The bar is the doubt itself/);
 		assert.match(teacher, /primary data/);
-		// the no-double-plan rule (owner-reported: plan drawn twice)
-		assert.match(teacher, /Never draw the plan again in your prose/);
-		// plan rewriting is normal, not exceptional (continuous adaptation)
-		assert.match(teacher, /Rewriting is a normal, common event/);
-		// planning is the natural verification moment
-		assert.match(teacher, /planning is the natural moment for verification/);
-		// no size ceilings, and the detour keeps the pace (owner round, 2026-10-07)
+		// the no-double-plan rule (never duplicate the mermaid block in prose)
+		assert.match(teacher, /never duplicate the mermaid block in prose/);
+		// plan restructuring is normal as understanding reveals itself
+		assert.match(teacher, /re-call `plan_init` to restructure and update his 0–5 Skill Map/);
+		// Socratic teaching rules + no size cap
 		assert.ok(!teacher.includes("Typically 5–15 nodes"), "the node-count cap is dead");
-		assert.match(teacher, /No size ceiling/);
-		assert.match(teacher, /never rush the repair/);
-		assert.match(teacher, /one and only pace/);
-		assert.match(teacher, /nothing to rush/, "the goal reiteration composes");
+		assert.match(teacher, /Skill Map \(levels 0–5\)/);
+		assert.match(teacher, /Levels are earned, not given/);
 	});
 
-	it("the prober doctrine steers difficulty by evidence (owner round, 2026-10-07)", () => {
+	it("the prober doctrine steers difficulty by evidence (Socratic diagnostic)", () => {
 		const prober = composeInstructions("prober");
 		assert.match(prober, /Enter near the top, not the bottom/);
-		assert.match(prober, /Strands inform each other/);
-		assert.match(prober, /never descending into already-bracketed territory/);
+		assert.match(prober, /Subskills inform each other/);
+		assert.match(prober, /never open below what the session has already demonstrated/);
 		// the confidence + thinking signals are wired into question selection
-		assert.match(prober, /the verdict, his confidence, and his thinking field together set where the next question should sit/);
+		assert.match(prober, /Correct but hesitant \(low confidence, thin thinking\)/);
 	});
 
 	it("the SHARED formatting guide composes (owner, 2026-10-04 late): LaTeX delimiters in every setting", () => {

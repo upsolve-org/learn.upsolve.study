@@ -1469,12 +1469,12 @@ describe("prompt composition", () => {
 			teacher.indexOf("Question principles") > teacher.indexOf("# Teach — one step at a time"),
 			"principles sit after the teaching loop",
 		);
-		// the prober's doctrine: the "no rush" framing is gone, quick measurement in
+		// the prober's doctrine: Socratic diagnostic placement (levels 0–5), no filler
 		const prober = composeInstructions("prober");
 		assert.ok(!prober.includes("There is no rush"), "the old no-rush framing is retired");
 		assert.ok(
-			prober.includes("every wasted question is resolution the final map doesn't get"),
-			"the efficiency-is-resolution directive is in",
+			prober.includes("Every question should move an edge somewhere — no filler"),
+			"the diagnostic efficiency directive is in",
 		);
 		assert.ok(!prober.includes("Question principles"), "the teach-phase fragment never composes into the prober");
 	});

@@ -43,7 +43,7 @@ describe("md-blocks — code", () => {
 			"border: 1px solid var(--border)",
 			"background: color-mix(in oklab, var(--background) 86%, black)",
 		], "share the existing block surface, not block layout, padding or radius");
-		assert.match(css, /\[data-streamdown="code-block"\]\s*\{\s*border-radius: 0\.75rem;\s*padding: 0\.375rem;\s*\}/, "block geometry stays block-only and unchanged");
+		assert.match(css, /\[data-streamdown="code-block"\]\s*\{\s*border-radius: 0;\s*padding: 0\.375rem;\s*\}/, "block geometry stays block-only with sharp UPsolve corners");
 	});
 
 	it("code fences delegate to streamdown's CodeBlock with a hover copy corner", () => {

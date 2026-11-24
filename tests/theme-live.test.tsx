@@ -20,7 +20,7 @@ it("same-mode theme/override changes feed new paint to the mounted graph without
 	} as unknown as GraphSnapshot;
 	let graphReads = 0;
 	const globals = {
-		window: dom.window, document: dom.document, HTMLElement: dom.window.HTMLElement,
+		window: dom.window, self: dom.window, document: dom.document, HTMLElement: dom.window.HTMLElement,
 		Element: dom.window.Element, Node: dom.window.Node, SVGElement: dom.window.SVGElement,
 		navigator: { maxTouchPoints: 0, userAgent: "fixture" }, IS_REACT_ACT_ENVIRONMENT: true,
 		ResizeObserver: class { observe() {} disconnect() {} },
@@ -75,7 +75,7 @@ it("same-mode theme/override changes feed new paint to the mounted graph without
 		await act(async () => live.onAppearanceChange({ theme: gruvbox.id }));
 		assert.equal(live.resolvedMode, "dark");
 		assert.ok(feeds.length > count, "dark→dark palette switching refreshes captured canvas paint");
-		assert.equal(feeds.at(-1)!.colors.node, gruvbox.colors.text);
+		assert.equal(feeds.at(-1)!.colors.node, gruvbox.colors.accent);
 		assert.equal(feeds.at(-1)!.colors.edge, gruvbox.colors.textMuted);
 		await act(async () => live.onAppearanceChange({ theme: gruvbox.id, colors: { text: "#123456", textMuted: "#654321" } }));
 		assert.equal(feeds.at(-1)!.colors.hoverText, "#123456");

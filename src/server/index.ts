@@ -18,6 +18,7 @@ export * from "./jobs.ts";
 export { prepareSubmissionImages, prepareSubmissionImageChannels } from "./submission-images.ts";
 export * from "./stores.ts";
 export * from "./blobs.ts";
+export * from "./attachments.ts";
 export * from "./stt.ts";
 export { refreshWorkerRequestAdmission } from "../agent/worker-request-admission.ts";
 export { readRenderSettings, writeRenderSettings } from "../store/render-settings.ts";

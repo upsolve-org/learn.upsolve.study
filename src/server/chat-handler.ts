@@ -31,8 +31,9 @@ import {
 	unregisterLiveAgent,
 } from "./jobs.ts";
 import { runPiTurn } from "./pi/ui-stream.ts";
-import { setFileAccessPolicy } from "../agent/tools/file-access.ts";
+import { setFileAccessPolicy, setUploadPathResolver } from "../agent/tools/file-access.ts";
 import { fileAccessPolicy } from "./file-access.ts";
+import { resolveUploadedAttachmentPath } from "./attachments.ts";
 import { collectToolCallIds } from "./pi/call-ids.ts";
 import { providerEventNote } from "../agent/provider-events.ts";
 import { cachedSettings, effectiveSettings, stores } from "./stores.ts";
@@ -212,6 +213,7 @@ setJobRespawn((jobId) => spawnSubagentJob(jobId));
 // built in this composition root, so the seam is installed here — the
 // tools read it fresh per call (allowed folders + the app's private paths).
 setFileAccessPolicy(fileAccessPolicy);
+setUploadPathResolver(resolveUploadedAttachmentPath);
 
 /** The route-facing entry: parse {chatId, input} and run one turn. */
 export async function handleChatRequest(

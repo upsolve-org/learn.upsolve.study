@@ -2,11 +2,27 @@
 
 import { cloneElement, useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore, type CSSProperties, type ReactElement, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { PaperclipIcon } from "lucide-react";
+import { Loader2Icon, PaperclipIcon } from "lucide-react";
 import { directoryReferencePath, quoteFilePath } from "@/src/core";
 import { Hint } from "@/components/ui/hint";
-import { INSERT_FILE_PATHS_EVENT } from "@/components/path-input";
+import { INSERT_FILE_PATHS_EVENT, INSERT_TEXT_EVENT } from "@/components/path-input";
 import { BROWSER_NOTICE } from "@/components/file-path-drop-zone";
+
+const MAX_WEB_ATTACHMENT_BYTES = 15 * 1024 * 1024;
+const MAX_WEB_REQUEST_BYTES = 25 * 1024 * 1024;
+const WEB_ACCEPT = ".pdf,.md,.markdown,.txt,.csv,.tsv,.json,.tex,.rst,.org,.html,.xml,.yaml,.yml,.js,.ts,.tsx,.jsx,.py,.rs,.go,.java,.c,.cpp,.h,.hpp,.sh,.sql";
+
+interface UploadedAttachmentResponse {
+	attachments?: Array<{
+		kind: "pdf" | "text";
+		id: string;
+		filename: string;
+		sizeBytes: number;
+		virtualPath: string;
+		inlineText?: string;
+	}>;
+	error?: string;
+}
 import { InteractionLayerOwner, useInteractionLayer, useInteractionLayers, useOptionalInteractionLayers } from "./interaction-layers";
 import { INTERACTION_LAYER_Z_BASE } from "./host-dialog";
 import { isInteractionScopeEligible } from "./plugin-input-focus";
@@ -90,6 +106,7 @@ export function AttachFilesButton({ editorRef }: { editorRef: React.RefObject<HT
 	const choosingFolder = useRef(false);
 	const [open, setOpen] = useState(false);
 	const [notice, setNotice] = useState("");
+	const [uploading, setUploading] = useState(false);
 	const [placement, setPlacement] = useState<ReturnType<typeof attachmentPopupPlacement> | null>(null);
 	const positioned = placement !== null;
 	// Like MenuShell, portal to body with viewport-capped, reanchored placement.
@@ -140,6 +157,52 @@ export function AttachFilesButton({ editorRef }: { editorRef: React.RefObject<HT
 		} catch { setNotice("Could not choose a folder. Try again."); }
 		finally { choosingFolder.current = false; }
 	};
+	const uploadWebFiles = async (files: File[]) => {
+		if (files.length === 0 || uploading) return;
+		const oversized = files.find((file) => file.size > MAX_WEB_ATTACHMENT_BYTES);
+		if (oversized) {
+			setNotice(`"${oversized.name}" exceeds the 15 MB per-file limit.`);
+			return;
+		}
+		if (files.reduce((sum, file) => sum + file.size, 0) > MAX_WEB_REQUEST_BYTES) {
+			setNotice("Selected files exceed the 25 MB upload limit.");
+			return;
+		}
+		setUploading(true);
+		setNotice("");
+		try {
+			const form = new FormData();
+			for (const file of files) form.append("files", file, file.name);
+			const response = await fetch("/api/attachments", { method: "POST", body: form });
+			const payload = (await response.json().catch(() => ({}))) as UploadedAttachmentResponse;
+			if (!response.ok || !Array.isArray(payload.attachments)) {
+				setNotice(payload.error || "Could not upload file. Try again.");
+				return;
+			}
+			const chipPaths: string[] = [];
+			const inlineBlocks: string[] = [];
+			for (const item of payload.attachments) {
+				if (item.inlineText !== undefined) {
+					inlineBlocks.push(`\n[${item.filename}]\n${item.inlineText}\n`);
+				} else {
+					chipPaths.push(item.virtualPath);
+				}
+			}
+			const editor = editorRef.current;
+			if (editor?.isConnected) {
+				if (chipPaths.length > 0) {
+					editor.dispatchEvent(new CustomEvent(INSERT_FILE_PATHS_EVENT, { detail: chipPaths }));
+				}
+				if (inlineBlocks.length > 0) {
+					editor.dispatchEvent(new CustomEvent(INSERT_TEXT_EVENT, { detail: inlineBlocks.join("") }));
+				}
+			}
+		} catch {
+			setNotice("Could not upload file. Check your connection and try again.");
+		} finally {
+			setUploading(false);
+		}
+	};
 	return (
 		<div className="relative shrink-0"
 			onBlur={(event) => { if (isInteractionScopeEligible(popupRef.current ?? buttonRef.current, controller) && !event.currentTarget.contains(event.relatedTarget) && !popupRef.current?.contains(event.relatedTarget)) setOpen(false); }}>
@@ -147,28 +210,40 @@ export function AttachFilesButton({ editorRef }: { editorRef: React.RefObject<HT
 				ref={pickerRef}
 				type="file"
 				multiple
+				accept={desktop ? undefined : WEB_ACCEPT}
 				hidden
 				data-testid="attach-files-input"
 				onChange={(e) => {
-					const resolve = window.lh?.getPathForFile;
-					const { paths } = resolve ? pathsForFiles(Array.from(e.currentTarget.files ?? []), resolve) : { paths: [] };
-					if (paths.length > 0) editorRef.current?.dispatchEvent(new CustomEvent(INSERT_FILE_PATHS_EVENT, { detail: paths }));
+					const picked = Array.from(e.currentTarget.files ?? []);
 					e.currentTarget.value = ""; // allow re-picking the same file
+					if (picked.length === 0) return;
+					if (desktop) {
+						const resolve = window.lh?.getPathForFile;
+						const { paths } = resolve ? pathsForFiles(picked, resolve) : { paths: [] };
+						if (paths.length > 0) editorRef.current?.dispatchEvent(new CustomEvent(INSERT_FILE_PATHS_EVENT, { detail: paths }));
+					} else {
+						void uploadWebFiles(picked);
+					}
 				}}
 			/>
-			<Hint label={desktop ? "Attach files or a folder" : BROWSER_NOTICE}>
+			<Hint label={desktop ? "Attach files or a folder" : "Attach PDF or text files (max 15 MB, kept 7 days)"}>
 				<button
 					ref={buttonRef}
 					type="button"
 					aria-label="Attach files"
-					aria-disabled={!desktop}
-					aria-haspopup="menu"
-					aria-expanded={open}
+					aria-disabled={uploading}
+					aria-haspopup={desktop ? "menu" : undefined}
+					aria-expanded={desktop ? open : undefined}
 					data-testid="attach-files"
-					onClick={() => { if (desktop) { setNotice(""); setOpen(!open); } }}
-					className="flex size-10 shrink-0 items-center justify-center rounded-[10px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground aria-disabled:cursor-default aria-disabled:opacity-40 aria-disabled:hover:bg-transparent aria-disabled:hover:text-muted-foreground"
+					onClick={() => {
+						if (uploading) return;
+						setNotice("");
+						if (desktop) setOpen(!open);
+						else pickerRef.current?.click();
+					}}
+					className="flex size-10 shrink-0 items-center justify-center rounded-none text-muted-foreground transition-colors hover:bg-accent hover:text-foreground aria-disabled:cursor-default aria-disabled:opacity-40 aria-disabled:hover:bg-transparent aria-disabled:hover:text-muted-foreground"
 				>
-					<PaperclipIcon className="size-4" />
+					{uploading ? <Loader2Icon className="size-4 animate-spin" /> : <PaperclipIcon className="size-4" />}
 				</button>
 			</Hint>
 			{(open || notice) && <AttachmentPopup anchorRef={buttonRef} rootRef={popupRef} open={open} close={() => setOpen(false)}><div ref={popupRef} role={open ? "menu" : "status"}
