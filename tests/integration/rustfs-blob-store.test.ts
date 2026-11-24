@@ -7,7 +7,7 @@
  *      the snapshot transparently on getImageSnapshot().
  */
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { after, before, describe, it } from "node:test";
 import { CreateBucketCommand, S3Client } from "@aws-sdk/client-s3";
 import { closePgPool, getPgPool, runMigrations } from "../../src/server/db.ts";
@@ -76,9 +76,10 @@ describe("RustFS S3 BlobStore", () => {
 		const chatStore = createPostgresChatStore(pool, { blobStore, offloadSnapshots: true });
 		const chat = await runAsOwner(OWNER, () => chatStore.createChat("Image Offload Test"));
 		const pngBytes = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+		const snapshotId = createHash("sha256").update(pngBytes).digest("hex");
 
 		await runAsOwner(OWNER, () =>
-			chatStore.saveImageSnapshot(chat.id, "snap_ci_1", {
+			chatStore.saveImageSnapshot(chat.id, snapshotId, {
 				mimeType: "image/png",
 				data: pngBytes.toString("base64"),
 				width: 1,
@@ -89,7 +90,7 @@ describe("RustFS S3 BlobStore", () => {
 		// Confirm Postgres stored blob_key and left inline data NULL.
 		const { rows } = await pool.query<{ data: string | null; blob_key: string | null }>(
 			"SELECT data, blob_key FROM chat_image_snapshots WHERE owner_id = $1 AND chat_id = $2 AND snapshot_id = $3",
-			[OWNER, chat.id, "snap_ci_1"],
+			[OWNER, chat.id, snapshotId],
 		);
 		assert.equal(rows.length, 1);
 		assert.equal(rows[0]!.data, null, "offloaded snapshot should not duplicate base64 inline in Postgres");
@@ -98,7 +99,7 @@ describe("RustFS S3 BlobStore", () => {
 
 		// Reading through chatStore transparently fetches bytes from RustFS.
 		const reloaded = await runAsOwner(OWNER, () => chatStore.getChat(chat.id));
-		const rehydrated = reloaded?.imageSnapshots?.["snap_ci_1"];
+		const rehydrated = reloaded?.imageSnapshots?.[snapshotId];
 		assert.ok(rehydrated);
 		assert.equal(rehydrated.data, pngBytes.toString("base64"));
 		assert.equal(rehydrated.mimeType, "image/png");
