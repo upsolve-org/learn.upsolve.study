@@ -35,7 +35,7 @@ Tick a box only after its check passes.
 - [ ] Verify: `tar tzf learn-data-$STAMP.tar.gz | wc -l` (non-zero) and
       `docker exec -i supabase-db pg_restore -l < supabase-auth-$STAMP.dump | grep -c TABLE` (non-zero).
 - [ ] Baseline counts (keep the output):
-      `docker exec supabase-db psql -U postgres -Atc "select count(*) from auth.users"` (17 on 2026-11-24),
+      `docker exec supabase-db psql -U postgres -Atc "select count(*) from auth.users"` (17 on 2026-11-24; cut over at 00:38 UTC with 24 hosted chats),
       `find /srv/learn/data/hosted -path '*/chats/*.json' | wc -l`.
 
 ### 0.2 Stage the new tree at `/srv/learn-next`
@@ -81,7 +81,15 @@ c.send(new CreateBucketCommand({ Bucket: process.env.S3_BUCKET })).then(() => co
 ### 0.4 Rehearsal (proves the scripts; the data is thrown away)
 
 - [ ] `cd /srv/learn-next && cp -a /srv/learn/data ./data`
-- [ ] `export SOURCE_DATABASE_URL="$(grep '^SUPABASE_DB_URL=' /srv/learn/.env.local | cut -d= -f2-)"`
+- [ ] Point the auth copy straight at the `supabase-db` container (the old
+      `SUPABASE_DB_URL` names a Supavisor tenant that does not exist; the
+      script only SELECTs):
+
+```bash
+IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}' supabase-db | awk '{print $1}')
+PW=$(docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' supabase-db | grep '^POSTGRES_PASSWORD=' | cut -d= -f2-)
+export SOURCE_DATABASE_URL="postgresql://postgres:$(python3 -c 'import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=""))' "$PW")@$IP:5432/postgres"
+```
 - [ ] `$TSX --import tsx scripts/migrate-supabase-auth.ts` → `Verified all 17 source UUIDs …`
 - [ ] `$TSX --import tsx scripts/migrate-fs-to-postgres.ts` → per-owner counts, no `!` rows
 - [ ] `$TSX --import tsx scripts/migrate-blobs-to-rustfs.ts`
@@ -109,6 +117,8 @@ printf '[Service]\nIPAddressDeny=any\nIPAddressAllow=localhost\n' > /etc/systemd
 ## 1. Maintenance window (downtime starts)
 
 - [ ] `systemctl stop learn.service` and confirm `ss -ltnp | grep 8300` is empty.
+      (`next start` ignores SIGINT, so systemd SIGKILLs it after the 20 s
+      `TimeoutStopSec`; `systemctl stop` returns only once it is gone.)
 - [ ] Final data snapshot into the new tree: `cp -a /srv/learn/data /srv/learn-next/data && chown -R learn:learn /srv/learn-next/data`
 - [ ] Final copies into the EMPTY database (same commands as 0.4, from
       `/srv/learn-next`, with `SOURCE_DATABASE_URL` exported): auth →
