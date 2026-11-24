@@ -9,7 +9,7 @@ import type {
 import type { PiEngine } from "./models.ts";
 import { usageWasAdmitted } from "./subscription-request-cycle.ts";
 
-import type { PluginAgentRecordStore } from "../core/ports.ts";
+import { expectSync, type PluginAgentRecordStore } from "../core/ports.ts";
 export type { PluginAgentRecordStore } from "../core/ports.ts";
 export interface PluginAgentServiceDeps {
 	store: PluginAgentRecordStore;
@@ -96,7 +96,7 @@ export function createPluginAgentService(deps: PluginAgentServiceDeps): PluginAg
 		if (disposed) throw new Error("Plugin agent service disposed");
 		if (s.poisoned) throw s.poisoned;
 		const record = clone({ ...next, updatedAt: new Date().toISOString() });
-		try { deps.store.save(record); }
+		try { expectSync(deps.store.save(record), "Plugin agent save"); }
 		catch (error) {
 			s.poisoned = new Error(`Plugin agent persistence failed: ${errorText(error)}`);
 			s.run?.controller.abort();
@@ -109,7 +109,7 @@ export function createPluginAgentService(deps: PluginAgentServiceDeps): PluginAg
 		s.record = record;
 		notify(s);
 	};
-	for (const loaded of deps.store.list()) {
+	for (const loaded of expectSync(deps.store.list(), "Plugin agent list")) {
 		identifier(loaded.id, "session id");
 		identifier(loaded.definitionId, "definition id");
 		if (sessions.has(loaded.id)) throw new Error(`Duplicate plugin agent session: ${loaded.id}`);

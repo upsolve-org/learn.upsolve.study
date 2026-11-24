@@ -15,7 +15,7 @@ import { graphCosts, ownerScoped } from "@/src/server";
 export const dynamic = "force-dynamic";
 
 async function GETHandler() {
-	return Response.json(graphCosts());
+	return Response.json(await graphCosts());
 }
 
 // Tenancy: the body runs inside the caller's owner scope.

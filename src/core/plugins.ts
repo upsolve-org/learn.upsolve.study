@@ -11,6 +11,7 @@ export type { ChatRecord, ChatListItem } from "./contracts/chat.ts";
 export type { ModelCatalogResponse } from "./contracts/models.ts";
 export type { GraphSnapshot, GraphNode, GraphChain, SessionCheckpoint, CoverageEntry, NotesSource, Position } from "./contracts.ts";
 import type { ServerEvent } from "./events.ts";
+import type { MaybePromise } from "./ports.ts";
 import type { PluginAgentService, PluginCallPurpose, PluginModelSpec } from "./plugin-agents.ts";
 import type { PluginBackgroundMeta, PluginBackgroundTool, PluginWorkerService } from "./plugin-workers.ts";
 export type * from "./plugin-workers.ts";
@@ -72,16 +73,16 @@ export interface PluginLearningData {
 	/** Learning-data root, not a credential directory or permission to write core files. */
 	readonly directory: string;
 	/** List saved session summaries with current busy/compacting flags; no model work. */
-	listSessions(): ChatListItem[];
+	listSessions(): MaybePromise<ChatListItem[]>;
 	/** Read a complete saved native session, or null when absent. Invalid IDs throw.
 	 * Transcripts preserve learner answers/thinking not represented by the graph. */
-	getSession(id: string): ChatRecord | null;
+	getSession(id: string): MaybePromise<ChatRecord | null>;
 	/** Read the current graph projection and raw records, without a second query
 	 * language. This is not a complete learner-response transcript. */
-	graph(): GraphSnapshot;
+	graph(): MaybePromise<GraphSnapshot>;
 	/** Read graph ledger/metadata JSON using the host's current file interpretation.
 	 * Host validation/version guards apply; unknown file names throw. */
-	readGraphFile<K extends keyof PluginGraphFileData>(name: K): PluginGraphFileData[K];
+	readGraphFile<K extends keyof PluginGraphFileData>(name: K): MaybePromise<PluginGraphFileData[K]>;
 }
 /** Host owns credentials and transport; plugins configure generation only. */
 export type PluginInferenceOptions = Pick<SimpleStreamOptions,
@@ -137,8 +138,16 @@ export interface PluginBackendContext {
 	readonly manifest: PluginManifest;
 	/** Absolute code directory: app core-plugins/<id> or community plugins/<id>/dist. */
 	readonly directory: string;
-	/** Writable records: core-plugin-data/<id> or community plugins/<id>/data. */
+	/** Writable records: core-plugin-data/<id> or community plugins/<id>/data.
+	 * Resolved ONCE at activation, so it is the UNSCOPED root and is shared by
+	 * every learner. Anything per-learner must go through `ownerDirectory`.
+	 * Kept for host-owned records that are naturally per-activation (tasks). */
 	readonly dataDirectory: string;
+	/** The same directory for the CALLER's owner (tenant), resolved at call
+	 * time. Falls back to the unscoped `dataDirectory` outside any owner
+	 * scope (desktop, plain dev). Any per-learner plugin record (card decks,
+	 * notes, saved files) belongs under this one. */
+	ownerDirectory(pluginId: string): string;
 	/** Aborted when this backend activation ends. Recheck after awaits before
 	 * plugin-owned side effects; abort does not force-stop arbitrary code. */
 	readonly signal: AbortSignal;

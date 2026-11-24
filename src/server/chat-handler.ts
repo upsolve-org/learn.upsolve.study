@@ -12,7 +12,10 @@ import { nativeSubscriptionError } from "../agent/subscription-stream.ts";
 import { chatGPTStreamError } from "../agent/chatgpt-stream.ts";
 import { SubscriptionRequestCycle, type SubscriptionDispatchLifecycle } from "../agent/subscription-request-cycle.ts";
 import { reconstructRequestCause } from "../core/native-messages.ts";
-import { createJobRunner } from "../agent/subagents/runner.ts";
+import type { MaybePromise } from "../core/ports.ts";
+import { createJobRunner, type JobToolInput } from "../agent/subagents/runner.ts";
+import { currentOwnerId } from "../core/owner-scope.ts";
+import { enqueueSubagentJob, isJobQueueActive } from "./pg-queue.ts";
 import { createExtractionPipeline } from "../agent/subagents/extraction.ts";
 import type { ModelRole } from "../../config.ts";
 import {
@@ -32,7 +35,7 @@ import { setFileAccessPolicy } from "../agent/tools/file-access.ts";
 import { fileAccessPolicy } from "./file-access.ts";
 import { collectToolCallIds } from "./pi/call-ids.ts";
 import { providerEventNote } from "../agent/provider-events.ts";
-import { effectiveSettings, stores } from "./stores.ts";
+import { cachedSettings, effectiveSettings, stores } from "./stores.ts";
 import { getPluginAgentContributions, getPluginHost } from "./plugins.ts";
 import { preparePluginQuestionSubmission, reconcilePluginQuestionCompatibility, type QuestionTypeResolver } from "./plugin-questions.ts";
 import { searchAvailable, searchProvider } from "./search.ts";
@@ -51,7 +54,7 @@ import { beginTurn, endTurn, isTurnRunning } from "./turn-liveness.ts";
 import { claimPreparingTurn, type TurnPreparation } from "./turn-preparation.ts";
 import { applyParkedDismissal } from "./dismissal-park.ts";
 import { sideConversationEntries } from "../core/side-chat.ts";
-import { sideChats, type SideChatService } from "./side-chat.ts";
+import { sideChats } from "./side-chat.ts";
 import { SIDE_CONTEXT_BUDGET_ERROR, sideBudgetRetryDrops, sideContextWindow } from "./side-context-budget.ts";
 import { registerTurn, rememberTurnFailure, unregisterTurn } from "./turn-runs.ts";
 import { persistTurn, triggerExtraction, TurnPersistenceError } from "./turn-service.ts";
@@ -75,8 +78,13 @@ import {
 	retryDrops,
 	type TurnInput,
 } from "../core/input-events.ts";
-import { steerDelivered } from "../core/contracts.ts";
+import { steerDelivered, type SideChatThread } from "../core/contracts.ts";
 import type {CallUsage} from "../core/contracts.ts";
+
+/** The side-chat snapshot seam: production returns a promise (its store read
+ *  may be async), injected test doubles may stay synchronous. Every consumer
+ *  awaits it, so both are safe. */
+type SideContext = { snapshot(chatId: string): MaybePromise<SideChatThread[]> };
 
 /**
  * One chat turn over the server-owned native record. Framework-free (plain
@@ -107,7 +115,9 @@ function settlementErrorText(error: unknown): string {
 	return error instanceof TurnPersistenceError ? error.message : "An error occurred.";
 }
 
-const jobRunner = createJobRunner({
+/** Exported for the standalone pg-boss worker (scripts/worker.ts): it runs
+ *  the SAME job loop as an in-process spawn, just inside withOwner(owner). */
+export const jobRunner = createJobRunner({
 	chatStore: stores.chatStore,
 	jobStore: stores.jobStore,
 	deliver: deliverJobResult,
@@ -163,18 +173,41 @@ setTurnRunner(async (chatId, input) => {
  *  the chain (role override → slot → NOTHING) may end empty, and undefined
  *  flows through to the per-need refusal gates (runner/extraction), read
  *  FRESH so a settings PUT between dispatch and spawn lands. */
-function resolveEngine(role: ModelRole): PiEngine | undefined {
-	const spec = resolveRoleSpec(role, stores.settingsStore.readSettings());
+async function resolveEngine(role: ModelRole): Promise<PiEngine | undefined> {
+	const spec = resolveRoleSpec(role, await stores.settingsStore.readSettings());
 	return spec ? piEngineForSpec(spec, true, undefined, retentionForSlot(ROLE_SLOT[role])) : undefined;
 }
 
 /** Slot policy is independent of model overrides. Read fresh per operation,
- * including parked conversations, background loops and compaction. */
+ * including parked conversations, background loops and compaction. The
+ * per-owner cache is populated by effectiveSettings() at every admission;
+ * a sync-only seam never throws even when the adapter is async. */
 function retentionForSlot(slot: ModelSlotName) {
-	return () => stores.settingsStore.readSettings()?.models?.[slot]?.cacheRetention;
+	return () => cachedSettings()?.models?.[slot]?.cacheRetention;
 }
 
-setJobRespawn((jobId) => void jobRunner.runJob(jobId));
+/**
+ * Start one sub-agent job loop. With PostgreSQL storage the durable queue is
+ * active and the standalone worker (scripts/worker.ts) runs it; otherwise —
+ * or if enqueueing fails — it runs in this process exactly as before. The
+ * owner rides the payload so the worker re-enters the same storage scope.
+ */
+export function spawnSubagentJob(jobId: string, input?: JobToolInput): void {
+	if (!isJobQueueActive()) {
+		void jobRunner.runJob(jobId, input);
+		return;
+	}
+	const owner = currentOwnerId();
+	void enqueueSubagentJob({ ...(owner ? { owner } : {}), jobId, ...(input === undefined ? {} : { input }) }).then(
+		(queued) => { if (!queued) void jobRunner.runJob(jobId, input); },
+		(error: unknown) => {
+			console.error(`[job ${jobId}] enqueue failed; running in-process instead:`, error);
+			void jobRunner.runJob(jobId, input);
+		},
+	);
+}
+
+setJobRespawn((jobId) => spawnSubagentJob(jobId));
 // The learner-filesystem policy (file-access wave): every tool registry is
 // built in this composition root, so the seam is installed here — the
 // tools read it fresh per call (allowed folders + the app's private paths).
@@ -184,7 +217,7 @@ setFileAccessPolicy(fileAccessPolicy);
 export async function handleChatRequest(
 	req: Request,
 	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
-	sideContext: Pick<SideChatService, "snapshot"> = sideChats,
+	sideContext: SideContext = sideChats,
 ): Promise<Response> {
 	let body: { chatId?: unknown; input?: unknown };
 	try {
@@ -215,10 +248,10 @@ export async function handleChatInput(
 	chatId: string,
 	input: TurnInput,
 	buildAgent?: (opts: AgentBuildOptions & { teaching: boolean }) => TeachingAgent,
-	sideContext: Pick<SideChatService, "snapshot"> = sideChats,
+	sideContext: SideContext = sideChats,
 ): Promise<Response> {
 	await reconcilePluginQuestionCompatibility(stores.chatStore, chatId);
-	const initialRecord = stores.chatStore.getChat(chatId);
+	const initialRecord = await stores.chatStore.getChat(chatId);
 	if (!initialRecord) {
 		return Response.json({ error: "Unknown chat" }, { status: 404 });
 	}
@@ -284,7 +317,7 @@ export async function handleChatInput(
 	// Placement is deliberate: BEFORE beginTurn (no liveness effects), the
 	// write-ahead persist (nothing durable changes), and every downstream
 	// resolution (jobs/extraction gate per-need on their own tiers).
-	const effective = effectiveSettings();
+	const effective = await effectiveSettings();
 	const conversation = resolveConversationSpec(record.settings, effective.models.strong);
 	if (!conversation) {
 		const envelope = modelsNotConfigured(["strong"]);
@@ -362,11 +395,11 @@ export async function handleChatInput(
 		throw err;
 	}
 	const modelIdForCompaction = `${conversationEngine.model.provider}:${conversationEngine.model.id}`;
-	const contextWindow = catalogContextLimits().get(modelIdForCompaction);
+	const contextWindow = (await catalogContextLimits()).get(modelIdForCompaction);
 	const thresholdTokens = effectiveThresholdTokens(effective.compaction?.thresholdTokens, contextWindow);
 	const systemPromptTokens = Math.ceil(composeInstructions(record.kind === "practice" ? "practice" : "teacher").length / 4);
 	const estimateModel = effective.compaction.includeReasoning ? conversationEngine.model : undefined;
-	const fitsSideContext = (messages: readonly LhMessage[]) => {
+	const fitsSideContext = async (messages: readonly LhMessage[]) => {
 		const live = messages.filter((message) => (message as { role: string }).role !== "system");
 		// Hard admission is not the compaction trigger. CLI capacity comes from
 		// this request's latest matching session report, never catalog placeholders.
@@ -374,7 +407,7 @@ export async function handleChatInput(
 		// Retry's transient SDK prefix omits ALL tail failures. Keep the saved
 		// history in the metadata-only view so omission cannot revive a report
 		// invalidated by a genuine provider failure. New live responses win.
-		const saved = conversation.provider === CLAUDE_CODE_PROVIDER ? stores.chatStore.getChat(chatId)?.messages ?? [] : [];
+		const saved = conversation.provider === CLAUDE_CODE_PROVIDER ? (await stores.chatStore.getChat(chatId))?.messages ?? [] : [];
 		const savedIds = new Set(saved.map((message) => message.id));
 		const reportHistory = saved.length ? [...saved, ...live.filter((message) => !savedIds.has(message.id))] : live;
 		const window = sideContextWindow(reportHistory, conversationEngine.model, contextWindow, input.type === "retry");
@@ -383,6 +416,9 @@ export async function handleChatInput(
 	};
 	const sideBudgetError = () => new Error(SIDE_CONTEXT_BUDGET_ERROR);
 	const beforeCompaction = record.messages;
+	// projectMessages is a synchronous seam — capture the side-thread snapshot
+	// here in the async turn so the projection can read it without awaiting.
+	const projectedSideChats = await sideContext.snapshot(chatId);
 	await ensureCompacted(
 		{
 			chatStore: stores.chatStore,
@@ -408,13 +444,13 @@ export async function handleChatInput(
 							requirePluginProblemTarget(current, input);
 							if (hasUnresolvedQuestion(current.messages)) return current.messages;
 						}
-						const updates = sideConversationEntries({ messages: current.messages, sideChats: sideContext.snapshot(chatId) });
+						const updates = sideConversationEntries({ messages: current.messages, sideChats: projectedSideChats });
 						return updates.length ? [...current.messages, ...updates] : current.messages;
 					}
 					const next = input.type === "steers" ? input.steers.filter((entry) => !steerDelivered(current.messages, entry.id)) : inputAppends(current, input);
 					const after = [...current.messages, ...next];
 					if (hasUnresolvedQuestion(after)) return current.messages;
-					const updates = sideConversationEntries({ messages: current.messages, sideChats: sideContext.snapshot(chatId) }, after);
+					const updates = sideConversationEntries({ messages: current.messages, sideChats: projectedSideChats }, after);
 					if (!updates.length) return current.messages;
 					const projected = [...current.messages, ...(input.type === "answer" || input.type === "retry-question" ? [...next, ...updates] : [...updates, ...next])];
 					const omitted = input.type === "retry" ? retryDrops(current.messages) : new Set<string>();
@@ -435,19 +471,19 @@ export async function handleChatInput(
 			console.error("[plugins] Agent contributions unavailable:", error);
 		}
 	}
-	const compactedRecord = stores.chatStore.getChat(chatId);
+	const compactedRecord = await stores.chatStore.getChat(chatId);
 	if (!compactedRecord) return Response.json({ error: "Unknown chat" }, { status: 404 });
 	record = compactedRecord;
 	// Final admission seam: every image/preflight await is over. Resolve via
 	// the SAME conversation chain, never a parallel role catalog. No await
 	// may intervene before the save-only write or beginTurn/write below.
 	const staleSubmission = () => Response.json({ code: "submission-stale", error: "The submission target or selected model changed. Your input has been kept." }, { status: 412 });
-	const submissionIsCurrent = (checkModel = true) => {
+	const submissionIsCurrent = async (checkModel = true): Promise<boolean> => {
 		if (!freshSubmission) return true;
 		if (record.createdAt !== capturedSession.createdAt || record.kind !== capturedSession.kind) return false;
 		try {
 			if (checkModel) {
-				const spec = resolveConversationSpec(record.settings, effectiveSettings().models.strong);
+				const spec = resolveConversationSpec(record.settings, (await effectiveSettings()).models.strong);
 				if (!spec || JSON.stringify(spec) !== capturedConversation) return false;
 				const checked = piEngineForSpec(spec, () => callPurpose.background, lifecycle, retentionForSlot("strong"));
 				if (submissionImagePolicyKey(checked) !== capturedPolicy || checked.level !== conversationEngine.level) return false;
@@ -462,7 +498,7 @@ export async function handleChatInput(
 		} catch { return false; }
 		return true;
 	};
-	if (!submissionIsCurrent()) return staleSubmission();
+	if (!(await submissionIsCurrent())) return staleSubmission();
 	// Recompute Retry eligibility on current truth, still before beginTurn.
 	// A compaction marker or another writer may have landed during awaits.
 	// These omissions affect ONLY the agent context, never the saved record.
@@ -516,12 +552,12 @@ export async function handleChatInput(
 				turnClaimed = true;
 				const outcome = await work(preparation.signal);
 				// No captured history may be written after asynchronous plugin processing.
-				const current = stores.chatStore.getChat(chatId);
+				const current = await stores.chatStore.getChat(chatId);
 				if (!current || !preparation.isCurrent()) return staleSubmission();
 				record = current;
 				// Admission pins this submission's model/provider. Later picker
 				// changes apply to the next request, not to this accepted work.
-				if (!submissionIsCurrent(false)) return staleSubmission();
+				if (!(await submissionIsCurrent(false))) return staleSubmission();
 				preparation.signal.throwIfAborted();
 				appends = submission.finish({ id: chatId, kind: record.kind, messages: record.messages }, outcome);
 			} else appends = submission.finish({ id: chatId, kind: record.kind, messages: record.messages });
@@ -547,7 +583,7 @@ export async function handleChatInput(
 	// the composer gates), so adjacency holds by construction.
 	if ((input.type === "answer" || input.type === "plugin-question-answer") && hasUnresolvedQuestion([...record.messages, ...appends])) {
 		const merged = [...record.messages, ...appends];
-		try { stores.chatStore.saveMessages(chatId, merged); inputSaved = true; }
+		try { await stores.chatStore.saveMessages(chatId, merged); inputSaved = true; }
 		catch (err) {
 			console.error(`[chat ${chatId}] write-ahead persist failed:`, err);
 			return new Response("Your input could not be saved. Please try again.", { status: 500 });
@@ -575,14 +611,14 @@ export async function handleChatInput(
 	// Prospectively check new exchanges from ALL threads for early automatic
 	// refusal. This snapshot does not authorize the final assembled request;
 	// SDK preparation re-collects live text and validates queued steering too.
-	const sideContextSnapshots = sideContext.snapshot(chatId);
+	const sideContextSnapshots = await sideContext.snapshot(chatId);
 	const afterInput = [...record.messages, ...appends];
 	const sideQuestions = hasUnresolvedQuestion(afterInput) ? [] : sideConversationEntries({
 		messages: record.messages, sideChats: sideContextSnapshots,
 	}, afterInput);
 	const withSideQuestions = input.type === "answer" || input.type === "retry-question" || input.type === "plugin-question-answer" ? [...appends, ...sideQuestions] : [...sideQuestions, ...appends];
 	const prospective = [...record.messages, ...withSideQuestions].filter((message) => !retryOmissions.has(message.id));
-	const sideContextBlocked = sideQuestions.length > 0 && !fitsSideContext(prospective);
+	const sideContextBlocked = sideQuestions.length > 0 && !(await fitsSideContext(prospective));
 	// An automatic batch has not been admitted; refuse it without persisting
 	// its markers. Its existing caller retains/restores the queued work.
 	if (sideContextBlocked && isSubscriptionProvider(conversation.provider) && input.type === "steers") {
@@ -602,7 +638,7 @@ export async function handleChatInput(
 	let persistBaseCount = stagedAutomatic ? record.messages.length : agentMessages.length;
 	try {
 		if (!stagedAutomatic) {
-			stores.chatStore.saveMessages(chatId, merged);
+			await stores.chatStore.saveMessages(chatId, merged);
 			inputSaved = true;
 		}
 	} catch (err) {
@@ -665,7 +701,12 @@ export async function handleChatInput(
 		purpose: callPurpose,
 		scopeCurrent: (scope) => connectionScopeCurrent(conversation.provider, scope),
 		commitStaged: () => {
-			stores.chatStore.saveMessages(chatId, merged);
+			// beforeDispatch is a synchronous seam: an async backend cannot be
+			// awaited here. Fire the durable save and observe its failure — the
+			// bookkeeping stays synchronous so dispatch ordering is unchanged.
+			void Promise.resolve(stores.chatStore.saveMessages(chatId, merged)).catch((error: unknown) => {
+				console.error(`[chat ${chatId}] staged commit save failed:`, error);
+			});
 			persistBaseCount = merged.length;
 			noteSteersDurable(chatId, merged);
 		},
@@ -678,12 +719,12 @@ export async function handleChatInput(
 		callPurpose,
 		requestCycle,
 		messages: asAgentMessages(agentMessages),
-		validateContext: (messages) => {
+		validateContext: async (messages) => {
 			// This is the SDK's ACTUAL request, after both prepared references
 			// and already-drained steering have joined it. A pre-queue estimate
 			// cannot authorize this combined payload.
 			preparedSideIds = new Set(messages.map((message) => (message as LhMessage).id).filter((id) => tentativeSideIds.has(id)));
-			if (pendingSideBudgetError || (preparedSideIds.size > 0 && !fitsSideContext(messages as readonly LhMessage[]))) {
+			if (pendingSideBudgetError || (preparedSideIds.size > 0 && !(await fitsSideContext(messages as readonly LhMessage[])))) {
 				pendingSideBudgetError = sideBudgetError();
 				const rejected = new Set([...tentativeSideIds].filter((id) => !admittedSideIds.has(id)));
 				// Only unadmitted reference entries are withdrawn from transient
@@ -694,9 +735,9 @@ export async function handleChatInput(
 			}
 			if (!requestCycle) admitSideContext(); // BYOK has no subscription admission gate
 		},
-		contextUpdates: (messages) => {
+		contextUpdates: async (messages) => {
 			pendingSideBudgetError = undefined;
-			const current = stores.chatStore.getChat(chatId);
+			const current = await stores.chatStore.getChat(chatId);
 			if (!current) return [];
 			const saved = new Set(current.messages.map((message) => message.id));
 			// Only unsaved null-detail SDK acknowledgements are placeholders;
@@ -708,8 +749,8 @@ export async function handleChatInput(
 			// suffixes twice. Full disk history keeps the pre-compaction ledger.
 			const pending = live.filter((message) => message.role === "custom" && message.customType === "side-question" && !saved.has(message.id));
 			const history = [...current.messages, ...pending];
-			const updates = sideConversationEntries({ messages: history, sideChats: sideContext.snapshot(chatId) });
-			if (updates.length && !fitsSideContext([...live, ...updates])) {
+			const updates = sideConversationEntries({ messages: history, sideChats: await sideContext.snapshot(chatId) });
+			if (updates.length && !(await fitsSideContext([...live, ...updates]))) {
 				pendingSideBudgetError = sideBudgetError();
 				return []; // no delivery watermark for exchanges the model cannot receive
 			}
@@ -726,6 +767,14 @@ export async function handleChatInput(
 		// prompt fresh per turn, swapping in any enabled override segments.
 		promptSwitches: effective.agent.prompts,
 	};
+	// Practice tools run behind synchronous seams (gate seeding at agent
+	// construction, pi's prepareArguments, the atomic admission gate). An
+	// async store adapter cannot be awaited there, so capture the whole-graph
+	// nodes here in the async turn and pass synchronous readers below. The
+	// record is already the turn's freshly loaded truth.
+	const practiceGraphNodes = record.kind === "practice" && !buildAgent
+		? await stores.graphStore.readNodes()
+		: undefined;
 	// PRACTICE BRANCH (owner design, 2026-10-04): a kind:"practice"
 	// session builds the practitioner from turn 1 — no prober→teacher
 	// split, no plan/question/job tools; the whole registry is
@@ -737,12 +786,13 @@ export async function handleChatInput(
 			? createPracticeAgent(
 					{
 						chatId,
-						chatStore: stores.chatStore,
-						// TARGET VALIDATION (owner round 9): the practice tools read the
-						// WHOLE graph fresh per pose — targets validate against every
-						// proposition, not just the session's picks (pickless sessions
-						// and future graph-tools poses stay valid).
-						graphNodes: () => stores.graphStore.readNodes(),
+						// The gate seeds from the turn's already-loaded record; the
+						// tools' sync seams never touch an async adapter directly.
+						chatStore: { getChat: () => record },
+						// TARGET VALIDATION (owner round 9): targets validate against
+						// EVERY proposition, not just the session's picks. The nodes
+						// are read fresh once per turn above (the pose seam is sync).
+						graphNodes: practiceGraphNodes ? () => practiceGraphNodes : undefined,
 						// THE RARELY-NEEDED SET (owner round 10): research + pdf jobs
 						// (same runner/gating as the teacher's — research honestly
 						// absent when no engine is live) and the map readers behind
@@ -750,7 +800,7 @@ export async function handleChatInput(
 						jobs: {
 							chatId,
 							jobStore: stores.jobStore,
-							spawn: (job, input) => void jobRunner.runJob(job.id, input),
+							spawn: (job, input) => spawnSubagentJob(job.id, input),
 							searchAvailable,
 						},
 						...(graphToolsEnabled(effective) ? { graph: { chatStore: stores.chatStore, graphStore: stores.graphStore } } : {}),
@@ -763,7 +813,7 @@ export async function handleChatInput(
 						chatId,
 						chatStore: stores.chatStore,
 						jobStore: stores.jobStore,
-						spawn: (job, input) => void jobRunner.runJob(job.id, input),
+						spawn: (job, input) => spawnSubagentJob(job.id, input),
 						// The registry drop's signal (2026-09-20): no live engine
 						// = no research tool in the teacher's registry.
 						searchAvailable,
@@ -779,7 +829,7 @@ export async function handleChatInput(
 						// dispatch (owner ruling — phase-omnipresent), so its ctx
 						// needs the same job wiring as the teacher's.
 						jobStore: stores.jobStore,
-						spawn: (job, input) => void jobRunner.runJob(job.id, input),
+						spawn: (job, input) => spawnSubagentJob(job.id, input),
 						searchAvailable,
 						// The map reader (wave 7): the prober reads the learner's
 						// knowledge graph through tools when the gate opens —
@@ -812,14 +862,25 @@ export async function handleChatInput(
 		// JSONL event stream with the record's turns; no-op unless
 		// LH_PROVIDER_EVENTS=1.
 		providerEventNote(chatId, "turn", `run start (base: ${agentMessages.length} messages)`);
+		// Pre-load cycle-0 side-context steers before runPiTurn so agent.continue()
+		// begins synchronously on the first cycle (preserving immediate abortTurn()
+		// semantics even when chatStore/sideContext are async).
+		for (const message of await agentOpts.contextUpdates!(constructed.state.messages)) constructed.steer(message);
+		let firstCycle = true;
 		const handle = runPiTurn({
 			agent: constructed,
 			requestCycle,
 			// The next-turn SDK hook covers internal calls. The steering poll
-			// supplies the same fresh cargo on the first/recovery call, with
-			// normal lifecycle events and no extra provider request.
+			// supplies the same fresh cargo on recovery cycles, with normal
+			// lifecycle events and no extra provider request.
 			beforeCycle: () => {
-				for (const message of agentOpts.contextUpdates!(constructed.state.messages)) constructed.steer(message);
+				if (firstCycle) {
+					firstCycle = false;
+					return;
+				}
+				return (async () => {
+					for (const message of await agentOpts.contextUpdates!(constructed.state.messages)) constructed.steer(message);
+				})();
 			},
 			// The coalescing window seam (COMPACTION LAW, 2026-10-09): tests
 			// tighten it via LH_UPDATE_FLUSH_MS; production rides the 100ms
@@ -842,36 +903,36 @@ export async function handleChatInput(
 				return "An error occurred.";
 			},
 			onSettleError: settlementErrorText,
-			onSettleFailure: (error, reportedErrorText) => {
+			onSettleFailure: async (error, reportedErrorText) => {
 				if (preparation && !preparation.isCurrent()) return;
 				// POST only acknowledges acceptance; the submitter may attach
 				// after this turn has already failed and left the registry.
 				rememberTurnFailure(chatId, reportedErrorText ?? settlementErrorText(error));
-				try { applyParkedDismissal(stores.chatStore, chatId); }
+				try { await applyParkedDismissal(stores.chatStore, chatId); }
 				catch (dismissalError) { console.error(`[chat ${chatId}] parked dismissal failed:`, dismissalError); }
 				finally { releaseOwnership(); unregisterLiveAgent(chatId); }
 				// The canonical save may have succeeded before later bookkeeping
 				// threw. Reconcile against actual durability, never replay input
 				// merely because usage/extraction/other settlement work failed.
-				const persisted = stores.chatStore.getChat(chatId)?.messages ?? [];
+				const persisted = (await stores.chatStore.getChat(chatId))?.messages ?? [];
 				reconcileUserSteers(chatId, persisted);
 				settleSteers(chatId, persisted, true, constructed);
 			},
-			onFinish: (turnMessages, isAborted) => {
+			onFinish: async (turnMessages, isAborted): Promise<void> => {
 				if (preparation && !preparation.isCurrent()) return;
 				// Wave B: append only messages past the temporary agent prefix.
 				// Retry's saved record still includes its earlier failed attempts.
 				// Unadmitted reference entries cannot become delivery watermarks
 				// merely because a local/provider refusal settled the running turn.
 				const admittedMessages = turnMessages.filter((message) => !tentativeSideIds.has((message as LhMessage).id) || admittedSideIds.has((message as LhMessage).id));
-				const stamped = persistTurn(stores.chatStore, chatId, persistBaseCount, admittedMessages, isAborted);
-				noteSteersDurable(chatId, stores.chatStore.getChat(chatId)?.messages ?? stamped);
+				const stamped = await persistTurn(stores.chatStore, chatId, persistBaseCount, admittedMessages, isAborted);
+				noteSteersDurable(chatId, (await stores.chatStore.getChat(chatId))?.messages ?? stamped);
 				// usage log append (idempotent per turn id) — the stats bar
 				// refolds this on the client after the turn settles. The
 				// provenance message is the turn's FIRST new assistant message.
 				const response = stamped.find((m) => (m as { role?: string }).role === "assistant");
 				if (response && steps.length > 0) {
-					stores.chatStore.appendTurnUsage(chatId, {
+					await stores.chatStore.appendTurnUsage(chatId, {
 						id: turnUsageId,
 						messageId: response.id,
 						at: new Date().toISOString(),
@@ -888,7 +949,7 @@ export async function handleChatInput(
 					// Fresh per-turn read of the graph section's chunk budget
 					// (extraction-UX redesign, 2026-09-24): the trigger compares
 					// against it and the pipeline's batches share it.
-					triggerExtraction(stores, extraction, chatId, effective.graph.extractionChunkTokens);
+					await triggerExtraction(stores, extraction, chatId, effective.graph.extractionChunkTokens);
 				}
 				// PARKED DISMISSAL (owner, 2026-10-04): a dismissal that arrived
 				// mid-turn was parked by the dismiss route (202); now that
@@ -896,7 +957,7 @@ export async function handleChatInput(
 				// real truth — BEFORE endTurn, so "turn-settled" guarantees a
 				// subsequent fetch reads the dismissal already in the record
 				// (the same ordering law as persistTurn itself).
-				applyParkedDismissal(stores.chatStore, chatId);
+				await applyParkedDismissal(stores.chatStore, chatId);
 				// Any helper activity after the last model call stays pending;
 				// settlement never injects it behind the agent's context.
 				// LAST: a poller that sees not-in-flight must read an already-persisted
@@ -923,14 +984,14 @@ export async function handleChatInput(
 				// tests (the extraction precedent — scripted chats are
 				// fixtures; the service itself is pinned directly).
 				if (process.env.NODE_ENV !== "test" && !pendingSideBudgetError && (!requestCycle || requestCycle.dispatched))
-					kickCompaction(() => {
-						const fresh = effectiveSettings();
-						const spec = resolveConversationSpec(stores.chatStore.getChat(chatId)?.settings, fresh.models.strong);
+					kickCompaction(async () => {
+						const fresh = await effectiveSettings();
+						const spec = resolveConversationSpec((await stores.chatStore.getChat(chatId))?.settings, fresh.models.strong);
 						if (!spec || !connectionBackgroundAllowed(spec.provider)) return null;
 						let kickEngine: PiEngine;
 						try { kickEngine = piEngineForSpec(spec, true, undefined, retentionForSlot("strong")); } catch { return null; }
 						const kickModelId = `${kickEngine.model.provider}:${kickEngine.model.id}`;
-						const freshRecord = stores.chatStore.getChat(chatId);
+						const freshRecord = await stores.chatStore.getChat(chatId);
 						if (!freshRecord) return null;
 						return {
 							chatStore: stores.chatStore,
@@ -941,7 +1002,7 @@ export async function handleChatInput(
 							includeReasoning: fresh.compaction.includeReasoning,
 							thresholdTokens: effectiveThresholdTokens(
 								fresh.compaction?.thresholdTokens,
-								catalogContextLimits().get(kickModelId),
+								(await catalogContextLimits()).get(kickModelId),
 							),
 							systemPromptTokens: Math.ceil(composeInstructions(freshRecord.kind === "practice" ? "practice" : "teacher").length / 4),
 						};
@@ -996,7 +1057,7 @@ export async function handleChatInput(
 	} finally {
 		if (turnClaimed && !handedOff) {
 			try {
-				if (!preparation || preparation.isCurrent()) applyParkedDismissal(stores.chatStore, chatId);
+				if (!preparation || preparation.isCurrent()) await applyParkedDismissal(stores.chatStore, chatId);
 			} catch (err) { console.error(`[chat ${chatId}] parked dismissal failed:`, err); }
 			finally {
 				if (!preparation || preparation.isCurrent()) unregisterLiveAgent(chatId);

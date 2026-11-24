@@ -52,7 +52,7 @@ exports.activate = async ctx => {
         parameters: { type: 'object', properties: { body: { type: 'string' } }, required: ['body'], additionalProperties: false },
         execute: async (_callId, input, signal) => {
           if (signal.aborted || ctx.signal.aborted) throw new Error('Fixture publication cancelled');
-          const artifact = { body: input.body, sourceTitles: ctx.learning.listSessions().map(session => session.title) };
+          const artifact = { body: input.body, sourceTitles: (await ctx.learning.listSessions()).map(session => session.title) };
           fs.writeFileSync(path.join(ctx.dataDirectory, 'publication.json'), JSON.stringify(artifact));
           fs.appendFileSync(path.join(ctx.dataDirectory, 'publications.jsonl'), JSON.stringify(artifact) + '\\n');
           ctx.events.emit('published', { filename: 'publication.json' });
@@ -64,9 +64,9 @@ exports.activate = async ctx => {
     if (event.type === 'record-changed') ctx.events.emit('learning-notice', { chatId: event.chatId });
   });
   ctx.handle('native', () => ({ filename: __filename, directory: __dirname, identity, activations, pluginId: ctx.manifest.id }));
-  ctx.handle('learning', () => ({
-    sessions: ctx.learning.listSessions(), session: ctx.learning.getSession('learning_fixture'),
-    graphFormat: ctx.learning.readGraphFile('format.json'), propositionCount: ctx.learning.graph().propositions.length
+  ctx.handle('learning', async () => ({
+    sessions: await ctx.learning.listSessions(), session: await ctx.learning.getSession('learning_fixture'),
+    graphFormat: await ctx.learning.readGraphFile('format.json'), propositionCount: (await ctx.learning.graph()).propositions.length
   }));
   ctx.handle('create', () => { const snapshot = ctx.agents.create('integration-agent'); observe(snapshot.id); return snapshot; });
   ctx.handle('get', input => ctx.agents.get(input.id));

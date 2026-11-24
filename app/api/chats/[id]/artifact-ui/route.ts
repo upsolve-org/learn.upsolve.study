@@ -14,7 +14,7 @@ import { getChat, stores, ownerScoped } from "@/src/server";
 
 async function POSTHandler(req: Request, ctx: { params: Promise<{ id: string }> }): Promise<Response> {
 	const { id } = await ctx.params;
-	const chat = getChat(id);
+	const chat = await getChat(id);
 	if (!chat) return Response.json({ error: "Unknown chat" }, { status: 404 });
 
 	const body = (await req.json().catch(() => null)) as { input?: unknown } | null;
@@ -36,7 +36,7 @@ async function POSTHandler(req: Request, ctx: { params: Promise<{ id: string }> 
 	}
 
 	const messages = setSteerUiInverted(chat.messages, input.messageId, input.inverted);
-	stores.chatStore.saveMessages(id, messages);
+	await stores.chatStore.saveMessages(id, messages);
 	return Response.json({ ok: true });
 }
 

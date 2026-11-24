@@ -33,7 +33,8 @@ import {
 	type ReactNode,
 	type RefObject,
 } from "react";
-import { BotIcon, KeyIcon, KeyboardIcon, PaletteIcon, PlugIcon, PuzzleIcon, SettingsIcon, WaypointsIcon, type LucideIcon } from "lucide-react";
+import { useFormStatus } from "react-dom";
+import { BotIcon, KeyIcon, KeyboardIcon, LogOutIcon, PaletteIcon, PlugIcon, PuzzleIcon, SettingsIcon, WaypointsIcon, type LucideIcon } from "lucide-react";
 import { HostDialog } from "@/components/host-dialog";
 import { useInteractionLayers, type CloseOutcome } from "@/components/interaction-layers";
 import {
@@ -95,8 +96,10 @@ const WriteOrderContext = createContext<RefObject<SettingsWriteOrder> | null>(nu
  *  setup flow deep-links to Keys when no provider key exists yet). */
 export function SettingsDialogProvider({
 	children,
+	logoutAction,
 }: {
 	children: React.ReactNode;
+	logoutAction?: () => Promise<void>;
 }) {
 	const interactions = useInteractionLayers();
 	const layerId = useId();
@@ -129,7 +132,7 @@ export function SettingsDialogProvider({
 		<ChatGPTUIProvider><NativeSubscriptionUIProvider><WriteOrderContext.Provider value={writeOrder}><DialogContext.Provider value={{ open }}>
 			{children}
 			{show && (
-				<SettingsDialog onClose={close} initialSection={landOn} initialRow={landOnRow} navigationRequest={navigationRequest} layerId={layerId} />
+				<SettingsDialog onClose={close} initialSection={landOn} initialRow={landOnRow} navigationRequest={navigationRequest} layerId={layerId} logoutAction={logoutAction} />
 			)}
 		</DialogContext.Provider></WriteOrderContext.Provider></NativeSubscriptionUIProvider></ChatGPTUIProvider>
 	);
@@ -145,18 +148,20 @@ function SettingsDialog({
 	initialRow,
 	navigationRequest,
 	layerId,
+	logoutAction,
 }: {
 	onClose: () => CloseOutcome;
 	initialSection: SectionId;
 	navigationRequest: number;
 	layerId: string;
+	logoutAction?: () => Promise<void>;
 	/** The keys-section row to unfold (see DialogContext above). */
 	initialRow: string | null;
 }) {
 	// Keep the original visual frame and plain dim backdrop. The shared
 	// untransformed boundary also contains this modal's portaled menus.
 	return <SettingsDialogBody onClose={onClose} initialSection={initialSection}
-		initialRow={initialRow} navigationRequest={navigationRequest}
+		initialRow={initialRow} navigationRequest={navigationRequest} logoutAction={logoutAction}
 		renderFrame={frame => <HostDialog open layerId={layerId} ownerId={null}
 			onClose={onClose} frame={frame} aria-label="Settings"
 			backdropProps={{
@@ -173,8 +178,10 @@ export function SettingsDialogBody({
 	initialRow = null,
 	navigationRequest = 0,
 	renderFrame,
+	logoutAction,
 }: {
 	onClose: () => void;
+	logoutAction?: () => Promise<void>;
 	/** The runtime supplies the shared modal shell; standalone SSR retains the frame. */
 	renderFrame?: (frame: ReactElement<{ children: ReactNode }>) => ReactNode;
 	initialSection?: SectionId;
@@ -407,6 +414,11 @@ export function SettingsDialogBody({
 							{s.id === "plugins" && <hr className="my-2 border-border" />}
 						</div>
 					))}
+					{logoutAction && (
+						<form action={logoutAction} className="mt-auto shrink-0 border-t border-border pt-2">
+							<LogoutButton />
+						</form>
+					)}
 				</nav>
 
 				{/* Content column — one section at a time, this scrolls — and
@@ -542,5 +554,16 @@ function GeneralSection() {
 				<span>Version unknown</span>
 			)}
 		</div>
+	);
+}
+
+function LogoutButton() {
+	const { pending } = useFormStatus();
+	return (
+		<button type="submit" disabled={pending} data-testid="settings-logout"
+			className="flex w-full items-center gap-2 rounded-none border-l-2 border-l-transparent px-3 py-1.5 text-left font-ui text-xs uppercase tracking-[0.06em] text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground disabled:opacity-50">
+			<LogOutIcon aria-hidden="true" focusable="false" className="size-3.5 shrink-0" />
+			{pending ? "Logging out…" : "Log out"}
+		</button>
 	);
 }

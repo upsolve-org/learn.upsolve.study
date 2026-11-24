@@ -47,7 +47,7 @@ import {
 } from "../core/index.ts";
 import { emit } from "../core/events.ts";
 import { currentOwnerId } from "../core/owner-scope.ts";
-import type { ChatStore } from "../core/ports.ts";
+import type { ChatStore, MaybePromise } from "../core/ports.ts";
 import type { PiEngine } from "../agent/models.ts";
 import { runSubagent } from "../agent/subagents/pi-run.ts";
 import { isTurnRunning } from "./turn-liveness.ts";
@@ -197,7 +197,7 @@ async function compact(deps: CompactionDeps, chatId: string): Promise<void> {
 	// There is no await between this check and starting the summary; an
 	// already-running compaction is still awaited by every preflight.
 	if (isTurnRunning(chatId)) return;
-	const record = deps.chatStore.getChat(chatId);
+	const record = await deps.chatStore.getChat(chatId);
 	if (!record) return;
 	const messages = record.messages;
 	const model = deps.includeReasoning ? deps.engine.model : undefined;
@@ -265,14 +265,14 @@ async function compact(deps: CompactionDeps, chatId: string): Promise<void> {
 		// Re-read: the learner may skip or toggle while the summary runs.
 		// The marker goes where the summarized chat ended, so the result
 		// matches compacting first and acting after (#518).
-		const current = deps.chatStore.getChat(chatId);
+		const current = await deps.chatStore.getChat(chatId);
 		if (!current) throw new Error(`Chat not found: ${chatId}`);
 		const end = messages.length;
-		deps.chatStore.saveMessages(chatId, [...current.messages.slice(0, end), marker, ...current.messages.slice(end)]);
+		await deps.chatStore.saveMessages(chatId, [...current.messages.slice(0, end), marker, ...current.messages.slice(end)]);
 		// The money channel: the summary is a real model call on the
 		// session's own engine — its usage keys to the marker (provenance:
 		// the transcript shows the compaction divider at the marker).
-		deps.chatStore.appendTurnUsage(chatId, {
+		await deps.chatStore.appendTurnUsage(chatId, {
 			id: crypto.randomUUID(),
 			messageId: marker.id,
 			at: details.at,
@@ -322,7 +322,7 @@ export async function ensureCompacted(deps: CompactionDeps, chatId: string): Pro
 		return;
 	}
 	if (deps.canStart?.() === false) return;
-	const record = deps.chatStore.getChat(chatId);
+	const record = await deps.chatStore.getChat(chatId);
 	if (!record) return;
 	const model = deps.includeReasoning ? deps.engine.model : undefined;
 	if (projectedContextTokens(deps.projectMessages?.(record) ?? record.messages, deps.systemPromptTokens, model) <= deps.thresholdTokens) return;
@@ -348,16 +348,19 @@ export async function ensureCompacted(deps: CompactionDeps, chatId: string): Pro
  * are silent no-ops. The next turn's ensureCompacted gate picks up
  * whatever this leaves running.
  */
-export function kickCompaction(buildDeps: () => CompactionDeps | null, chatId: string): void {
-	if (state().inFlight.has(key(chatId))) return;
-	const deps = buildDeps();
-	if (!deps || deps.canStart?.() === false) return;
-	const record = deps.chatStore.getChat(chatId);
-	if (!record) return;
-	if (projectedContextTokens(record.messages, deps.systemPromptTokens, deps.includeReasoning ? deps.engine.model : undefined) <= deps.thresholdTokens) return;
-	const run = compact(deps, chatId);
-	state().inFlight.set(key(chatId), run);
+export function kickCompaction(buildDeps: () => MaybePromise<CompactionDeps | null>, chatId: string): void {
+	const k = key(chatId);
+	if (state().inFlight.has(k)) return;
+	const run = (async () => {
+		const deps = await buildDeps();
+		if (!deps || deps.canStart?.() === false) return;
+		const record = await deps.chatStore.getChat(chatId);
+		if (!record) return;
+		if (projectedContextTokens(record.messages, deps.systemPromptTokens, deps.includeReasoning ? deps.engine.model : undefined) <= deps.thresholdTokens) return;
+		await compact(deps, chatId);
+	})();
+	state().inFlight.set(k, run);
 	void run.finally(() => {
-		if (state().inFlight.get(key(chatId)) === run) state().inFlight.delete(key(chatId));
+		if (state().inFlight.get(k) === run) state().inFlight.delete(k);
 	});
 }

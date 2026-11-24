@@ -47,9 +47,9 @@
  * conversations and organizational placement remain caller-owned; this
  * module rewrites graph ledgers only.
  *
- * Resurrection safety: the deletion runs as ONE synchronous block (no
- * awaits — atomic vs the event loop, so no extraction append can
- * interleave), and the extraction pipeline re-checks the chat record
+ * Resurrection safety: the deletion is ONE logical operation over the
+ * ledgers (awaits sit only at the port seam; each store rewrite is itself
+ * atomic), and the extraction pipeline re-checks the chat record
  * before each batch's merge (a deleted chat never merges). Both seams
  * together close every corrupt/resurrect path.
  */
@@ -88,17 +88,16 @@ const EMPTY_STATS: ChatDeletionStats = {
 };
 
 /**
- * Remove one chat's traces from the graph ledgers. Synchronous by design
- * (the atomicity argument above); idempotent (a second run finds nothing
- * and returns zero stats).
+ * Remove one chat's traces from the graph ledgers. Idempotent (a second
+ * run finds nothing and returns zero stats).
  */
-export function deleteChatTraces(graphStore: GraphStore, chatId: string, mode: ChatDeleteMode): ChatDeletionStats {
-	return deleteSourcesTraces(graphStore, new Set([chatId]), mode);
+export async function deleteChatTraces(graphStore: GraphStore, chatId: string, mode: ChatDeleteMode): Promise<ChatDeletionStats> {
+	return await deleteSourcesTraces(graphStore, new Set([chatId]), mode);
 }
 
 /** The same provenance rules for a selected batch, with one ledger rewrite
  * rather than reparsing/rewriting the whole graph once per imported file. */
-export function deleteSourcesTraces(graphStore: GraphStore, sourceIds: ReadonlySet<string>, mode: ChatDeleteMode): ChatDeletionStats {
+export async function deleteSourcesTraces(graphStore: GraphStore, sourceIds: ReadonlySet<string>, mode: ChatDeleteMode): Promise<ChatDeletionStats> {
 	if (mode !== "preserve-graph" && mode !== "delete-nodes") {
 		throw new Error(`Unknown deletion mode: ${mode as string}`);
 	}
@@ -107,24 +106,24 @@ export function deleteSourcesTraces(graphStore: GraphStore, sourceIds: ReadonlyS
 	// are extraction state, not graph content (owner semantics: even
 	// preserve-graph deletes "the chat's coverage rows").
 	if (sourceIds.size === 0) return { ...EMPTY_STATS };
-	const coverage = graphStore.readCoverage().filter((row) => !sourceIds.has(row.chatId));
-	const checkpoints = graphStore.readCheckpoints().filter((row) => !sourceIds.has(row.chatId));
+	const coverage = (await graphStore.readCoverage()).filter((row) => !sourceIds.has(row.chatId));
+	const checkpoints = (await graphStore.readCheckpoints()).filter((row) => !sourceIds.has(row.chatId));
 	const stats: ChatDeletionStats = {
 		...EMPTY_STATS,
-		coverageRemoved: graphStore.readCoverage().length - coverage.length,
-		checkpointsRemoved: graphStore.readCheckpoints().length - checkpoints.length,
+		coverageRemoved: (await graphStore.readCoverage()).length - coverage.length,
+		checkpointsRemoved: (await graphStore.readCheckpoints()).length - checkpoints.length,
 	};
 
 	if (mode === "preserve-graph") {
 		if (stats.coverageRemoved > 0 || stats.checkpointsRemoved > 0) {
-			graphStore.rewriteLedgers({ coverage, checkpoints });
+			await graphStore.rewriteLedgers({ coverage, checkpoints });
 		}
 		return stats;
 	}
 
 	// ── delete-nodes: the full purge ──────────────────────────────────────
-	const nodeLines = graphStore.readNodes();
-	const chainLines = graphStore.readChains();
+	const nodeLines = await graphStore.readNodes();
+	const chainLines = await graphStore.readChains();
 
 	// Does the chat touch the graph at all? (A never-extracted chat still
 	// needs its coverage rows dropped above, but no ledger rewrite — keeps
@@ -135,7 +134,7 @@ export function deleteSourcesTraces(graphStore: GraphStore, sourceIds: ReadonlyS
 		chainLines.some((line) => line.provenance.some((pt) => sourceIds.has(pt.chatId)));
 	if (!touched) {
 		if (stats.coverageRemoved > 0 || stats.checkpointsRemoved > 0) {
-			graphStore.rewriteLedgers({ coverage, checkpoints });
+			await graphStore.rewriteLedgers({ coverage, checkpoints });
 		}
 		return stats;
 	}
@@ -212,7 +211,7 @@ export function deleteSourcesTraces(graphStore: GraphStore, sourceIds: ReadonlyS
 	stats.nodesRemoved = [...new Set(nodeLines.map((line) => line.id))].filter((id) => !live.has(id)).length;
 	stats.chainsRemoved = chainLines.length - outChains.length;
 
-	graphStore.rewriteLedgers({
+	await graphStore.rewriteLedgers({
 		nodes: outNodes,
 		chains: outChains,
 		coverage,
@@ -228,7 +227,7 @@ export function deleteSourcesTraces(graphStore: GraphStore, sourceIds: ReadonlyS
 			.filter((line) => !outChains.includes(line))
 			.map((line) => line.id),
 	);
-	const positions = graphStore.readPositions();
+	const positions = await graphStore.readPositions();
 	const knownNodeIds = new Set(nodeLines.map((line) => line.id));
 	const prunedPositions = Object.fromEntries(
 		Object.entries(positions).filter(
@@ -236,7 +235,7 @@ export function deleteSourcesTraces(graphStore: GraphStore, sourceIds: ReadonlyS
 		),
 	);
 	if (Object.keys(prunedPositions).length !== Object.keys(positions).length) {
-		graphStore.writePositions(prunedPositions);
+		await graphStore.writePositions(prunedPositions);
 	}
 
 	return stats;
@@ -271,21 +270,21 @@ export function deleteSourcesTraces(graphStore: GraphStore, sourceIds: ReadonlyS
  * rendering — fine), and no other consumer indexes nodes by id across
  * ledgers.
  *
- * Synchronous, one rewriteLedgers call, no awaits (the same atomicity
- * argument as the chat cascade); idempotent in the wave-6 sense — a
- * second run finds no lines and changes nothing.
+ * One rewriteLedgers call over the ledgers it actually changes;
+ * idempotent in the wave-6 sense — a second run finds no lines and
+ * changes nothing.
  */
 export interface NodeDeletionStats {
 	/** Chain assertion LINES removed (every chain referencing the node). */
 	chainsRemoved: number;
 }
 
-function nodeLinesOf(graphStore: GraphStore, nodeId: string): GraphNode[] {
-	return graphStore.readNodes().filter((line) => line.id === nodeId);
+async function nodeLinesOf(graphStore: GraphStore, nodeId: string): Promise<GraphNode[]> {
+	return (await graphStore.readNodes()).filter((line) => line.id === nodeId);
 }
 
-function chainLinesOf(graphStore: GraphStore, chainId: string): GraphChain[] {
-	return graphStore.readChains().filter((line) => line.id === chainId);
+async function chainLinesOf(graphStore: GraphStore, chainId: string): Promise<GraphChain[]> {
+	return (await graphStore.readChains()).filter((line) => line.id === chainId);
 }
 
 /**
@@ -294,8 +293,8 @@ function chainLinesOf(graphStore: GraphStore, chainId: string): GraphChain[] {
  * rewrites only the ledgers that changed (unchanged files keep their
  * mtimes — the version stamp moves only when something really did).
  */
-export function deleteNodeTraces(graphStore: GraphStore, nodeId: string): NodeDeletionStats | null {
-	const chainLines = graphStore.readChains();
+export async function deleteNodeTraces(graphStore: GraphStore, nodeId: string): Promise<NodeDeletionStats | null> {
+	const chainLines = await graphStore.readChains();
 
 	// The argument branch: an arg_ id names a CHAIN, not a proposition —
 	// its lines die, and that is the whole death (the member propositions
@@ -303,16 +302,16 @@ export function deleteNodeTraces(graphStore: GraphStore, nodeId: string): NodeDe
 	if (nodeId.startsWith("arg_")) {
 		const outChains = chainLines.filter((line) => line.id !== nodeId);
 		if (outChains.length === chainLines.length) return null; // unknown argument
-		graphStore.rewriteLedgers({ chains: outChains });
-		const positions = graphStore.readPositions();
+		await graphStore.rewriteLedgers({ chains: outChains });
+		const positions = await graphStore.readPositions();
 		if (positions[nodeId] !== undefined) {
 			const { [nodeId]: _dead, ...rest } = positions;
-			graphStore.writePositions(rest);
+			await graphStore.writePositions(rest);
 		}
 		return { chainsRemoved: chainLines.length - outChains.length };
 	}
 
-	const nodeLines = nodeLinesOf(graphStore, nodeId);
+	const nodeLines = await nodeLinesOf(graphStore, nodeId);
 	if (nodeLines.length === 0) return null;
 
 	const outChains = chainLines.filter(
@@ -321,20 +320,20 @@ export function deleteNodeTraces(graphStore: GraphStore, nodeId: string): NodeDe
 
 	// Only the touched ledgers: the node's own lines always die (its file
 	// must move), everything else rewrites only when rows actually drop.
-	const outNodes = graphStore.readNodes().filter((line) => line.id !== nodeId);
-	graphStore.rewriteLedgers({
+	const outNodes = (await graphStore.readNodes()).filter((line) => line.id !== nodeId);
+	await graphStore.rewriteLedgers({
 		nodes: outNodes,
 		...(outChains.length !== chainLines.length ? { chains: outChains } : {}),
 	});
 
 	// The resting positions die with the node and every dead chain.
 	const deadChainIds = new Set(chainLines.filter((line) => !outChains.includes(line)).map((line) => line.id));
-	const positions = graphStore.readPositions();
+	const positions = await graphStore.readPositions();
 	const prunedPositions = Object.fromEntries(
 		Object.entries(positions).filter(([id]) => id !== nodeId && !deadChainIds.has(id)),
 	);
 	if (Object.keys(prunedPositions).length !== Object.keys(positions).length) {
-		graphStore.writePositions(prunedPositions);
+		await graphStore.writePositions(prunedPositions);
 	}
 
 	return {

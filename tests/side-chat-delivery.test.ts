@@ -17,6 +17,7 @@ process.env.LH_DATA_DIR = path.join(scratch, "data");
 process.env.LH_AUTH_FILE = path.join(scratch, "auth.json");
 process.env.OPENROUTER_API_KEY = "offline-test-presence-only";
 fs.writeFileSync(process.env.LH_AUTH_FILE, "{}");
+const { expectSync } = await import("../src/core/ports.ts");
 const { chatStore } = await import("../src/store/chats.ts");
 const { createSideChatService } = await import("../src/server/side-chat.ts");
 const { handleChatRequest } = await import("../src/server/chat-handler.ts");
@@ -41,7 +42,7 @@ after(() => fs.rmSync(scratch, { recursive: true, force: true }));
 
 const args = { type: "check", nodeId: "continuity", question: "Which is continuous?", options: [{ label: "A", value: "a" }, { label: "B", value: "b" }], correctAnswer: "b", explanation: "SECRET-KEY" };
 const at = "2026-11-05T00:00:00Z";
-function fixture() {
+async function fixture() {
 	const faux = createFauxCore({});
 	let stream: ReturnType<typeof createAssistantMessageEventStream>;
 	let calls = 0;
@@ -52,23 +53,23 @@ function fixture() {
 		return stream;
 	} };
 	const service = createSideChatService({ chatStore, engineFor: async () => engine, instructions: () => "Toolless clarification helper" });
-	const chat = chatStore.createChat("Append-only side conversation");
-	chatStore.saveSettings(chat.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } });
+	const chat = (await chatStore.createChat("Append-only side conversation"));
+	(await chatStore.saveSettings(chat.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } }));
 	const explanation: LhMessage = { ...fauxAssistantMessage("Explanation about continuity."), id: "explanation" };
 	const question: LhMessage = { ...fauxAssistantMessage([fauxToolCall("quiz", args, { id: "check" })], { stopReason: "toolUse" }), id: "question" };
-	chatStore.saveMessages(chat.id, [newUserMessage("Teach me"), explanation, question]);
+	(await chatStore.saveMessages(chat.id, [newUserMessage("Teach me"), explanation, question]));
 	const anchor = { messageId: explanation.id, partId: `${explanation.id}-t0`, blockIndex: 99_999, blockText: "FORGED-PASSAGE" };
 	const finish = (text = "Partial helper text AND LATE COMPLETION") => stream!.push({ type: "done", reason: "stop", message: fauxAssistantMessage(text) });
 	return { service, chatId: chat.id, anchor, finish, contexts, calls: () => calls };
 }
-function aggregate(f: ReturnType<typeof fixture>) {
-	const window = catalogContextLimits().get("openrouter:z-ai/glm-5.3-flash") ?? 150_000;
+async function aggregate(f: Awaited<ReturnType<typeof fixture>>) {
+	const window = (await catalogContextLimits()).get("openrouter:z-ai/glm-5.3-flash") ?? 150_000;
 	const count = Math.ceil(window / 3500) + 4;
 	const threads: SideChatThread[] = Array.from({ length: count }, (_, index) => ({
 		id: `side_older_${index}`, anchor: { messageId: `older_${index}`, partId: `older_${index}-t0`, blockIndex: 0, blockText: "Older lesson" }, open: true, createdAt: at,
 		messages: [{ id: `q_${index}`, role: "user", text: "Q".repeat(8000), at }, { id: `a_${index}`, role: "assistant", text: "A".repeat(8000), at }],
 	}));
-	chatStore.updateSideChats(f.chatId, () => threads);
+	(await chatStore.updateSideChats(f.chatId, () => threads));
 	return threads;
 }
 async function seenPartial(response: Response) {
@@ -104,17 +105,17 @@ describe("reasoning option × side-request composition", () => {
 		writeSettings({ compaction: includeReasoning === undefined ? {} : { includeReasoning }, graph: { enabled: false } });
 		assert.equal(readSettings()!.compaction?.includeReasoning, includeReasoning, "omitted flag really remains absent in the persisted fixture");
 		try {
-			const f = fixture();
+			const f = (await fixture());
 			const spec = identity === "openrouter" ? { provider: "openrouter", id: "z-ai/glm-5.3-flash" } : { provider: "openai", id: "gpt-5" };
 			const requestModel = piModels().getModel(spec.provider, spec.id)!;
 			assert.ok(requestModel);
 			if (identity !== "openrouter") assert.equal(requestModel.api, "openai-responses");
-			chatStore.saveSettings(f.chatId, { model: spec });
-			const window = catalogContextLimits().get(`${spec.provider}:${spec.id}`)!;
+			(await chatStore.saveSettings(f.chatId, { model: spec }));
+			const window = (await catalogContextLimits()).get(`${spec.provider}:${spec.id}`)!;
 			const budget = window - Math.min(16_384, requestModel.maxTokens);
 			const floor = Math.floor(Math.min(requestModel.maxTokens, budget / 2));
 			assert.ok(floor > 20_000, "the single retained signed response protects the prior kept boundary");
-			const base = chatStore.getChat(f.chatId)!.messages;
+			const base = (await chatStore.getChat(f.chatId))!.messages;
 			const signed = { ...fauxAssistantMessage("A short retained explanation."), id: "explanation", provider: requestModel.provider,
 				api: requestModel.api, model: requestModel.id,
 				content: [{ type: "thinking", thinking: "", thinkingSignature: "opaque-fixture-not-a-token-count" }, { type: "text", text: "A short retained explanation." }],
@@ -126,7 +127,7 @@ describe("reasoning option × side-request composition", () => {
 			if (identity === "wrong-api") signed.api = "openai-completions";
 			const prior = newCompactionMarker("Earlier lesson summary", { firstKeptMessageId: signed.id, tokensBefore: 150_000, at });
 			const original = [base[0]!, signed, prior, base.at(-1)!];
-			chatStore.saveMessages(f.chatId, original);
+			(await chatStore.saveMessages(f.chatId, original));
 			assert.equal(estimateContextTokens(original, requestModel).lastUsageIndex, null, "this comparison MUST exercise the post-marker floor, not an already-counted anchor");
 			if (identity === "matching") assert.equal(compactionCutIndex(original, undefined, requestModel), 1, "reasoning tail cannot advance past the prior kept boundary");
 			const assembled = phase.endsWith("assembled"), internal = phase.startsWith("internal");
@@ -137,7 +138,7 @@ describe("reasoning option × side-request composition", () => {
 				],
 			}));
 			const learner = { ...newUserMessage(`REASONING QUEUED STEER ${"L".repeat(Math.floor((budget - floor) * 0.7 * 4))}`), id: "reasoning_learner" };
-			chatStore.updateSideChats(f.chatId, () => internal ? [] : threads);
+			(await chatStore.updateSideChats(f.chatId, () => internal ? [] : threads));
 			const prompt = Math.ceil(composeInstructions("teacher").length / 4);
 			const expectedRefusal = identity === "matching" && includeReasoning === true;
 			const expectedCalls = internal ? expectedRefusal ? 1 : 2 : expectedRefusal ? 0 : 1;
@@ -176,15 +177,15 @@ describe("reasoning option × side-request composition", () => {
 			const response = await handleChatRequest(new Request("http://offline.test/api/chat", { method: "POST", headers: { "Content-Type": "application/json" },
 				body: JSON.stringify({ chatId: f.chatId, input: { type: "answer", toolCallId: "check", answer: gradedAnswer() } }) }), (opts) => {
 				agent = createTeacherAgent(undefined, { ...opts, engine: { ...opts.engine!, streamFn },
-					validateContext: (messages) => {
+					validateContext: async (messages) => {
 						const live = messages.filter((message) => (message as { role: string }).role !== "system") as LhMessage[];
 						assert.equal(estimateContextTokens(live, requestModel).lastUsageIndex, null);
 						validations.push({ hasLearner: live.some((message) => message.id === learner.id), references: live.filter((message) => message.role === "custom" && message.customType === "side-question").length,
 							off: projectedContextTokens(live, prompt), on: projectedContextTokens(live, prompt, requestModel) });
-						opts.validateContext!(messages);
+						(await opts.validateContext!(messages));
 					},
 					tools: { offline_read: { name: "offline_read", label: "Synthetic read", description: "Offline composition fixture", parameters: Type.Object({}), execute: async () => {
-						reads++; chatStore.updateSideChats(f.chatId, () => threads); checkConstituents();
+						reads++; (await chatStore.updateSideChats(f.chatId, () => threads)); checkConstituents();
 						return { content: [{ type: "text", text: "COMPLETED REASONING TOOL WORK" }], details: {} };
 					} } },
 				});
@@ -200,7 +201,7 @@ describe("reasoning option × side-request composition", () => {
 				assert.equal(actual.hasLearner, true); assert.ok(actual.off < budget);
 				assert.equal(actual.on > budget, identity === "matching", "FINAL post-steering guard sees the reasoning-sensitive assembled payload");
 			}
-			const stopped = chatStore.getChat(f.chatId)!;
+			const stopped = (await chatStore.getChat(f.chatId))!;
 			const expectedEntries = sideConversationEntries({ messages: original, sideChats: threads });
 			const assertRawWire = (context: TranscriptContext) => {
 				const wire = JSON.stringify(context.messages);
@@ -216,11 +217,11 @@ describe("reasoning option × side-request composition", () => {
 				const failure = stopped.messages.at(-1)!; assert.equal(failure.role, "assistant");
 				if (failure.role === "assistant") assert.equal(failure.errorMessage, SIDE_CONTEXT_BUDGET_ERROR);
 				const larger = piModels().getModels("openai").filter((model) => model.contextWindow > window * 1.5).sort((a, b) => b.contextWindow - a.contextWindow)[0]!;
-				assert.ok(larger); chatStore.saveSettings(f.chatId, { model: { provider: "openai", id: larger.id } });
+				assert.ok(larger); (await chatStore.saveSettings(f.chatId, { model: { provider: "openai", id: larger.id } }));
 				const retried = await mainInput(f.chatId, { type: "retry" }, f.service);
 				assert.equal(retried.contexts.length, 1); assertRawWire(retried.contexts[0]!);
 				assert.equal(reads, internal ? 1 : 0, "Retry never replays completed tools");
-				const saved = chatStore.getChat(f.chatId)!;
+				const saved = (await chatStore.getChat(f.chatId))!;
 				assert.deepEqual(saved.messages.slice(0, stopped.messages.length), stopped.messages);
 				assert.equal(saved.messages.filter((message) => message.role === "custom" && message.customType === "side-question").length, threads.length * 2);
 				assert.equal(saved.messages.filter((message) => message.id === learner.id).length, assembled ? 1 : 0);
@@ -233,10 +234,10 @@ describe("reasoning option × side-request composition", () => {
 		}
 	}
 	for (const phase of phases) for (const enabled of [undefined, false, true]) {
-		it(`${phase}: protected matching Responses floor with includeReasoning=${enabled}`, () => exercise(phase, enabled));
+		it(`${phase}: protected matching Responses floor with includeReasoning=${enabled}`, async () => (await exercise(phase, enabled)));
 	}
 	for (const identity of ["wrong-provider", "wrong-model", "wrong-api", "openrouter"] as const) {
-		it(`ON preserves the original side-admission heuristic for ${identity}`, () => exercise("initial", true, identity));
+		it(`ON preserves the original side-admission heuristic for ${identity}`, async () => (await exercise("initial", true, identity)));
 	}
 });
 
@@ -257,14 +258,14 @@ describe("append-only main-request delivery", () => {
 		assert.equal(sideBudgetRetryDrops(laterTransportFailure, [...laterTransportFailure, marker]), undefined, "an older budget failure cannot widen a later transport Retry");
 	});
 	it("submits immediately and appends completion/follow-ups on later requests without revising any prior context", async () => {
-		const f = fixture();
+		const f = (await fixture());
 		const response = await f.service.ask(f.chatId, { anchor: f.anchor, text: "Why?", quotes: [], requestId: "ask_first" });
 		const reader = await seenPartial(response);
-		const before = chatStore.getChat(f.chatId)!.messages;
+		const before = (await chatStore.getChat(f.chatId))!.messages;
 		const result = await mainInput(f.chatId, { type: "answer", toolCallId: "check", answer: gradedAnswer() }, f.service);
 		assert.equal(result.response.status, 200);
-		assert.ok(Object.hasOwn(f.service.list(f.chatId)!.answering, "side_explanation"), "teacher finishes while helper is still running");
-		const record = chatStore.getChat(f.chatId)!;
+		assert.ok(Object.hasOwn((await f.service.list(f.chatId))!.answering, "side_explanation"), "teacher finishes while helper is still running");
+		const record = (await chatStore.getChat(f.chatId))!;
 		assert.deepEqual(record.messages.slice(0, before.length), before, "earlier transcript is byte-equivalent");
 		assert.equal(record.sideChats![0]!.contextSnapshot, undefined);
 		const markers = record.messages.filter((message) => message.role === "custom" && message.customType === "side-question");
@@ -277,38 +278,38 @@ describe("append-only main-request delivery", () => {
 		assert.doesNotMatch(wire, /LATE COMPLETION|FORGED-PASSAGE/);
 		const frozenMain = record.messages;
 		f.finish(); await f.service.settled(f.chatId, "side_explanation"); await reader.cancel();
-		assert.deepEqual(chatStore.getChat(f.chatId)!.messages, frozenMain);
-		assert.match(chatStore.getChat(f.chatId)!.sideChats![0]!.messages.at(-1)!.text, /LATE COMPLETION/);
+		assert.deepEqual((await chatStore.getChat(f.chatId))!.messages, frozenMain);
+		assert.match((await chatStore.getChat(f.chatId))!.sideChats![0]!.messages.at(-1)!.text, /LATE COMPLETION/);
 		const next = await mainInput(f.chatId, { type: "text", text: "LATEST MAIN STEP" }, f.service);
 		assert.equal(next.response.status, 200);
 		const secondWire = JSON.stringify(next.contexts);
 		assert.match(secondWire, /LATE COMPLETION/);
 		assert.equal(secondWire.split("Partial helper text").length - 1, 1, "only the new suffix is appended");
-		assert.deepEqual(chatStore.getChat(f.chatId)!.messages.slice(0, frozenMain.length), frozenMain);
-		const secondMain = chatStore.getChat(f.chatId)!.messages;
+		assert.deepEqual((await chatStore.getChat(f.chatId))!.messages.slice(0, frozenMain.length), frozenMain);
+		const secondMain = (await chatStore.getChat(f.chatId))!.messages;
 		const later = await f.service.ask(f.chatId, { threadId: "side_explanation", text: "LATE FOLLOW-UP", quotes: [], requestId: "ask_later" });
 		const laterReader = await seenPartial(later); f.finish("LATE FOLLOW-UP ANSWER");
 		await f.service.settled(f.chatId, "side_explanation"); await laterReader.cancel();
 		assert.match(JSON.stringify(f.contexts.at(-1)), /LATEST MAIN STEP/, "an old thread's helper still receives the latest visible lesson");
-		assert.deepEqual(chatStore.getChat(f.chatId)!.messages, secondMain, "helper settlement never injects into main history");
+		assert.deepEqual((await chatStore.getChat(f.chatId))!.messages, secondMain, "helper settlement never injects into main history");
 		const third = await mainInput(f.chatId, { type: "text", text: "Continue the main lesson" }, f.service);
 		assert.equal(third.response.status, 200);
 		assert.match(JSON.stringify(third.contexts), /LATE FOLLOW-UP ANSWER/);
-		assert.deepEqual(chatStore.getChat(f.chatId)!.messages.slice(0, secondMain.length), secondMain);
-		const markerCount = chatStore.getChat(f.chatId)!.messages.filter((message) => message.role === "custom" && message.customType === "side-question").length;
-		assert.deepEqual(sideConversationEntries(chatStore.getChat(f.chatId)!), []);
+		assert.deepEqual((await chatStore.getChat(f.chatId))!.messages.slice(0, secondMain.length), secondMain);
+		const markerCount = (await chatStore.getChat(f.chatId))!.messages.filter((message) => message.role === "custom" && message.customType === "side-question").length;
+		assert.deepEqual(sideConversationEntries((await chatStore.getChat(f.chatId))!), []);
 		await mainInput(f.chatId, { type: "text", text: "One more main input" }, f.service);
-		assert.equal(chatStore.getChat(f.chatId)!.messages.filter((message) => message.role === "custom" && message.customType === "side-question").length, markerCount);
+		assert.equal((await chatStore.getChat(f.chatId))!.messages.filter((message) => message.role === "custom" && message.customType === "side-question").length, markerCount);
 	});
 
 	it("persists the selected prose source independently of a tool-only segment head", async () => {
-		const f = fixture(); const record = chatStore.getChat(f.chatId)!;
-		chatStore.saveMessages(f.chatId, [record.messages[0]!, { ...fauxAssistantMessage([fauxToolCall("read", { path: "synthetic.md" }, { id: "read_work" })], { stopReason: "toolUse" }), id: "work" },
-			{ id: "read_result", role: "toolResult", toolCallId: "read_work", toolName: "read", content: [{ type: "text", text: "Synthetic" }], isError: false, timestamp: 1 }, ...record.messages.slice(1)]);
+		const f = (await fixture()); const record = (await chatStore.getChat(f.chatId))!;
+		(await chatStore.saveMessages(f.chatId, [record.messages[0]!, { ...fauxAssistantMessage([fauxToolCall("read", { path: "synthetic.md" }, { id: "read_work" })], { stopReason: "toolUse" }), id: "work" },
+			{ id: "read_result", role: "toolResult", toolCallId: "read_work", toolName: "read", content: [{ type: "text", text: "Synthetic" }], isError: false, timestamp: 1 }, ...record.messages.slice(1)]));
 		const link = serializeCitation({ version: 1, chatId: f.chatId, messageId: "explanation", text: "Selected prose", start: 0, end: 14, prefix: "", suffix: "" });
 		const input = parseSideAskInput({ anchor: f.anchor, text: "Clarify", quotes: ["Selected prose"], quoteCitations: [link] });
 		const response = await f.service.ask(f.chatId, input); const reader = await seenPartial(response);
-		const thread = chatStore.getChat(f.chatId)!.sideChats![0]!;
+		const thread = (await chatStore.getChat(f.chatId))!.sideChats![0]!;
 		assert.equal(thread.id, "side_work");
 		assert.equal(collectCitations(thread.messages[0]!.quoteCitations![0]!)[0]!.citation.messageId, "explanation");
 		f.finish(); await f.service.settled(f.chatId, thread.id); await reader.cancel();
@@ -321,14 +322,14 @@ describe("append-only main-request delivery", () => {
 	});
 
 	it("records an idle dismissal without pre-publishing side exchanges before the next budget-checked teacher request", async () => {
-		const f = fixture();
+		const f = (await fixture());
 		const response = await f.service.ask(f.chatId, { anchor: f.anchor, text: "Before dismissal", quotes: [] });
 		const reader = await seenPartial(response); f.finish("Saved helper reply");
 		await f.service.settled(f.chatId, "side_explanation"); await reader.cancel();
 		const dismissed = await dismissRoute(new Request("http://offline.test/dismiss", { method: "POST", headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ input: { type: "dismiss", toolCallId: "check", answer: { ...gradedAnswer(), dismissed: true } } }) }), { params: Promise.resolve({ id: f.chatId }) });
 		assert.equal(dismissed.status, 200);
-		const saved = chatStore.getChat(f.chatId)!;
+		const saved = (await chatStore.getChat(f.chatId))!;
 		assert.equal(runningTurn(f.chatId), undefined);
 		assert.equal(saved.sideChats![0]!.contextSnapshot, undefined);
 		assert.equal(saved.messages.at(-1)!.role, "toolResult");
@@ -336,25 +337,25 @@ describe("append-only main-request delivery", () => {
 		const later = await f.service.ask(f.chatId, { threadId: "side_explanation", text: "After dismissal", quotes: [] });
 		const laterReader = await seenPartial(later); f.finish("LATE DISMISSAL REPLY");
 		await f.service.settled(f.chatId, "side_explanation"); await laterReader.cancel();
-		assert.deepEqual(chatStore.getChat(f.chatId)!.messages, saved.messages);
+		assert.deepEqual((await chatStore.getChat(f.chatId))!.messages, saved.messages);
 		const next = await mainInput(f.chatId, { type: "text", text: "Continue after dismissal" }, f.service);
 		assert.match(JSON.stringify(next.contexts), /LATE DISMISSAL REPLY/);
-		assert.deepEqual(chatStore.getChat(f.chatId)!.messages.slice(0, saved.messages.length), saved.messages);
+		assert.deepEqual((await chatStore.getChat(f.chatId))!.messages.slice(0, saved.messages.length), saved.messages);
 	});
 
 	it("keeps a parked dismissal's partial side reply pending until the next budget-checked request", async () => {
-		const f = fixture();
+		const f = (await fixture());
 		const response = await f.service.ask(f.chatId, { anchor: f.anchor, text: "Before parked dismissal", quotes: [] });
 		const reader = await seenPartial(response);
 		parkDismissal(f.chatId, { type: "dismiss", toolCallId: "check", answer: { ...gradedAnswer(), dismissed: true } });
-		applyParkedDismissal(chatStore, f.chatId);
-		const saved = chatStore.getChat(f.chatId)!;
+		(await applyParkedDismissal(chatStore, f.chatId));
+		const saved = (await chatStore.getChat(f.chatId))!;
 		assert.equal(saved.sideChats![0]!.contextSnapshot, undefined);
 		assert.equal(saved.messages.at(-1)!.role, "toolResult");
 		assert.equal(saved.messages.filter((message) => message.role === "custom" && message.customType === "side-question").length, 0);
 		assert.doesNotMatch(JSON.stringify(saved.messages), /Partial helper text/);
 		f.finish(); await f.service.settled(f.chatId, "side_explanation"); await reader.cancel();
-		assert.deepEqual(chatStore.getChat(f.chatId)!.messages, saved.messages);
+		assert.deepEqual((await chatStore.getChat(f.chatId))!.messages, saved.messages);
 		const next = await mainInput(f.chatId, { type: "text", text: "After parked dismissal" }, f.service);
 		const wire = JSON.stringify(next.contexts);
 		assert.match(wire, /LATE COMPLETION/);
@@ -362,111 +363,111 @@ describe("append-only main-request delivery", () => {
 	});
 
 	it("deduplicates uncertain initial POSTs and can reconnect to a live answer", async () => {
-		const f = fixture(); const ask = { anchor: f.anchor, text: "Why?", quotes: [], requestId: "ask_uncertain" };
+		const f = (await fixture()); const ask = { anchor: f.anchor, text: "Why?", quotes: [], requestId: "ask_uncertain" };
 		const first = await f.service.ask(f.chatId, ask); const firstReader = await seenPartial(first); await firstReader.cancel();
 		const repeated = await f.service.ask(f.chatId, ask); const secondReader = await seenPartial(repeated);
 		assert.equal(f.calls(), 1);
-		assert.equal(chatStore.getChat(f.chatId)!.sideChats![0]!.messages.filter((message) => message.role === "user").length, 1);
-		const watcher = f.service.watch(f.chatId, "side_explanation"); const watcherReader = await seenPartial(watcher);
+		assert.equal((await chatStore.getChat(f.chatId))!.sideChats![0]!.messages.filter((message) => message.role === "user").length, 1);
+		const watcher = (await f.service.watch(f.chatId, "side_explanation")); const watcherReader = await seenPartial(watcher);
 		f.finish(); await f.service.settled(f.chatId, "side_explanation"); await secondReader.cancel(); await watcherReader.cancel();
 		assert.equal((await f.service.ask(f.chatId, ask)).status, 200);
 		assert.equal(f.calls(), 1);
 	});
 
 	it("normalizes a question entry and highlighted explanation to the same segment", async () => {
-		const f = fixture();
-		assert.equal(sideSegmentId(chatStore.getChat(f.chatId)!.messages, "question"), "explanation");
+		const f = (await fixture());
+		assert.equal(sideSegmentId((await chatStore.getChat(f.chatId))!.messages, "question"), "explanation");
 		const response = await f.service.ask(f.chatId, { anchor: { ...f.anchor, messageId: "question", partId: "question-t0" }, text: "Question wording?", quotes: ["Which is continuous?"] });
 		const reader = await seenPartial(response); f.finish(); await f.service.settled(f.chatId, "side_explanation"); await reader.cancel();
-		const thread = chatStore.getChat(f.chatId)!.sideChats![0]!;
+		const thread = (await chatStore.getChat(f.chatId))!.sideChats![0]!;
 		assert.equal(thread.id, "side_explanation"); assert.equal(thread.anchor.messageId, "explanation");
 		assert.equal(thread.anchor.blockIndex, 0); assert.equal(thread.anchor.blockText, "Explanation about continuity.");
 		assert.doesNotMatch(JSON.stringify(f.contexts), /SECRET-KEY|FORGED-PASSAGE/);
 	});
 
 	it("first opening a past segment still contributes new exchanges to the next teacher request", async () => {
-		const f = fixture();
+		const f = (await fixture());
 		await mainInput(f.chatId, { type: "answer", toolCallId: "check", answer: gradedAnswer() }, f.service);
 		const response = await f.service.ask(f.chatId, { anchor: f.anchor, text: "An old question", quotes: [] });
 		const reader = await seenPartial(response); f.finish(); await f.service.settled(f.chatId, "side_explanation"); await reader.cancel();
-		const record = chatStore.getChat(f.chatId)!;
+		const record = (await chatStore.getChat(f.chatId))!;
 		assert.equal(record.sideChats![0]!.contextSnapshot, undefined);
 		assert.equal(sideConversationEntries(record).length, 2);
 		const next = await mainInput(f.chatId, { type: "text", text: "Keep teaching" }, f.service);
 		assert.match(JSON.stringify(next.contexts), /An old question/);
-		assert.deepEqual(sideConversationEntries(chatStore.getChat(f.chatId)!), []);
+		assert.deepEqual(sideConversationEntries((await chatStore.getChat(f.chatId))!), []);
 	});
 
-	it("keeps saved delivery watermarks immutable while later thread writes preserve that native prefix", () => {
-		const f = fixture();
+	it("keeps saved delivery watermarks immutable while later thread writes preserve that native prefix", async () => {
+		const f = (await fixture());
 		const thread: SideChatThread = { id: "side_explanation", anchor: f.anchor, open: true, createdAt: at, messages: [{ id: "q", role: "user", text: "Before request", at }] };
-		chatStore.updateSideChats(f.chatId, () => [thread]);
-		const original = chatStore.getChat(f.chatId)!.messages;
-		const entries = sideConversationEntries({ messages: original, sideChats: f.service.snapshot(f.chatId) });
-		chatStore.saveMessages(f.chatId, [...original, ...entries]);
-		assert.deepEqual(sideConversationEntries(chatStore.getChat(f.chatId)!), []);
-		chatStore.updateSideChats(f.chatId, (threads) => threads.map((entry) => ({ ...entry, messages: [...entry.messages, { id: "late", role: "assistant", text: "New raw reply", at }] })));
-		const saved = chatStore.getChat(f.chatId)!;
+		(await chatStore.updateSideChats(f.chatId, () => [thread]));
+		const original = (await chatStore.getChat(f.chatId))!.messages;
+		const entries = sideConversationEntries({ messages: original, sideChats: (await f.service.snapshot(f.chatId)) });
+		(await chatStore.saveMessages(f.chatId, [...original, ...entries]));
+		assert.deepEqual(sideConversationEntries((await chatStore.getChat(f.chatId))!), []);
+		(await chatStore.updateSideChats(f.chatId, (threads) => threads.map((entry) => ({ ...entry, messages: [...entry.messages, { id: "late", role: "assistant", text: "New raw reply", at }] }))));
+		const saved = (await chatStore.getChat(f.chatId))!;
 		assert.deepEqual(saved.messages, [...original, ...entries]);
 		const next = sideConversationEntries(saved);
 		assert.equal(next.length, 1); assert.match(next[0]!.content, /New raw reply/);
 	});
 
 	it("a failed input write does not consume side updates or start the teacher", async () => {
-		const f = fixture(); const response = await f.service.ask(f.chatId, { anchor: f.anchor, text: "Keep this exchange", quotes: [] });
-		const reader = await seenPartial(response); const before = chatStore.getChat(f.chatId)!;
+		const f = (await fixture()); const response = await f.service.ask(f.chatId, { anchor: f.anchor, text: "Keep this exchange", quotes: [] });
+		const reader = await seenPartial(response); const before = (await chatStore.getChat(f.chatId))!;
 		const save = chatStore.saveMessages;
 		chatStore.saveMessages = () => { throw new Error("Synthetic delivery write failure"); };
 		try {
 			const failed = await mainInput(f.chatId, { type: "answer", toolCallId: "check", answer: gradedAnswer() }, f.service);
 			assert.equal(failed.response.status, 500); assert.equal(failed.contexts.length, 0);
 		} finally { chatStore.saveMessages = save; }
-		assert.deepEqual(chatStore.getChat(f.chatId)!.messages, before.messages);
+		assert.deepEqual((await chatStore.getChat(f.chatId))!.messages, before.messages);
 		const accepted = await mainInput(f.chatId, { type: "answer", toolCallId: "check", answer: gradedAnswer() }, f.service);
 		assert.equal(accepted.response.status, 200); assert.match(JSON.stringify(accepted.contexts), /Keep this exchange/);
 		f.finish(); await f.service.settled(f.chatId, "side_explanation"); await reader.cancel();
 	});
 
 	it("keeps parallel tool results adjacent and waits until the last answer to publish current side activity", async () => {
-		const f = fixture(); const original = chatStore.getChat(f.chatId)!;
-		chatStore.saveMessages(f.chatId, [...original.messages.slice(0, -1), { ...fauxAssistantMessage([
+		const f = (await fixture()); const original = (await chatStore.getChat(f.chatId))!;
+		(await chatStore.saveMessages(f.chatId, [...original.messages.slice(0, -1), { ...fauxAssistantMessage([
 			fauxToolCall("quiz", args, { id: "check" }), fauxToolCall("quiz", args, { id: "check2" }),
-		], { stopReason: "toolUse" }), id: "question" }]);
+		], { stopReason: "toolUse" }), id: "question" }]));
 		const response = await f.service.ask(f.chatId, { anchor: f.anchor, text: "A question during the batch", quotes: [] });
 		const reader = await seenPartial(response);
 		const first = await mainInput(f.chatId, { type: "answer", toolCallId: "check", answer: gradedAnswer() }, f.service);
 		assert.equal(first.response.status, 200); assert.equal(first.contexts.length, 0);
-		assert.equal(chatStore.getChat(f.chatId)!.messages.at(-1)!.role, "toolResult");
+		assert.equal((await chatStore.getChat(f.chatId))!.messages.at(-1)!.role, "toolResult");
 		f.finish(); await f.service.settled(f.chatId, "side_explanation"); await reader.cancel();
 		const second = await mainInput(f.chatId, { type: "answer", toolCallId: "check2", answer: gradedAnswer() }, f.service);
 		assert.equal(second.response.status, 200); assert.match(JSON.stringify(second.contexts), /LATE COMPLETION/);
 		assert.doesNotMatch(JSON.stringify(second.contexts), /still generating/);
-		assert.deepEqual(chatStore.getChat(f.chatId)!.messages.slice(2, 5).map((message) => message.role), ["assistant", "toolResult", "toolResult"]);
+		assert.deepEqual((await chatStore.getChat(f.chatId))!.messages.slice(2, 5).map((message) => message.role), ["assistant", "toolResult", "toolResult"]);
 	});
 
 	it("captures updates arriving after HTTP write-ahead on the first native model call, without an extra call", async () => {
-		const f = fixture();
+		const f = (await fixture());
 		const thread: SideChatThread = { id: "side_explanation", anchor: f.anchor, open: true, createdAt: at,
 			messages: [{ id: "gap_question", role: "user", text: "A question before the main request", at }] };
-		chatStore.updateSideChats(f.chatId, () => [thread]);
+		(await chatStore.updateSideChats(f.chatId, () => [thread]));
 		let captures = 0;
-		const service = { ...f.service, snapshot: (id: string) => {
-			if (++captures === 2) chatStore.updateSideChats(id, (threads) => threads.map((entry) => ({ ...entry,
-				messages: [...entry.messages, { id: "gap_answer", role: "assistant", text: "FIRST CALL GAP REPLY", at: new Date().toISOString() }] })));
-			return f.service.snapshot(id);
+		const service = { ...f.service, snapshot: async (id: string) => {
+			if (++captures === 2) (await chatStore.updateSideChats(id, (threads) => threads.map((entry) => ({ ...entry,
+				messages: [...entry.messages, { id: "gap_answer", role: "assistant", text: "FIRST CALL GAP REPLY", at: new Date().toISOString() }] }))));
+			return (await f.service.snapshot(id));
 		} };
 		const result = await mainInput(f.chatId, { type: "answer", toolCallId: "check", answer: gradedAnswer() }, service);
 		assert.equal(result.response.status, 200); assert.equal(result.contexts.length, 1);
 		assert.equal(JSON.stringify(result.contexts).split("FIRST CALL GAP REPLY").length - 1, 1);
-		assert.equal(chatStore.getChat(f.chatId)!.messages.filter((message) => message.role === "custom" && message.customType === "side-question").length, 2);
-		assert.deepEqual(sideConversationEntries(chatStore.getChat(f.chatId)!), []);
+		assert.equal((await chatStore.getChat(f.chatId))!.messages.filter((message) => message.role === "custom" && message.customType === "side-question").length, 2);
+		assert.deepEqual(sideConversationEntries((await chatStore.getChat(f.chatId))!), []);
 	});
 
 	it("shares newly available exchanges between internal model calls without scheduling extra calls or rewriting prior context", async () => {
-		const f = fixture();
+		const f = (await fixture());
 		const firstHelper = await f.service.ask(f.chatId, { anchor: f.anchor, text: "First helper question", quotes: [] });
 		const firstReader = await seenPartial(firstHelper);
-		const original = chatStore.getChat(f.chatId)!.messages;
+		const original = (await chatStore.getChat(f.chatId))!.messages;
 		const main = createFauxCore({}); const contexts: TranscriptContext[] = [];
 		let toolCalls = 0; let secondReader: ReadableStreamDefaultReader<Uint8Array>; let lastReader: ReadableStreamDefaultReader<Uint8Array>;
 		main.appendResponses([
@@ -501,7 +502,7 @@ describe("append-only main-request delivery", () => {
 		assert.match(JSON.stringify(contexts[2]), /SECOND TAIL/);
 		assert.equal(JSON.stringify(contexts[2]).split("LATE COMPLETION").length - 1, 1);
 		for (let i = 1; i < contexts.length; i++) assert.deepEqual(contexts[i]!.messages.slice(0, contexts[i - 1]!.messages.length), contexts[i - 1]!.messages);
-		const saved = chatStore.getChat(f.chatId)!;
+		const saved = (await chatStore.getChat(f.chatId))!;
 		assert.deepEqual(saved.messages.slice(0, original.length), original);
 		for (const callId of ["read_1", "read_2"]) {
 			const index = saved.messages.findIndex((message) => message.role === "toolResult" && message.toolCallId === callId);
@@ -515,10 +516,10 @@ describe("append-only main-request delivery", () => {
 	});
 
 	it("refuses aggregate all-thread overflow before the first provider call, retaining the input and every undelivered raw exchange", async () => {
-		const f = fixture(); const threads = aggregate(f); const original = chatStore.getChat(f.chatId)!.messages;
+		const f = (await fixture()); const threads = (await aggregate(f)); const original = (await chatStore.getChat(f.chatId))!.messages;
 		const result = await mainInput(f.chatId, { type: "answer", toolCallId: "check", answer: gradedAnswer() }, f.service);
 		assert.equal(result.response.status, 200); assert.equal(result.contexts.length, 0);
-		const saved = chatStore.getChat(f.chatId)!;
+		const saved = (await chatStore.getChat(f.chatId))!;
 		assert.deepEqual(saved.messages.slice(0, original.length), original);
 		assert.deepEqual(saved.sideChats, threads);
 		assert.equal(saved.messages.filter((message) => message.role === "custom" && message.customType === "side-question").length, 0);
@@ -530,38 +531,38 @@ describe("append-only main-request delivery", () => {
 	});
 
 	it("stops an internal oversized request without replaying completed tools, then delivers all raw exchanges on a larger-model retry", async () => {
-		const f = fixture(); const main = createFauxCore({}); const contexts: TranscriptContext[] = []; let reads = 0;
+		const f = (await fixture()); const main = createFauxCore({}); const contexts: TranscriptContext[] = []; let reads = 0;
 		main.appendResponses([(context) => { contexts.push(context); return fauxAssistantMessage([fauxToolCall("offline_read", {}, { id: "read_before_overflow" })], { stopReason: "toolUse" }); }]);
 		const engine: PiEngine = { model: main.getModel(), streamFn: main.streamSimple };
 		const response = await handleChatRequest(new Request("http://offline.test/api/chat", { method: "POST", headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ chatId: f.chatId, input: { type: "answer", toolCallId: "check", answer: gradedAnswer() } }) }),
 			(opts) => createTeacherAgent(undefined, { ...opts, engine, tools: { offline_read: {
 				name: "offline_read", label: "Offline read", description: "Synthetic tool", parameters: Type.Object({}),
-				execute: async () => { reads++; aggregate(f); return { content: [{ type: "text", text: "COMPLETED TOOL WORK" }], details: null }; },
+				execute: async () => { reads++; (await aggregate(f)); return { content: [{ type: "text", text: "COMPLETED TOOL WORK" }], details: null }; },
 			} } }), f.service);
 		assert.equal(response.status, 200); const turn = runningTurn(f.chatId); if (turn) await new Response(turn.subscribe()).text();
 		assert.equal(contexts.length, 1); assert.equal(reads, 1);
-		const stopped = chatStore.getChat(f.chatId)!;
+		const stopped = (await chatStore.getChat(f.chatId))!;
 		assert.ok(stopped.messages.some((message) => message.role === "toolResult" && message.toolCallId === "read_before_overflow"));
 		assert.equal(retryDrops(stopped.messages).size, 1);
 		assert.equal(stopped.messages.filter((message) => message.role === "custom" && message.customType === "side-question").length, 0);
 		const rawCount = sideConversationEntries(stopped).length;
-		const larger = [...catalogContextLimits()].filter(([key]) => key.startsWith("openrouter:")).sort((a, b) => b[1] - a[1])[0]!;
-		assert.ok(larger[1] > (catalogContextLimits().get("openrouter:z-ai/glm-5.3-flash") ?? 150_000) * 1.5);
-		chatStore.saveSettings(f.chatId, { model: { provider: "openrouter", id: larger[0].slice("openrouter:".length) } });
+		const larger = [...(await catalogContextLimits())].filter(([key]) => key.startsWith("openrouter:")).sort((a, b) => b[1] - a[1])[0]!;
+		assert.ok(larger[1] > ((await catalogContextLimits()).get("openrouter:z-ai/glm-5.3-flash") ?? 150_000) * 1.5);
+		(await chatStore.saveSettings(f.chatId, { model: { provider: "openrouter", id: larger[0].slice("openrouter:".length) } }));
 		const retried = await mainInput(f.chatId, { type: "retry" }, f.service);
 		assert.equal(retried.contexts.length, 1); assert.equal(reads, 1, "completed tool is not replayed");
-		const saved = chatStore.getChat(f.chatId)!;
+		const saved = (await chatStore.getChat(f.chatId))!;
 		assert.deepEqual(saved.messages.slice(0, stopped.messages.length), stopped.messages);
 		assert.equal(saved.messages.filter((message) => message.role === "custom" && message.customType === "side-question").length, rawCount);
 		assert.deepEqual(sideConversationEntries(saved), []);
 	});
 
 	for (const phase of ["first", "internal"] as const) it(`refuses ${phase}-call side cargo plus queued learner steering that fit separately, without consuming either or replaying tools`, async () => {
-		const f = fixture();
-		const selected = [...catalogContextLimits()].filter(([key, window]) => key.startsWith("openrouter:") && window >= 128_000)
+		const f = (await fixture());
+		const selected = [...(await catalogContextLimits())].filter(([key, window]) => key.startsWith("openrouter:") && window >= 128_000)
 			.sort((a, b) => a[1] - b[1] || a[0].localeCompare(b[0]))[0]!;
-		chatStore.saveSettings(f.chatId, { model: { provider: "openrouter", id: selected[0].slice("openrouter:".length) } });
+		(await chatStore.saveSettings(f.chatId, { model: { provider: "openrouter", id: selected[0].slice("openrouter:".length) } }));
 		const brief: SideChatThread = { id: "side_brief", anchor: f.anchor, open: true, createdAt: at, messages: [
 			{ id: "brief_q", role: "user", text: "ALREADY SHARED QUESTION", at }, { id: "brief_a", role: "assistant", text: "ALREADY SHARED REPLY", at },
 		] };
@@ -570,15 +571,15 @@ describe("append-only main-request delivery", () => {
 				{ id: `q_${index}`, role: "user", text: "Q".repeat(8000), at }, { id: `a_${index}`, role: "assistant", text: "A".repeat(8000), at },
 			],
 		}));
-		chatStore.updateSideChats(f.chatId, () => phase === "first" ? batch : [brief]);
-		const original = chatStore.getChat(f.chatId)!.messages;
+		(await chatStore.updateSideChats(f.chatId, () => phase === "first" ? batch : [brief]));
+		const original = (await chatStore.getChat(f.chatId))!.messages;
 		const learner = { ...newUserMessage(`QUEUED LEARNER STEER ${"L".repeat(Math.ceil(selected[1] * 0.65 * 4))}`), id: "combined_learner" };
 		const main = createFauxCore({}); const contexts: TranscriptContext[] = []; let reads = 0; let budget = 0;
 		let agent: ReturnType<typeof createTeacherAgent>;
 		const prompt = Math.ceil(composeInstructions("teacher").length / 4);
-		const queueCombined = () => {
+		const queueCombined = async () => {
 			const live = agent.state.messages.filter((message) => (message as { role: string }).role !== "system") as LhMessage[];
-			const updates = sideConversationEntries({ messages: live, sideChats: f.service.snapshot(f.chatId) });
+			const updates = sideConversationEntries({ messages: live, sideChats: (await f.service.snapshot(f.chatId)) });
 			assert.ok(projectedContextTokens([...live, ...updates], prompt) < budget, "side-only request fits");
 			assert.ok(projectedContextTokens([...live, learner], prompt) < budget, "steer-only request fits");
 			assert.ok(projectedContextTokens([...live, ...updates, learner], prompt) > selected[1], "combined request exceeds even the whole window");
@@ -594,11 +595,11 @@ describe("append-only main-request delivery", () => {
 		const response = await handleChatRequest(new Request("http://offline.test/api/chat", { method: "POST", headers: { "Content-Type": "application/json" },
 			body: JSON.stringify({ chatId: f.chatId, input: { type: "answer", toolCallId: "check", answer: gradedAnswer() } }) }), (opts) => {
 			budget = selected[1] - Math.min(16_384, opts.engine!.model.maxTokens);
-			assert.equal(chatStore.getChat(f.chatId)!.messages.filter((message) => message.role === "custom" && message.customType === "side-question").length, 0,
+			assert.equal(expectSync(chatStore.getChat(f.chatId), "getChat")!.messages.filter((message) => message.role === "custom" && message.customType === "side-question").length, 0,
 				"write-ahead saves the input, not unadmitted side watermarks");
 			agent = createTeacherAgent(undefined, { ...opts, engine, tools: { offline_read: {
 				name: "offline_read", label: "Synthetic read", description: "Offline fixture", parameters: Type.Object({}), execute: async () => {
-					reads++; chatStore.updateSideChats(f.chatId, () => [brief, ...batch]); queueCombined();
+					reads++; expectSync(chatStore.updateSideChats(f.chatId, () => [brief, ...batch]), "updateSideChats"); queueCombined();
 					return { content: [{ type: "text", text: "COMPLETED COMBINED TOOL WORK" }], details: {} };
 				},
 			} } });
@@ -607,7 +608,7 @@ describe("append-only main-request delivery", () => {
 		}, f.service);
 		assert.equal(response.status, 200); const turn = runningTurn(f.chatId); if (turn) await new Response(turn.subscribe()).text();
 		assert.equal(contexts.length, phase === "first" ? 0 : 1); assert.equal(reads, phase === "first" ? 0 : 1);
-		const stopped = chatStore.getChat(f.chatId)!;
+		const stopped = (await chatStore.getChat(f.chatId))!;
 		assert.deepEqual(stopped.messages.slice(0, original.length), original);
 		assert.deepEqual(stopped.sideChats, phase === "first" ? batch : [brief, ...batch]);
 		assert.equal(stopped.messages.filter((message) => message.id === learner.id).length, 1, "queued learner input is durable once");
@@ -618,12 +619,12 @@ describe("append-only main-request delivery", () => {
 		const failure = stopped.messages.at(-1)!; assert.equal(failure.role, "assistant");
 		if (failure.role === "assistant") assert.equal(failure.errorMessage, SIDE_CONTEXT_BUDGET_ERROR);
 		if (phase === "internal") assert.match(JSON.stringify(contexts[0]), /ALREADY SHARED REPLY/);
-		const larger = [...catalogContextLimits()].filter(([key]) => key.startsWith("openrouter:")).sort((a, b) => b[1] - a[1])[0]!;
+		const larger = [...(await catalogContextLimits())].filter(([key]) => key.startsWith("openrouter:")).sort((a, b) => b[1] - a[1])[0]!;
 		assert.ok(larger[1] > selected[1] * 1.5);
-		chatStore.saveSettings(f.chatId, { model: { provider: "openrouter", id: larger[0].slice("openrouter:".length) } });
+		(await chatStore.saveSettings(f.chatId, { model: { provider: "openrouter", id: larger[0].slice("openrouter:".length) } }));
 		const retried = await mainInput(f.chatId, { type: "retry" }, f.service);
 		assert.equal(retried.contexts.length, 1); assert.equal(reads, phase === "first" ? 0 : 1, "no completed tool replay");
-		const saved = chatStore.getChat(f.chatId)!;
+		const saved = (await chatStore.getChat(f.chatId))!;
 		assert.deepEqual(saved.messages.slice(0, stopped.messages.length), stopped.messages);
 		assert.equal(saved.messages.filter((message) => message.id === learner.id).length, 1);
 		assert.equal(JSON.stringify(retried.contexts).split("QUEUED LEARNER STEER").length - 1, 1);
@@ -633,14 +634,14 @@ describe("append-only main-request delivery", () => {
 	});
 
 	it("does not charge usage marked as never admitted", async () => {
-		const f = fixture();
+		const f = (await fixture());
 		const faux = createFauxCore({}); const failed = fauxAssistantMessage("", { stopReason: "error", errorMessage: "Not dispatched" });
 		markUnadmittedUsage(failed.usage);
 		const service = createSideChatService({ chatStore, instructions: () => "Helper", engineFor: async () => ({ model: faux.getModel(), streamFn: () => {
 			const stream = createAssistantMessageEventStream(); stream.push({ type: "error", reason: "error", error: failed }); return stream;
 		} }) });
 		await (await service.ask(f.chatId, { anchor: f.anchor, text: "Why?", quotes: [] })).text();
-		assert.equal(chatStore.getChat(f.chatId)!.turns?.length ?? 0, 0);
-		assert.match(chatStore.getChat(f.chatId)!.sideChats![0]!.messages.at(-1)!.error!, /Not dispatched/);
+		assert.equal((await chatStore.getChat(f.chatId))!.turns?.length ?? 0, 0);
+		assert.match((await chatStore.getChat(f.chatId))!.sideChats![0]!.messages.at(-1)!.error!, /Not dispatched/);
 	});
 });

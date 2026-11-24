@@ -29,21 +29,21 @@ function leaveCrashCopy(file: string): void {
 const leftovers = (dir: string) => fs.readdirSync(dir).filter((f) => f.includes(".tmp-"));
 
 describe("deleting records removes their crash leftovers", () => {
-	it("sessions", () => {
-		const chat = chatStore.createChat("doomed");
+	it("sessions", async () => {
+		const chat = await chatStore.createChat("doomed");
 		leaveCrashCopy(path.join(PATHS.chats, `${chat.id}.json`));
-		const keep = chatStore.createChat("kept");
+		const keep = await chatStore.createChat("kept");
 		leaveCrashCopy(path.join(PATHS.chats, `${keep.id}.json`));
-		assert.equal(chatStore.deleteChat(chat.id), true);
+		assert.equal(await chatStore.deleteChat(chat.id), true);
 		assert.deepEqual(leftovers(PATHS.chats), [`${keep.id}.json.tmp-crash`], "only the deleted session's leftover goes");
 	});
 
-	it("session jobs", () => {
-		const chat = chatStore.createChat("with jobs");
-		const job = jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "tc_leftover" });
+	it("session jobs", async () => {
+		const chat = await chatStore.createChat("with jobs");
+		const job = await jobStore.createJob({ kind: "research", chatId: chat.id, toolCallId: "tc_leftover" });
 		const jobsDir = path.join(PATHS.data, "jobs");
 		leaveCrashCopy(path.join(jobsDir, `${job.id}.json`));
-		assert.equal(jobStore.deleteJobsForChat(chat.id), 1);
+		assert.equal(await jobStore.deleteJobsForChat(chat.id), 1);
 		assert.deepEqual(leftovers(jobsDir), []);
 	});
 

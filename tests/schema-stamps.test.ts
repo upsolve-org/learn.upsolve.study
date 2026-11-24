@@ -32,8 +32,8 @@ test.after(() => {
 
 // ── chats: lazy stamp at the write choke point ──────────────────────────────
 
-test("chats: createChat stamps version 2 on disk", () => {
-	const r = chatStore.createChat("stamp test");
+test("chats: createChat stamps version 2 on disk", async () => {
+	const r = await chatStore.createChat("stamp test");
 	assert.equal(r.version, 2, "the in-memory twin is stamped");
 	const onDisk = JSON.parse(fs.readFileSync(path.join(TMP_DATA, "chats", `${r.id}.json`), "utf8"));
 	assert.equal(onDisk.version, 2, "the record carries the stamp");
@@ -54,7 +54,7 @@ test("chats: an UNSTAMPED legacy record reads fine (absence = v1) and is stamped
 	assert.equal(onDisk.version, 2, "the write choke point upgraded the legacy stamp");
 });
 
-test("chats: a NEWER-stamped record is refused honestly (the downgrade scenario)", () => {
+test("chats: a NEWER-stamped record is refused honestly (the downgrade scenario)", async () => {
 	const id = "chat_future000_stamp0";
 	fs.writeFileSync(
 		path.join(TMP_DATA, "chats", `${id}.json`),
@@ -62,7 +62,7 @@ test("chats: a NEWER-stamped record is refused honestly (the downgrade scenario)
 		"utf-8",
 	);
 	assert.equal(chatStore.getChat(id), null, "getChat refuses: reads as absent, never misparsed");
-	assert.ok(!chatStore.listChats().some((s) => s.id === id), "listChats skips it too");
+	assert.ok(!(await chatStore.listChats()).some((s) => s.id === id), "listChats skips it too");
 	// and the refused record is NOT rewritten or downgraded by the visit:
 	const onDisk = JSON.parse(fs.readFileSync(path.join(TMP_DATA, "chats", `${id}.json`), "utf8"));
 	assert.equal(onDisk.version, 99, "the future record survives untouched");
@@ -77,7 +77,7 @@ test("graph: reads never write — no sidecar appears from reading alone", () =>
 	assert.ok(!fs.existsSync(GRAPH_FORMAT_FILE), "reads did NOT create the sidecar (lazy = write-side only)");
 });
 
-test("graph: the first ledger append creates the sidecar at version 1", () => {
+test("graph: the first ledger append creates the sidecar at version 1", async () => {
 	graphStore.appendNode({
 		id: "n_stamp0",
 		name: "Stamps",
@@ -88,7 +88,7 @@ test("graph: the first ledger append creates the sidecar at version 1", () => {
 	});
 	assert.ok(fs.existsSync(GRAPH_FORMAT_FILE), "the first write stamped the family");
 	assert.equal(JSON.parse(fs.readFileSync(GRAPH_FORMAT_FILE, "utf8")).version, 1);
-	assert.equal(graphStore.readNodes().length, 1, "the ledger reads back with the sidecar present");
+	assert.equal((await graphStore.readNodes()).length, 1, "the ledger reads back with the sidecar present");
 });
 
 test("graph: a NEWER-stamped sidecar is refused honestly", () => {

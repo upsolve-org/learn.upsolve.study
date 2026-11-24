@@ -9,7 +9,7 @@ import { graphView, ownerScoped } from "@/src/server";
 export const dynamic = "force-dynamic";
 
 async function GETHandler() {
-	return Response.json(graphView());
+	return Response.json(await graphView());
 }
 
 // Tenancy: the body runs inside the caller's owner scope.

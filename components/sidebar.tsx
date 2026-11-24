@@ -987,13 +987,13 @@ function SessionsSidebar() {
 }
 
 /** The app frame: sidebar inline + content. Rendered once in the root layout. */
-export function AppShell({ children }: { children: React.ReactNode }) {
+export function AppShell({ children, logoutAction }: { children: React.ReactNode; logoutAction?: () => Promise<void> }) {
 	const [contentRoot, setContentRoot] = useState<HTMLElement | null>(null);
 	const pathname = usePathname();
 	return (
 		<HostRouteLifetimeProvider pathname={pathname}>
 		<HostContentRootContext.Provider value={contentRoot}>
-			<InteractionLayersProvider><SettingsDialogProvider>
+			<InteractionLayersProvider><SettingsDialogProvider logoutAction={logoutAction}>
 				<SessionsSidebar />
 				<FilePathDropZone className="relative isolate min-w-0 flex-1" onContentRoot={setContentRoot}>{children}</FilePathDropZone>
 				{/* The single document-level keydown listener (keyboard wave A) —

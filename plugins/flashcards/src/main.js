@@ -60,7 +60,7 @@ export function activate(ctx) {
   };
   const observe = (fn, signal) => {
     observers.add(fn); signal.addEventListener('abort', () => observers.delete(fn), { once: true });
-    if (snapshot) fn(snapshot); void refresh();
+    if (snapshot) fn(snapshot); else void refresh();
   };
   function widget(handle, signal) {
     if (signal.aborted) handle.dispose(); else signal.addEventListener('abort', () => handle.dispose(), { once: true });

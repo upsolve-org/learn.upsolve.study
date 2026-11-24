@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { after, test } from "node:test";
 import { createCanvas } from "@napi-rs/canvas";
-import * as photon from "@silvia-odwyer/photon-node";
+import sharp from "sharp";
 import {
 	createFauxCore,
 	fauxAssistantMessage,
@@ -59,11 +59,9 @@ function png(width: number, height: number): Buffer {
 	return canvas.toBuffer("image/png");
 }
 
-function dimensions(image: ImageContent): { width: number; height: number } {
-	const decoded = photon.PhotonImage.new_from_byteslice(Buffer.from(image.data, "base64"));
-	try {
-		return { width: decoded.get_width(), height: decoded.get_height() };
-	} finally { decoded.free(); }
+async function dimensions(image: ImageContent): Promise<{ width: number; height: number }> {
+	const meta = await sharp(Buffer.from(image.data, "base64")).metadata();
+	return { width: meta.width, height: meta.height };
 }
 
 function images(context: TranscriptContext): ImageContent[] {
@@ -125,10 +123,10 @@ function fakeHeadless(rendered: Buffer | ((page: number) => Buffer)) {
 	return { headless, svgCalls, pdfCalls };
 }
 
-function assertProcessedImage(context: TranscriptContext, expected: { width: number; height: number }, raw: Buffer): void {
+async function assertProcessedImage(context: TranscriptContext, expected: { width: number; height: number }, raw: Buffer): Promise<void> {
 	const parts = images(context);
 	assert.equal(parts.length, 1, "exactly one successful image reaches the faux provider");
-	assert.deepEqual(dimensions(parts[0]!), expected);
+	assert.deepEqual(await dimensions(parts[0]!), expected);
 	assert.ok(Buffer.byteLength(parts[0]!.data, "utf8") < 4.5 * 1024 * 1024);
 	assert.notEqual(parts[0]!.data, raw.toString("base64"), "the oversized raw raster is never sent");
 	assert.match(text(context), /\[Image: original \d+x\d+, displayed at \d+x\d+\. Multiply coordinates by/);
@@ -148,7 +146,7 @@ test("shared teacher read detects valid image content under a non-image extensio
 	assert.equal(images(visible).length, 1);
 	assert.equal(images(visible)[0]!.mimeType, "image/png");
 	assert.equal(images(visible)[0]!.data, bytes.toString("base64"));
-	assert.deepEqual(dimensions(images(visible)[0]!), { width: 24, height: 16 });
+	assert.deepEqual(await dimensions(images(visible)[0]!), { width: 24, height: 16 });
 	assert.match(text(visible), /Read image file \[image\/png\]/);
 });
 
@@ -185,8 +183,8 @@ test("teacher read binds independent active-model resize limits without mutating
 	const agentB = createTeacherAgent(undefined, { engine: b.engine, tools: { read: readTool } });
 	await agentB.prompt("Inspect with model B.");
 	await agentA.prompt("Inspect with model A.");
-	assertProcessedImage(a.requests[1]!, { width: 96, height: 48 }, bytes);
-	assertProcessedImage(b.requests[1]!, { width: 60, height: 30 }, bytes);
+	await assertProcessedImage(a.requests[1]!, { width: 96, height: 48 }, bytes);
+	await assertProcessedImage(b.requests[1]!, { width: 60, height: 30 }, bytes);
 	assert.equal(readTool.execute, originalExecute);
 });
 
@@ -227,7 +225,7 @@ for (const [role, resize, expected] of [
 		assert.deepEqual(boundRead.prepareArguments({ path: textFile, offset: "2", limit: "2" }), { path: textFile, offset: 2, limit: 2 });
 		await agent.prompt("Inspect the local image, then read the selected text lines.");
 		assert.equal(requests.length, 3);
-		assertProcessedImage(requests[1]!, expected, bytes);
+		await assertProcessedImage(requests[1]!, expected, bytes);
 		const selected = requests[2]!.messages.find((message) => message.role === "toolResult" && message.toolCallId === "registry-text");
 		assert.ok(selected && selected.role === "toolResult");
 		assert.equal(selected.isError, false);
@@ -253,7 +251,7 @@ test("PDF reader preserves both processed image outputs from multiple render cal
 	const visible = requests[1]!;
 	const parts = images(visible);
 	assert.equal(parts.length, 2, "the second render call must not overwrite the first call's images");
-	assert.deepEqual(parts.map(dimensions), [{ width: 2000, height: 50 }, { width: 50, height: 2000 }]);
+	assert.deepEqual(await Promise.all(parts.map(dimensions)), [{ width: 2000, height: 50 }, { width: 50, height: 2000 }]);
 	for (let i = 0; i < parts.length; i++) {
 		assert.ok(parts[i]!.data.length < 4.5 * 1024 * 1024);
 		assert.notEqual(parts[i]!.data, [wide, tall][i]!.toString("base64"));
@@ -282,7 +280,7 @@ for (const [label, resize, expected] of [
 		const result = await runPdfReaderAgent({ path: PDF, question: "Inspect the page figure." }, { engine, headless });
 		assert.equal(requests.length, 2);
 		assert.deepEqual(pdfCalls, [[1, 2]]);
-		assertProcessedImage(requests[1]!, expected, bytes);
+		await assertProcessedImage(requests[1]!, expected, bytes);
 		assert.match(text(requests[1]!), /Page 2: \[Image omitted:/);
 		assert.deepEqual(result.pagesRead, [1]);
 		assert.deepEqual(result.pagesConsulted, [1]);
@@ -311,7 +309,7 @@ for (const [label, resize, expected] of [
 			const result = await runVisualMaker({ brief: "One precise synthetic figure." }, { engine, headless });
 			assert.equal(requests.length, forced ? 3 : 2);
 			assert.deepEqual(svgCalls, [SVG]);
-			assertProcessedImage(requests.at(-1)!, expected, bytes);
+			await assertProcessedImage(requests.at(-1)!, expected, bytes);
 			assert.equal(result.svg, SVG);
 			assert.match(result.notes!, /^Confirmed after inspecting/);
 			assert.equal(requests.at(-1)!.messages.at(-1)!.role, "user");

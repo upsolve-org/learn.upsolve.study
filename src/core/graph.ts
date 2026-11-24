@@ -146,13 +146,13 @@ const samePoint = (a: ProvenancePoint, b: ProvenancePoint): boolean =>
  * ("src_…") for the format-agnostic import path. The `source` parameter
  * carries the checkpoint stamp; the merger itself is chat-store-free.
  */
-export function mergeFindings(
+export async function mergeFindings(
 	chatId: string,
 	findings: SessionFindings,
 	verdicts: AuditVerdicts,
 	deps: GraphDeps,
 	source: MergeSource,
-): EmissionStats {
+): Promise<EmissionStats> {
 	const { graphStore: ledgers } = deps;
 	const stats: EmissionStats = { nodes: 0, chains: 0 };
 
@@ -163,7 +163,7 @@ export function mergeFindings(
 	//    dropped propositions and welded wrong edges). Dedupe across runs
 	//    is the coverage ledger (nothing re-extracts) and the auditor's
 	//    equivalence links (re-encountered knowledge merges in).
-	const existingIds = new Set(ledgers.readNodes().map((n) => n.id));
+	const existingIds = new Set((await ledgers.readNodes()).map((n) => n.id));
 	const mapping = new Map<string, string>();
 	const now = new Date().toISOString();
 	const linkOf = new Map(verdicts.links.map((l) => [l.id, l.linkTo]));
@@ -186,7 +186,7 @@ export function mergeFindings(
 			graphNodeId = linkTo;
 			// Link-append: phrasings + provenance join at read time (the
 			// first line's name/statement/createdAt stand).
-			ledgers.appendNode({
+			await ledgers.appendNode({
 				id: graphNodeId,
 				name: p.name,
 				statement: p.statement,
@@ -203,7 +203,7 @@ export function mergeFindings(
 				createdAt: now,
 				provenance: points,
 			};
-			ledgers.appendNode(node);
+			await ledgers.appendNode(node);
 			stats.nodes++;
 			graphNodeId = node.id;
 			existingIds.add(graphNodeId);
@@ -224,12 +224,12 @@ export function mergeFindings(
 	//    line's premises/createdAt stand at read time).
 	const assertedByChat = new Set<string>();
 	const idOfKey = new Map<string, string>();
-	for (const line of ledgers.readChains()) {
+	for (const line of await ledgers.readChains()) {
 		const key = chainKey(line.premises, line.conclusion);
 		if (!idOfKey.has(key)) idOfKey.set(key, line.id);
 		if (line.provenance.some((pt) => pt.chatId === chatId)) assertedByChat.add(key);
 	}
-	const emitChain = (chain: ExtractedChain): void => {
+	const emitChain = async (chain: ExtractedChain): Promise<void> => {
 		// Mixed namespace (digest-aware extraction, 2026-09-30): an
 		// endpoint resolves through the job-local map (this submit's
 		// propositions) OR passes through verbatim when it names an
@@ -248,12 +248,12 @@ export function mergeFindings(
 		const key = chainKey(premises, conclusion);
 		if (assertedByChat.has(key)) return; // this chat already asserted this argument
 		const id = idOfKey.get(key) ?? newGraphChainId();
-		ledgers.appendChain({ id, premises, conclusion, createdAt: now, provenance: pointOf(chatId) });
+		await ledgers.appendChain({ id, premises, conclusion, createdAt: now, provenance: pointOf(chatId) });
 		idOfKey.set(key, id);
 		assertedByChat.add(key);
 		stats.chains!++;
 	};
-	for (const chain of findings.chains) emitChain(chain); // the extractor's chains — the one chain source (digest-aware, owner 2026-09-30)
+	for (const chain of findings.chains) await emitChain(chain); // the extractor's chains — the one chain source (digest-aware, owner 2026-09-30)
 
 	// 2b. Simplification (owner, 2026-09-30 evening) — the deterministic
 	//     dedupe pass over the WHOLE chain ledger (this merge runs inside
@@ -268,10 +268,10 @@ export function mergeFindings(
 	//       plus [X,C]⟹Y makes [A,B,C]⟹Y redundant.
 	//     Dropped keys take every provenance line with them (the rewrite is
 	//     atomic); stats count APPENDS only — simplification is maintenance.
-	const allChains = ledgers.readChains();
+	const allChains = await ledgers.readChains();
 	const keptChains = simplifyChains(allChains);
 	if (keptChains.length !== allChains.length) {
-		ledgers.rewriteLedgers({ chains: keptChains });
+		await ledgers.rewriteLedgers({ chains: keptChains });
 		stats.droppedChains = allChains.length - keptChains.length;
 	}
 
@@ -282,9 +282,9 @@ export function mergeFindings(
 	//    batch's messages uncovered); the notes path keeps the whole-file
 	//    checkpoint (a file is one shot).
 	if (source.coverage !== undefined) {
-		for (const entry of source.coverage) ledgers.appendCoverage(entry);
+		for (const entry of source.coverage) await ledgers.appendCoverage(entry);
 	} else {
-		ledgers.appendCheckpoint({ chatId, foldedAt: source.foldedAt });
+		await ledgers.appendCheckpoint({ chatId, foldedAt: source.foldedAt });
 	}
 	return stats;
 }
@@ -403,10 +403,17 @@ export interface DerivedGraph {
  * arg_ id / premises / createdAt are the chain's identity.
  * `store events, derive state` — this is the only reader that matters.
  */
-export function getGraph(graphStore: Pick<GraphStore, "readNodes" | "readChains">): DerivedGraph {
+export async function getGraph(graphStore: Pick<GraphStore, "readNodes" | "readChains">): Promise<DerivedGraph> {
+	return deriveGraph(await graphStore.readNodes(), await graphStore.readChains());
+}
+
+/** The pure derivation over already-read ledger lines. `getGraph` is the async
+ *  port-facing wrapper; synchronous consumers with an in-process store use this
+ *  with the same lines so the two can never disagree. */
+export function deriveGraph(nodeLines: readonly GraphNode[], chainLines: readonly GraphChain[]): DerivedGraph {
 	// Merge node lines by id (first line defines; later lines add phrasings).
 	const byId = new Map<string, GraphNode>();
-	for (const line of graphStore.readNodes()) {
+	for (const line of nodeLines) {
 		const existing = byId.get(line.id);
 		if (!existing) {
 			byId.set(line.id, { ...line, aliases: [...line.aliases], provenance: [...line.provenance] });
@@ -425,7 +432,7 @@ export function getGraph(graphStore: Pick<GraphStore, "readNodes" | "readChains"
 	// line's id/premises/createdAt stand, provenance unions.
 	const chains: GraphChain[] = [];
 	const byKey = new Map<string, GraphChain>();
-	for (const line of graphStore.readChains()) {
+	for (const line of chainLines) {
 		const key = chainKey(line.premises, line.conclusion);
 		const existing = byKey.get(key);
 		if (existing) {
@@ -507,8 +514,8 @@ export function deriveView(graph: DerivedGraph): {
 // ─── the /api/graph payload ──────────────────────────────────────────────────
 
 /** Everything the home graph view needs, in one fetch (shape: contracts). */
-export function graphSnapshot(deps: GraphDeps, sourceNames: Readonly<Record<string, string>> = {}): GraphSnapshot {
-	const graph = getGraph(deps.graphStore);
+export async function graphSnapshot(deps: GraphDeps, sourceNames: Readonly<Record<string, string>> = {}): Promise<GraphSnapshot> {
+	const graph = await getGraph(deps.graphStore);
 	// The canvas-facing lossy image: propositions + derived implication
 	// nodes, untyped arrows. `chains` (the stored truth) ride along for
 	// the chain table — it reads the truth, never the derived fan-out,
@@ -539,9 +546,9 @@ export function graphSnapshot(deps: GraphDeps, sourceNames: Readonly<Record<stri
 	const fileSources: Record<string, string> = {};
 	// One read of the sources map per snapshot: readSources() re-reads and
 	// re-parses sources.json on every call.
-	const sourcePaths = new Map(deps.graphStore.readSources().map((s) => [s.id, s.filePath]));
+	const sourcePaths = new Map((await deps.graphStore.readSources()).map((s) => [s.id, s.filePath]));
 	for (const id of sourceIds) {
-		const chat = deps.chatStore.getChat(id);
+		const chat = await deps.chatStore.getChat(id);
 		if (chat) {
 			sessions[id] = chat.title;
 			continue;
@@ -589,7 +596,7 @@ export function graphSnapshot(deps: GraphDeps, sourceNames: Readonly<Record<stri
 	// Resting layout (Option A): the positions ledger, when the settle has
 	// ever run. Absent on a fresh graph — the view falls back to its own
 	// one-shot pass until the first merge writes the ledger.
-	const positions = deps.graphStore.readPositions();
+	const positions = await deps.graphStore.readPositions();
 
 	return {
 		nodes,
@@ -635,14 +642,14 @@ export interface GraphSessionEntry {
 
 /** The prober's session list: every birth session, most-recently-active
  *  first (undatable records sink, in stable id order). */
-export function graphSessionIndex(deps: GraphDeps): GraphSessionEntry[] {
+export async function graphSessionIndex(deps: GraphDeps): Promise<GraphSessionEntry[]> {
 	const counts = new Map<string, number>();
-	const born = getGraph(deps.graphStore);
+	const born = await getGraph(deps.graphStore);
 	for (const cluster of birthSessionPartition(born.nodes)) {
 		counts.set(cluster.id, cluster.members.length);
 	}
-	const chats = new Map(deps.chatStore.listChats().map((chat) => [chat.id, chat]));
-	const sources = new Map(deps.graphStore.readSources().map((s) => [s.id, s]));
+	const chats = new Map((await deps.chatStore.listChats()).map((chat) => [chat.id, chat]));
+	const sources = new Map((await deps.graphStore.readSources()).map((s) => [s.id, s]));
 	const entries: GraphSessionEntry[] = [];
 	for (const [id, propositions] of counts) {
 		const chat = chats.get(id);		if (chat) {
@@ -685,8 +692,8 @@ export interface GraphSessionProposition {
 
 /** The propositions BORN in one session — what that session first
  *  articulated. Members sorted by node id — deterministic. */
-export function graphSessionPropositions(deps: GraphDeps, sessionId: string): GraphSessionProposition[] {
-	const born = getGraph(deps.graphStore).nodes.filter((node) => birthSessionOf(node) === sessionId);
+export async function graphSessionPropositions(deps: GraphDeps, sessionId: string): Promise<GraphSessionProposition[]> {
+	const born = (await getGraph(deps.graphStore)).nodes.filter((node) => birthSessionOf(node) === sessionId);
 	return born
 		.map((node) => ({ nodeId: node.id, name: node.name }))
 		.sort((a, b) => (a.nodeId < b.nodeId ? -1 : 1));

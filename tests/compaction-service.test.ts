@@ -49,11 +49,16 @@ after(() => {
 
 const big = (text: string, kb = 100): LhMessage => newUserMessage(`${text}: ${"x".repeat(kb * 1024)}`);
 
+/** kickCompaction now resolves its deps through async ports, so its
+ *  in-flight entry is registered a few microtasks after the call. Drain
+ *  those ticks before reading the registry or joining the run. */
+const tick = () => new Promise<void>((resolve) => setTimeout(resolve, 0));
+
 /** A chat whose record projects far over any test threshold. */
-function overThresholdChat(label: string): string {
-	const chat = chatStore.createChat(label);
+async function overThresholdChat(label: string): Promise<string> {
+	const chat = (await chatStore.createChat(label));
 	const messages = [big("m1"), big("m2"), big("m3"), newUserMessage("recent")];
-	chatStore.saveMessages(chat.id, messages);
+	(await chatStore.saveMessages(chat.id, messages));
 	return chat.id;
 }
 
@@ -103,9 +108,9 @@ describe("the compaction service", () => {
 			for (const entrypoint of ["gate", "kick"]) {
 				const outcomes = [];
 				for (const includeReasoning of [undefined, false, true]) {
-					const chat = chatStore.createChat("identical snapshot comparison");
-					chatStore.saveMessages(chat.id, JSON.parse(frozenSnapshot));
-					assert.deepEqual(chatStore.getChat(chat.id)!.messages, snapshot);
+					const chat = (await chatStore.createChat("identical snapshot comparison"));
+					(await chatStore.saveMessages(chat.id, JSON.parse(frozenSnapshot)));
+					assert.deepEqual((await chatStore.getChat(chat.id))!.messages, snapshot);
 					let calls = 0;
 					const summary = "The learner knows the earlier material.";
 					const deps: CompactionDeps = {
@@ -121,8 +126,8 @@ describe("the compaction service", () => {
 					assert.equal(projectedContextTokens(snapshot, 100, includeReasoning ? requestModel : undefined), 170_100,
 						"the same provider usage triggers both modes; reasoning is already in output");
 					if (entrypoint === "gate") await ensureCompacted(deps, chat.id);
-					else { kickCompaction(() => deps, chat.id); await awaitCompaction(chat.id); }
-					const after = chatStore.getChat(chat.id)!.messages;
+					else { kickCompaction(() => deps, chat.id); await tick(); await awaitCompaction(chat.id); }
+					const after = (await chatStore.getChat(chat.id))!.messages;
 					const marker = activeCompactionOf(after)!;
 					assert.equal(calls, 1);
 					assert.equal(marker.details.tokensBefore, 170_100);
@@ -152,7 +157,7 @@ describe("the compaction service", () => {
 			for (const postMarker of [false, true]) {
 				for (const includeReasoning of [undefined, false, true]) {
 					const label = `${entrypoint}, post-marker=${postMarker}, includeReasoning=${includeReasoning}`;
-					const chat = chatStore.createChat(label);
+					const chat = (await chatStore.createChat(label));
 					const messages = Array.from({ length: 6 }, (_, i) => ({
 						id: `signed-${i}`, role: "assistant", provider: model.provider, api: model.api, model: model.id,
 						content: [
@@ -167,16 +172,17 @@ describe("the compaction service", () => {
 						firstKeptMessageId: messages[0]!.id, tokensBefore: 100_000, at: "fixture",
 					}) : null;
 					if (prior) messages.push(prior);
-					chatStore.saveMessages(chat.id, messages);
+					(await chatStore.saveMessages(chat.id, messages));
 					const deps = {
 						...depsOf(chat.id, 32_000), engine: { model } as CompactionDeps["engine"], includeReasoning,
 					};
 					if (entrypoint === "gate") await ensureCompacted(deps, chat.id);
 					else {
 						kickCompaction(() => deps, chat.id);
+						await tick();
 						await awaitCompaction(chat.id);
 					}
-					const after = chatStore.getChat(chat.id)!.messages;
+					const after = (await chatStore.getChat(chat.id))!.messages;
 					const marker = activeCompactionOf(after);
 					if (includeReasoning) {
 						assert.ok(marker, label);
@@ -194,24 +200,25 @@ describe("the compaction service", () => {
 
 	it("all compaction entrypoints refuse to start while a preparation or teacher owns the session", async () => {
 		for (const ownerKind of ["preparation", "teacher"] as const) {
-			const chatId = overThresholdChat(`compact: live ${ownerKind}`);
+			const chatId = (await overThresholdChat(`compact: live ${ownerKind}`));
 			const prep = ownerKind === "preparation" ? claimPreparingTurn(chatId)! : null;
 			if (!prep) assert.equal(beginTurn(chatId), true);
 			const before = summarizeCalls;
-			const original = chatStore.getChat(chatId)!.messages;
+			const original = (await chatStore.getChat(chatId))!.messages;
 			try {
 				await ensureCompacted(depsOf(chatId, 40_000), chatId);
 				kickCompaction(() => depsOf(chatId, 40_000), chatId);
+				await tick();
 				await awaitCompaction(chatId);
 				assert.equal(summarizeCalls, before);
-				assert.deepEqual(chatStore.getChat(chatId)!.messages, original);
+				assert.deepEqual((await chatStore.getChat(chatId))!.messages, original);
 				assert.equal(compactionInFlight(chatId), false);
 			} finally { if (prep) prep.finish(); else endTurn(chatId); }
 		}
 	});
 
 	it("a stalled competing preflight rechecks ownership at actual compaction start after its await", async () => {
-		const chatId = overThresholdChat("compact: late competing preflight");
+		const chatId = (await overThresholdChat("compact: late competing preflight"));
 		const deps = depsOf(chatId, 40_000);
 		const before = summarizeCalls;
 		// Both requests passed their earlier request-level checks. The losing
@@ -220,20 +227,20 @@ describe("the compaction service", () => {
 		const competingPreflight = ensureCompacted(deps, chatId);
 		const prep = claimPreparingTurn(chatId)!;
 		assert.ok(prep);
-		const accepted = [...chatStore.getChat(chatId)!.messages, newUserMessage("accepted grade/teacher output")];
-		chatStore.saveMessages(chatId, accepted);
+		const accepted = [...(await chatStore.getChat(chatId))!.messages, newUserMessage("accepted grade/teacher output")];
+		(await chatStore.saveMessages(chatId, accepted));
 		try {
 			await competingPreflight;
 			assert.equal(summarizeCalls, before, "stale preflight cannot launch a summary behind the accepted answer");
-			assert.deepEqual(chatStore.getChat(chatId)!.messages, accepted);
-			assert.equal(activeCompactionOf(chatStore.getChat(chatId)!.messages), null);
+			assert.deepEqual((await chatStore.getChat(chatId))!.messages, accepted);
+			assert.equal(activeCompactionOf((await chatStore.getChat(chatId))!.messages), null);
 		} finally { prep.finish(); }
 		await ensureCompacted(deps, chatId);
 		assert.equal(summarizeCalls, before + 1, "compaction remains eligible after the owner settles");
 	});
 
 	it("a competing preflight waiting for an existing compaction cannot restart it behind the winning owner", async () => {
-		const chatId = overThresholdChat("compact: competing structural wait");
+		const chatId = (await overThresholdChat("compact: competing structural wait"));
 		const deps = depsOf(chatId, 40_000);
 		const before = summarizeCalls;
 		let release!: () => void;
@@ -254,8 +261,8 @@ describe("the compaction service", () => {
 			await awaitCompaction(chatId);
 			owner.prep = claimPreparingTurn(chatId);
 			assert.ok(owner.prep);
-			accepted = [...chatStore.getChat(chatId)!.messages, newUserMessage("accepted answer grading")];
-			chatStore.saveMessages(chatId, accepted);
+			accepted = [...(await chatStore.getChat(chatId))!.messages, newUserMessage("accepted answer grading")];
+			(await chatStore.saveMessages(chatId, accepted));
 		})();
 		let competingDone = false;
 		const competitor = ensureCompacted(deps, chatId).then(() => { competingDone = true; });
@@ -267,38 +274,40 @@ describe("the compaction service", () => {
 			await competitor;
 			await initial;
 			assert.equal(summarizeCalls, before + 1, "only the already-running summary was admitted");
-			assert.deepEqual(chatStore.getChat(chatId)!.messages, accepted);
+			assert.deepEqual((await chatStore.getChat(chatId))!.messages, accepted);
 			assert.equal(activeCompactionOf(accepted), null);
 		} finally { release(); await initial; owner.prep?.finish(); }
 	});
 
 	it("ownership is rechecked after synchronous start hooks as well as awaits", async () => {
 		for (const entrypoint of ["preflight", "background"] as const) {
-			const chatId = overThresholdChat(`compact: start seam ${entrypoint}`);
+			const chatId = (await overThresholdChat(`compact: start seam ${entrypoint}`));
 			const owner: { prep: ReturnType<typeof claimPreparingTurn> } = { prep: null };
 			const deps = { ...depsOf(chatId, 40_000), canStart: () => { owner.prep ??= claimPreparingTurn(chatId); return true; } };
 			const before = summarizeCalls;
 			try {
 				if (entrypoint === "preflight") await ensureCompacted(deps, chatId);
 				else kickCompaction(() => deps, chatId);
+				await tick();
 				await awaitCompaction(chatId);
 				assert.equal(summarizeCalls, before);
-				assert.equal(activeCompactionOf(chatStore.getChat(chatId)!.messages), null);
+				assert.equal(activeCompactionOf((await chatStore.getChat(chatId))!.messages), null);
 			} finally { owner.prep?.finish(); }
 		}
 	});
 
 	it("background eligibility skips both entrypoints without writes, but still awaits an existing structural run", async () => {
-		const chatId = overThresholdChat("compact: consent off");
+		const chatId = (await overThresholdChat("compact: consent off"));
 		const before = summarizeCalls;
 		const denied = { ...depsOf(chatId, 40_000), canStart: () => false };
 		await ensureCompacted(denied, chatId); kickCompaction(() => denied, chatId);
+		await tick();
 		assert.equal(summarizeCalls, before);
-		assert.equal(activeCompactionOf(chatStore.getChat(chatId)!.messages), null);
+		assert.equal(activeCompactionOf((await chatStore.getChat(chatId))!.messages), null);
 		let release!: () => void, entered!: () => void;
 		const gate = new Promise<void>((done) => { release = done; });
 		const started = new Promise<void>((done) => { entered = done; });
-		const allowed = { ...depsOf(chatId, 40_000), summarize: async (prompt: string) => { entered(); await gate; return depsOf(chatId, 40_000).summarize!(prompt, denied.engine); } };
+		const allowed = { ...depsOf(chatId, 40_000), summarize: async (prompt: string) => { entered(); await gate; return (await depsOf(chatId, 40_000).summarize!(prompt, denied.engine)); } };
 		kickCompaction(() => allowed, chatId); await started;
 		let finished = false;
 		const waiter = ensureCompacted(denied, chatId).then(() => { finished = true; });
@@ -306,7 +315,7 @@ describe("the compaction service", () => {
 		release(); await waiter; assert.equal(finished, true);
 	});
 	it("over-threshold record → marker appended, usage logged, both events emitted", async () => {
-		const chatId = overThresholdChat("compact: basic");
+		const chatId = (await overThresholdChat("compact: basic"));
 		const events: string[] = [];
 		const off = subscribe((e) => {
 			const { chatId: c, running } = e as { chatId?: string; running?: boolean };
@@ -316,7 +325,7 @@ describe("the compaction service", () => {
 		await ensureCompacted(depsOf(chatId, 40_000), chatId);
 		off();
 
-		const record = chatStore.getChat(chatId)!;
+		const record = (await chatStore.getChat(chatId))!;
 		const marker = activeCompactionOf(record.messages);
 		assert.ok(marker, "the marker landed");
 		assert.ok(marker!.content.includes("SUMMARY #"));
@@ -331,26 +340,26 @@ describe("the compaction service", () => {
 	});
 
 	it("under-threshold record → a no-op (no marker, no summary call)", async () => {
-		const chatId = overThresholdChat("compact: under");
+		const chatId = (await overThresholdChat("compact: under"));
 		const before = summarizeCalls;
 		await ensureCompacted(depsOf(chatId, 10_000_000), chatId);
 		assert.equal(summarizeCalls, before);
-		assert.equal(activeCompactionOf(chatStore.getChat(chatId)!.messages), null);
+		assert.equal(activeCompactionOf((await chatStore.getChat(chatId))!.messages), null);
 	});
 
 	it("includes prospective side cargo in the trigger but never records or summarizes that undelivered cargo", async () => {
-		const chat = chatStore.createChat("compact: prospective side exchanges");
-		chatStore.saveMessages(chat.id, [big("old lesson 1", 40), big("old lesson 2", 40), big("old lesson 3", 40), newUserMessage("recent lesson")]);
-		const original = chatStore.getChat(chat.id)!.messages;
+		const chat = (await chatStore.createChat("compact: prospective side exchanges"));
+		(await chatStore.saveMessages(chat.id, [big("old lesson 1", 40), big("old lesson 2", 40), big("old lesson 3", 40), newUserMessage("recent lesson")]));
+		const original = (await chatStore.getChat(chat.id))!.messages;
 		const cargo = newUserMessage(`UNDELIVERED SIDE EXCHANGES ${"s".repeat(90 * 1024)}`);
 		const deps = depsOf(chat.id, 45_000);
 		assert.ok(projectedContextTokens(original, deps.systemPromptTokens) < deps.thresholdTokens);
 		let summarized = "";
 		await ensureCompacted({ ...deps,
 			projectMessages: (record) => [...record.messages, cargo],
-			summarize: async (prompt, engine) => { summarized = prompt; return deps.summarize!(prompt, engine); },
+			summarize: async (prompt, engine) => { summarized = prompt; return (await deps.summarize!(prompt, engine)); },
 		}, chat.id);
-		const saved = chatStore.getChat(chat.id)!.messages;
+		const saved = (await chatStore.getChat(chat.id))!.messages;
 		assert.deepEqual(saved.slice(0, original.length), original);
 		assert.ok(activeCompactionOf(saved)); assert.doesNotMatch(summarized, /UNDELIVERED SIDE EXCHANGES/);
 		assert.ok(!saved.some((message) => message.id === cargo.id));
@@ -367,14 +376,14 @@ describe("the compaction service", () => {
 			const stored = identity === "openrouter" ? target : responses;
 			for (const includeReasoning of [undefined, false, true]) {
 				const label = `${identity}, includeReasoning=${includeReasoning}`;
-				const chat = chatStore.createChat(label);
+				const chat = (await chatStore.createChat(label));
 				const history = Array.from({ length: 6 }, (_, index) => ({
 					...fauxAssistantMessage("a".repeat(400)), id: `signed-${index}`, provider: stored.provider, api: stored.api, model: stored.id,
 					content: [{ type: "thinking", thinking: "", thinkingSignature: "opaque-only-not-a-token-count" }, { type: "text", text: "a".repeat(400) }],
 					usage: { input: 50_000, output: 10_000, reasoning: 9_000, cacheRead: 0, cacheWrite: 0, totalTokens: 60_000 },
 				}) as LhMessage);
 				const prior = newCompactionMarker("Prior summary", { firstKeptMessageId: history[0]!.id, tokensBefore: 100_000, at: "fixture" });
-				const original = [...history, prior]; chatStore.saveMessages(chat.id, original);
+				const original = [...history, prior]; (await chatStore.saveMessages(chat.id, original));
 				const cargo = newUserMessage(`UNDELIVERED SIDE EXCHANGES ${"s".repeat(40_000)}`);
 				const deps: CompactionDeps = { ...depsOf(chat.id, 65_000), engine: { model: target } as CompactionDeps["engine"], includeReasoning };
 				const estimateModel = includeReasoning ? deps.engine.model : undefined;
@@ -384,9 +393,9 @@ describe("the compaction service", () => {
 				assert.equal(projected > deps.thresholdTokens, shouldCompact, "the post-marker reasoning floor plus new cargo—not a usage anchor—triggers this gate");
 				let summaries = 0, summaryInput = "";
 				await ensureCompacted({ ...deps, projectMessages: (record) => [...record.messages, cargo], summarize: async (prompt, engine) => {
-					summaries++; summaryInput = prompt; return deps.summarize!(prompt, engine);
+					summaries++; summaryInput = prompt; return (await deps.summarize!(prompt, engine));
 				} }, chat.id);
-				const after = chatStore.getChat(chat.id)!.messages;
+				const after = (await chatStore.getChat(chat.id))!.messages;
 				assert.deepEqual(after.slice(0, original.length), original, label);
 				assert.equal(summaries, shouldCompact ? 1 : 0, label);
 				assert.ok(!after.some((message) => message.id === cargo.id));
@@ -416,7 +425,7 @@ describe("the compaction service", () => {
 
 	for (const eligibility of ["eligible", "background disabled", "under threshold"] as const) {
 	it(`a concurrent fresh preflight (${eligibility}) waits for the summary started after its initial structural check`, async () => {
-		const chatId = overThresholdChat(`compact: fresh preflight wait race ${eligibility}`);
+		const chatId = (await overThresholdChat(`compact: fresh preflight wait race ${eligibility}`));
 		const deps = depsOf(chatId, 40_000);
 		let release!: () => void;
 		let entered!: () => void;
@@ -425,11 +434,15 @@ describe("the compaction service", () => {
 		const first = ensureCompacted({ ...deps, summarize: async (prompt, engine) => {
 			entered();
 			await gate;
-			return deps.summarize!(prompt, engine);
+			return (await deps.summarize!(prompt, engine));
 		} }, chatId);
-		// Both calls see no running compaction at the first structural check.
-		// Their await continuations resume in order: first starts the stalled
-		// summary; second must join it, not return to grading admission.
+		// The first preflight starts the stalled summary. Once it is actually
+		// in flight, a competing preflight must join it rather than return to
+		// grading admission through its own canStart/threshold early exit.
+		// (Resolving deps through async ports means the registry entry lands
+		// a few ticks after the first call, so start the competitor there.)
+		await started;
+		assert.equal(compactionInFlight(chatId), true);
 		let secondReturned = false;
 		const secondDeps = {
 			...deps,
@@ -438,9 +451,7 @@ describe("the compaction service", () => {
 		};
 		const second = ensureCompacted(secondDeps, chatId).then(() => { secondReturned = true; });
 		try {
-			await started;
 			await Promise.resolve();
-			assert.equal(compactionInFlight(chatId), true);
 			assert.equal(secondReturned, false, "competing ensureCompacted returned during the newly started summary");
 		} finally {
 			release();
@@ -452,20 +463,20 @@ describe("the compaction service", () => {
 	}
 
 	it("the registry is a mutex: concurrent ensureCompacted → ONE summary", async () => {
-		const chatId = overThresholdChat("compact: mutex");
+		const chatId = (await overThresholdChat("compact: mutex"));
 		const before = summarizeCalls;
 		const deps = depsOf(chatId, 40_000);
-		await Promise.all([ensureCompacted(deps, chatId), ensureCompacted(deps, chatId), ensureCompacted(deps, chatId)]);
+		await Promise.all([(await ensureCompacted(deps, chatId)), (await ensureCompacted(deps, chatId)), (await ensureCompacted(deps, chatId))]);
 		assert.equal(summarizeCalls, before + 1, "exactly one summary however many gates race");
 	});
 
 	it("concurrent prospective gates both await the same summary rather than releasing a teacher early", async () => {
-		const chatId = overThresholdChat("compact: concurrent gate wait");
+		const chatId = (await overThresholdChat("compact: concurrent gate wait"));
 		let release!: () => void, entered!: () => void;
 		const gate = new Promise<void>((done) => { release = done; });
 		const started = new Promise<void>((done) => { entered = done; });
 		const base = depsOf(chatId, 40_000);
-		const deps = { ...base, summarize: async (prompt: string) => { entered(); await gate; return base.summarize!(prompt, base.engine); } };
+		const deps = { ...base, summarize: async (prompt: string) => { entered(); await gate; return (await base.summarize!(prompt, base.engine)); } };
 		let firstDone = false, secondDone = false;
 		const first = ensureCompacted(deps, chatId).then(() => { firstDone = true; });
 		const second = ensureCompacted(deps, chatId).then(() => { secondDone = true; });
@@ -475,7 +486,7 @@ describe("the compaction service", () => {
 	});
 
 	it("awaitCompaction: a later call rides the in-flight one (the structural gate)", async () => {
-		const chatId = overThresholdChat("compact: gate");
+		const chatId = (await overThresholdChat("compact: gate"));
 		const events: string[] = [];
 		const off = subscribe((e) => {
 			const { chatId: c, running } = e as { chatId?: string; running?: boolean };
@@ -489,7 +500,7 @@ describe("the compaction service", () => {
 	});
 
 	it("chained compaction: the span carries the PRIOR summary forward", async () => {
-		const chatId = overThresholdChat("compact: chained");
+		const chatId = (await overThresholdChat("compact: chained"));
 		let seenPrompt = "";
 		const deps: CompactionDeps = {
 			...depsOf(chatId, 40_000),
@@ -504,21 +515,21 @@ describe("the compaction service", () => {
 		// first compaction
 		await ensureCompacted({ ...depsOf(chatId, 40_000) }, chatId);
 		// grow the record past the threshold again (post-markers + new tail)
-		chatStore.saveMessages(chatId, [...chatStore.getChat(chatId)!.messages, big("m9"), big("m10"), big("m11")]);
+		(await chatStore.saveMessages(chatId, [...(await chatStore.getChat(chatId))!.messages, big("m9"), big("m10"), big("m11")]));
 		// second compaction — the span must open with the FIRST summary
 		await ensureCompacted(deps, chatId);
 		assert.ok(seenPrompt.includes("prior compaction summary"), "the prior summary rides the span");
 		assert.ok(seenPrompt.includes(COMPACTED_HISTORY_HEADER), "as the marker's canonical text");
 		assert.equal(seenPrompt.split(COMPACTED_HISTORY_HEADER).length - 1, 1, "the prior summary is supplied exactly once");
-		const record = chatStore.getChat(chatId)!;
+		const record = (await chatStore.getChat(chatId))!;
 		const markers = record.messages.filter((m) => (m as { customType?: string }).customType === "compaction");
 		assert.equal(markers.length, 2, "both markers persist (history is never rewritten)");
 		assert.ok(activeCompactionOf(record.messages)!.content.includes("SECOND SUMMARY"), "the newest rules");
 	});
 
 	it("ten successive compactions keep one summary on the wire and preserve the complete record", async () => {
-		const chat = chatStore.createChat("repeated-cycle fixture");
-		chatStore.saveMessages(chat.id, Array.from({ length: 20 }, (_, i) => big(`exchange-${i}`, 8)));
+		const chat = (await chatStore.createChat("repeated-cycle fixture"));
+		(await chatStore.saveMessages(chat.id, Array.from({ length: 20 }, (_, i) => big(`exchange-${i}`, 8))));
 		let calls = 0;
 		const deps: CompactionDeps = {
 			...depsOf(chat.id, 150_000),
@@ -532,15 +543,15 @@ describe("the compaction service", () => {
 			},
 		};
 		for (let cycle = 1; cycle <= 10; cycle++) {
-			const messages = [...chatStore.getChat(chat.id)!.messages];
+			const messages = [...(await chatStore.getChat(chat.id))!.messages];
 			if (cycle > 1) messages.push(big(`growth-${cycle}`, 8));
 			// Controlled provider readings trigger compaction while the visible
 			// retained tail advances slowly enough to contain older markers.
 			messages.push({ id: `usage-${cycle}`, role: "assistant", content: [{ type: "text", text: "measured response" }], stopReason: "stop", usage: { input: 150_001, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 150_002 }, timestamp: cycle } as LhMessage);
-			chatStore.saveMessages(chat.id, messages);
+			(await chatStore.saveMessages(chat.id, messages));
 			await ensureCompacted(deps, chat.id);
 			assert.equal(calls, cycle);
-			const record = chatStore.getChat(chat.id)!;
+			const record = (await chatStore.getChat(chat.id))!;
 			assert.deepEqual(record.messages.slice(0, -1), messages, "every original message and marker remains stored");
 			assert.equal(record.messages.filter((m) => m.role === "custom" && m.customType === "compaction").length, cycle);
 			const wire = JSON.stringify(toLlmMessages(record.messages));
@@ -551,48 +562,48 @@ describe("the compaction service", () => {
 	});
 
 	it("a resolved prior summary replaces all summary markers in the newly superseded span", async () => {
-		const chat = chatStore.createChat("summary span fixture");
+		const chat = (await chatStore.createChat("summary span fixture"));
 		const kept = big("previously retained");
 		const details = { firstKeptMessageId: kept.id, tokensBefore: 150_000, at: "fixture" };
 		const steer: LhMessage = { id: "steer", role: "custom", customType: "subagent-steer", content: "RESEARCH DELIVERY", display: true, details: {}, timestamp: 1 };
 		const messages = [big("discarded"), kept, newCompactionMarker("SUPERSEDED SUMMARY", details), steer, newCompactionMarker("LATEST SUMMARY", details), big("growth"), big("recent")];
-		chatStore.saveMessages(chat.id, messages);
+		(await chatStore.saveMessages(chat.id, messages));
 		let seenPrompt = "";
 		await ensureCompacted({ ...depsOf(chat.id, 40_000), summarize: async (prompt, engine) => {
 			seenPrompt = prompt;
-			return depsOf(chat.id, 40_000).summarize!(prompt, engine);
+			return (await depsOf(chat.id, 40_000).summarize!(prompt, engine));
 		} }, chat.id);
 		assert.ok(seenPrompt.includes("previously retained"));
 		assert.ok(seenPrompt.includes("RESEARCH DELIVERY"), "non-compaction context markers still ride the span");
 		assert.ok(!seenPrompt.includes("SUPERSEDED SUMMARY"));
 		assert.equal(seenPrompt.split("LATEST SUMMARY").length - 1, 1);
 		assert.equal(seenPrompt.split(COMPACTED_HISTORY_HEADER).length - 1, 1);
-		assert.deepEqual(chatStore.getChat(chat.id)!.messages.slice(0, -1), messages);
+		assert.deepEqual((await chatStore.getChat(chat.id))!.messages.slice(0, -1), messages);
 	});
 
 	it("an unresolved cutoff preserves legacy summary text in the next compaction input", async () => {
-		const chat = chatStore.createChat("legacy summary fixture");
+		const chat = (await chatStore.createChat("legacy summary fixture"));
 		const legacy = newCompactionMarker("LEGACY-ONLY INFORMATION", { firstKeptMessageId: "missing", tokensBefore: 150_000, at: "fixture" });
 		const messages = [big("old"), legacy, big("recent"), newUserMessage("latest")];
-		chatStore.saveMessages(chat.id, messages);
+		(await chatStore.saveMessages(chat.id, messages));
 		let seenPrompt = "";
 		await ensureCompacted({ ...depsOf(chat.id, 40_000), summarize: async (prompt, engine) => {
 			seenPrompt = prompt;
-			return depsOf(chat.id, 40_000).summarize!(prompt, engine);
+			return (await depsOf(chat.id, 40_000).summarize!(prompt, engine));
 		} }, chat.id);
 		assert.equal(seenPrompt.split("LEGACY-ONLY INFORMATION").length - 1, 1);
 		assert.ok(!seenPrompt.includes("prior compaction summary"), "no separate prior summary exists for an unresolved cutoff");
-		assert.deepEqual(chatStore.getChat(chat.id)!.messages.slice(0, -1), messages);
+		assert.deepEqual((await chatStore.getChat(chat.id))!.messages.slice(0, -1), messages);
 	});
 
 	it("the production summarizer rejects a length-stopped checkpoint and a complete retry can commit", async () => {
-		const chatId = overThresholdChat("incomplete summary fixture");
+		const chatId = (await overThresholdChat("incomplete summary fixture"));
 		await ensureCompacted(depsOf(chatId, 40_000), chatId);
-		chatStore.saveMessages(chatId, [...chatStore.getChat(chatId)!.messages, big("growth 1"), big("growth 2")]);
+		(await chatStore.saveMessages(chatId, [...(await chatStore.getChat(chatId))!.messages, big("growth 1"), big("growth 2")]));
 		const faux = createFauxCore({});
 		const { summarize: _injected, ...base } = depsOf(chatId, 40_000);
 		const deps: CompactionDeps = { ...base, engine: { model: faux.getModel(), streamFn: faux.streamSimple } };
-		const before = chatStore.getChat(chatId)!;
+		const before = (await chatStore.getChat(chatId))!;
 		assert.ok(activeCompactionOf(before.messages), "the failed replacement must preserve an existing checkpoint too");
 		const events: string[] = [];
 		const off = subscribe((event) => {
@@ -607,12 +618,12 @@ describe("the compaction service", () => {
 		try {
 			faux.setResponses([fauxAssistantMessage("INCOMPLETE SUMMARY", { stopReason: "length" })]);
 			await ensureCompacted(deps, chatId);
-			assert.deepEqual(chatStore.getChat(chatId), before, "an explicitly unfinished summary must not become a checkpoint");
+			assert.deepEqual((await chatStore.getChat(chatId)), before, "an explicitly unfinished summary must not become a checkpoint");
 			assert.equal(compactionInFlight(chatId), false, "the failed run releases its gate");
 			assert.deepEqual(events, ["true", "false"]);
 			faux.setResponses([fauxAssistantMessage("COMPLETE SUMMARY")]);
 			await ensureCompacted(deps, chatId);
-			const record = chatStore.getChat(chatId)!;
+			const record = (await chatStore.getChat(chatId))!;
 			assert.ok(activeCompactionOf(record.messages)!.content.includes("COMPLETE SUMMARY"));
 			assert.deepEqual(record.messages.slice(0, -1), before.messages);
 			assert.ok(!JSON.stringify(record.messages).includes("INCOMPLETE SUMMARY"));
@@ -631,7 +642,7 @@ describe("the compaction service", () => {
 	});
 
 	it("kickCompaction: fire-and-forget, registry-set, over-threshold only", async () => {
-		const chatId = overThresholdChat("compact: kick");
+		const chatId = (await overThresholdChat("compact: kick"));
 		const before = summarizeCalls;
 		let built = 0;
 		kickCompaction(() => {
@@ -639,6 +650,7 @@ describe("the compaction service", () => {
 			return depsOf(chatId, 40_000);
 		}, chatId);
 		assert.equal(built, 1, "deps built once");
+		await tick();
 		await awaitCompaction(chatId);
 		assert.equal(summarizeCalls, before + 1);
 		// beneath threshold now → a second kick builds its deps, the
@@ -649,26 +661,27 @@ describe("the compaction service", () => {
 			built++;
 			return depsOf(chatId, 40_000);
 		}, chatId);
+		await tick();
 		assert.equal(summarizeCalls, afterFirst, "post-compaction record is under threshold — no run");
 		// a null deps build (engineless) is a silent no-op
 		kickCompaction(() => null, chatId);
 	});
 
 	it("a usage-heavy zero cut does not spend or append a marker", async () => {
-		const chat = chatStore.createChat("no-progress fixture");
+		const chat = (await chatStore.createChat("no-progress fixture"));
 		const assistant = { id: "measured", role: "assistant", content: [{ type: "text", text: "ok" }], stopReason: "stop", usage: { input: 120_000, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 120_001 }, timestamp: 1 } as LhMessage;
-		chatStore.saveMessages(chat.id, [newUserMessage("tiny visible history"), assistant]);
+		(await chatStore.saveMessages(chat.id, [newUserMessage("tiny visible history"), assistant]));
 		const before = summarizeCalls;
 		await ensureCompacted(depsOf(chat.id, 40_000), chat.id);
 		assert.equal(summarizeCalls, before);
-		assert.equal(activeCompactionOf(chatStore.getChat(chat.id)!.messages), null);
-		assert.equal(measuredContextTokens(chatStore.getChat(chat.id)!.messages), 120_001);
+		assert.equal(activeCompactionOf((await chatStore.getChat(chat.id))!.messages), null);
+		assert.equal(measuredContextTokens((await chatStore.getChat(chat.id))!.messages), 120_001);
 	});
 
 	it("starting/failing compaction preserves the meter; committing its marker clears it, regardless of summary usage", async () => {
-		const id = overThresholdChat("meter validity fixture");
+		const id = (await overThresholdChat("meter validity fixture"));
 		const assistant = { id: "measured", role: "assistant", content: [{ type: "text", text: "ok" }], stopReason: "stop", usage: { input: 120_000, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 120_001 }, timestamp: 1 } as LhMessage;
-		chatStore.saveMessages(id, [...chatStore.getChat(id)!.messages, assistant]);
+		(await chatStore.saveMessages(id, [...(await chatStore.getChat(id))!.messages, assistant]));
 		let release!: () => void;
 		const gate = new Promise<void>((done) => { release = done; });
 		const deps = depsOf(id, 40_000);
@@ -676,17 +689,17 @@ describe("the compaction service", () => {
 			await gate;
 			throw new Error("fixture failure");
 		} }, id);
-		assert.equal(measuredContextTokens(chatStore.getChat(id)!.messages), 120_001);
+		assert.equal(measuredContextTokens((await chatStore.getChat(id))!.messages), 120_001);
 		release(); await running;
-		assert.equal(measuredContextTokens(chatStore.getChat(id)!.messages), 120_001);
+		assert.equal(measuredContextTokens((await chatStore.getChat(id))!.messages), 120_001);
 		await ensureCompacted(deps, id);
-		const record = chatStore.getChat(id)!;
+		const record = (await chatStore.getChat(id))!;
 		assert.ok(record.turns!.at(-1)!.steps[0]!.inputTokens! > 0);
 		assert.equal(measuredContextTokens(record.messages), null);
 	});
 
 	it("a summarizer failure leaves the record untouched and the gate re-arms", async () => {
-		const chatId = overThresholdChat("compact: fail");
+		const chatId = (await overThresholdChat("compact: fail"));
 		const before = summarizeCalls;
 		const failing: CompactionDeps = {
 			...depsOf(chatId, 40_000),
@@ -695,10 +708,10 @@ describe("the compaction service", () => {
 			},
 		};
 		await ensureCompacted(failing, chatId);
-		assert.equal(activeCompactionOf(chatStore.getChat(chatId)!.messages), null, "no marker on failure");
+		assert.equal(activeCompactionOf((await chatStore.getChat(chatId))!.messages), null, "no marker on failure");
 		// the next gate retries cleanly
 		await ensureCompacted(depsOf(chatId, 40_000), chatId);
-		assert.ok(activeCompactionOf(chatStore.getChat(chatId)!.messages));
+		assert.ok(activeCompactionOf((await chatStore.getChat(chatId))!.messages));
 		assert.equal(summarizeCalls, before + 1);
 	});
 });
@@ -708,9 +721,9 @@ describe("learner writes while compaction runs", () => {
 	/** Over-threshold chat ending in `tail`, with a kicked compaction held
 	 *  inside its summary call until `finish()`. */
 	async function compactingChat(t: TestContext, label: string, ...tail: LhMessage[]) {
-		const id = overThresholdChat(label);
-		const original = [...chatStore.getChat(id)!.messages, ...tail];
-		chatStore.saveMessages(id, original);
+		const id = (await overThresholdChat(label));
+		const original = [...(await chatStore.getChat(id))!.messages, ...tail];
+		(await chatStore.saveMessages(id, original));
 		let release!: () => void, entered!: () => void;
 		const gate = new Promise<void>((done) => { release = done; });
 		const started = new Promise<void>((done) => { entered = done; });
@@ -719,15 +732,15 @@ describe("learner writes while compaction runs", () => {
 		t.after(async () => { release(); await awaitCompaction(id); });
 		kickCompaction(() => ({
 			...deps,
-			summarize: async (prompt, engine) => { entered(); await gate; return deps.summarize!(prompt, engine); },
+			summarize: async (prompt, engine) => { entered(); await gate; return (await deps.summarize!(prompt, engine)); },
 		}), id);
 		await started;
 		return { id, finish: async () => {
-			const savedDuringSummary = chatStore.getChat(id)!.messages;
+			const savedDuringSummary = (await chatStore.getChat(id))!.messages;
 			assert.equal(compactionInFlight(id), true, "the learner's save preceded summary completion");
 			release();
 			await awaitCompaction(id);
-			const record = chatStore.getChat(id)!;
+			const record = (await chatStore.getChat(id))!;
 			const marker = activeCompactionOf(record.messages);
 			assert.ok(marker, "compaction landed");
 			assert.equal(record.messages[original.length]!.id, marker.id, "the marker stays at the original transcript boundary");
@@ -736,8 +749,8 @@ describe("learner writes while compaction runs", () => {
 			assert.ok(record.turns?.some((turn) => turn.messageId === marker.id), "summary usage still keys to the committed marker");
 		} };
 	}
-	const post = (route: typeof dismissRoute, id: string, input: unknown) =>
-		route.POST(new Request(`http://test/api/chats/${id}`, { method: "POST", body: JSON.stringify({ input }) }), { params: Promise.resolve({ id }) });
+	const post = async (route: typeof dismissRoute, id: string, input: unknown) =>
+		(await route.POST(new Request(`http://test/api/chats/${id}`, { method: "POST", body: JSON.stringify({ input }) }), { params: Promise.resolve({ id }) }));
 	const toolCallMessage = (callId: string, name: string, args: ToolCall["arguments"]): LhMessage =>
 		({ ...fauxAssistantMessage({ type: "toolCall", id: callId, name, arguments: args }), id: newMessageId() });
 	const quiz = (callId: string) =>
@@ -748,7 +761,7 @@ describe("learner writes while compaction runs", () => {
 		const res = await post(dismissRoute, id, { type: "dismiss", toolCallId: "q-518", answer: dismissedAnswer("quiz", "Q?") });
 		assert.equal(res.status, 200);
 		await finish();
-		const messages = chatStore.getChat(id)!.messages;
+		const messages = (await chatStore.getChat(id))!.messages;
 		assert.ok(activeCompactionOf(messages), "compaction landed");
 		assert.equal(danglingQuestionOf(messages), null, "the skip survived compaction");
 	});
@@ -757,9 +770,9 @@ describe("learner writes while compaction runs", () => {
 		const { id, finish } = await compactingChat(t, "518: skip pause", quiz("q-518-pause"));
 		const res = await post(dismissRoute, id, { type: "dismiss", toolCallId: "q-518-pause", answer: dismissedAnswer("quiz", "Q?") });
 		assert.equal(res.status, 200);
-		assert.equal(endsInDismissal(chatStore.getChat(id)!.messages), true, "the saved skip pauses the chat before compaction commits");
+		assert.equal(endsInDismissal((await chatStore.getChat(id))!.messages), true, "the saved skip pauses the chat before compaction commits");
 		await finish();
-		assert.equal(endsInDismissal(chatStore.getChat(id)!.messages), true, "job deliveries still hold until the learner speaks");
+		assert.equal(endsInDismissal((await chatStore.getChat(id))!.messages), true, "job deliveries still hold until the learner speaks");
 	});
 
 	it("a discarded practice problem stays discarded", async (t) => {
@@ -769,7 +782,7 @@ describe("learner writes while compaction runs", () => {
 		const res = await post(dismissRoute, id, { type: "dismiss-problem", problemCallId: "p-518" });
 		assert.equal(res.status, 200);
 		await finish();
-		const messages = chatStore.getChat(id)!.messages;
+		const messages = (await chatStore.getChat(id))!.messages;
 		assert.ok(activeCompactionOf(messages), "compaction landed");
 		assert.equal(activeProblemOf(messages), null, "the discard survived compaction");
 	});
@@ -780,7 +793,7 @@ describe("learner writes while compaction runs", () => {
 		const res = await post(artifactUiRoute, id, { messageId: steer.id, inverted: true });
 		assert.equal(res.status, 200);
 		await finish();
-		const messages = chatStore.getChat(id)!.messages;
+		const messages = (await chatStore.getChat(id))!.messages;
 		const saved = messages.find((m) => m.id === steer.id) as { details: { ui?: { inverted?: boolean } } };
 		assert.ok(activeCompactionOf(messages), "compaction landed");
 		assert.equal(saved.details.ui?.inverted, true, "the switch survived compaction");

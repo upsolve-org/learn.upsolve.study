@@ -3,11 +3,10 @@ import { after, test } from "node:test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { Worker } from "node:worker_threads";
 import { createCanvas } from "@napi-rs/canvas";
+import sharp from "sharp";
 import { Type } from "typebox";
 import type { PluginQuestionSnapshot } from "../src/core/plugin-questions.ts";
-import * as photon from "@silvia-odwyer/photon-node";
 import { createFauxCore, createProvider, fauxAssistantMessage, fauxToolCall, type ImageContent, type StreamFunction } from "@earendil-works/pi-ai";
 import type { Agent } from "@earendil-works/pi-agent-core";
 import type { LhMessage } from "../src/core/native-messages.ts";
@@ -41,30 +40,31 @@ function registerModels() {
 	piModels().setProvider(createProvider({ id: provider, models: [model, textModel], auth: { apiKey: { name: "fixture", resolve: async () => ({ auth: {} }) } }, api: { stream, streamSimple: stream } }));
 }
 registerModels();
-stores.settingsStore.writeSettings({ version: 1, graph: { enabled: false }, models: { strong: { model: { provider, id: model.id } } } });
+(await stores.settingsStore.writeSettings({ version: 1, graph: { enabled: false }, models: { strong: { model: { provider, id: model.id } } } }));
 function image(width = 8, height = 4): ImageContent {
 	const canvas = createCanvas(width, height);
 	const ctx = canvas.getContext("2d"); ctx.fillStyle = "#11bb66"; ctx.fillRect(0, 0, width, height);
 	return { type: "image", mimeType: "image/png", data: canvas.toBuffer("image/png").toString("base64") };
 }
-function dimensions(value: Readonly<ImageContent>) {
-	const decoded = photon.PhotonImage.new_from_byteslice(Buffer.from(value.data, "base64"));
-	try { return [decoded.get_width(), decoded.get_height()]; } finally { decoded.free(); }
+async function dimensions(value: Readonly<ImageContent>): Promise<[number, number]> {
+	const meta = await sharp(Buffer.from(value.data, "base64")).metadata();
+	return [meta.width, meta.height];
 }
-// Observe the real image worker boundary, not timing or a replacement processor.
-// The mutation happens after capture and before its async processing returns.
+// Observe the real image-processing boundary: sharp reads metadata as the
+// first async step of resizeImageInProcess. The mutation happens after the
+// submission has captured its bytes and before processing returns.
 async function duringProcessing<T>(mutate: () => void, run: () => Promise<T>): Promise<T> {
-	const original = Worker.prototype.postMessage;
+	const original = sharp.prototype.metadata;
 	let observed = false;
-	Worker.prototype.postMessage = function (this: Worker, ...args: Parameters<typeof original>) {
-		Worker.prototype.postMessage = original;
+	sharp.prototype.metadata = function (this: unknown, ...args: unknown[]) {
+		sharp.prototype.metadata = original;
 		observed = true;
-		const result = original.apply(this, args);
+		const result = original.apply(this, args as Parameters<typeof original>);
 		mutate();
 		return result;
-	};
+	} as typeof original;
 	try { const result = await run(); assert(observed, "must exercise real asynchronous image processing"); return result; }
-	finally { Worker.prototype.postMessage = original; }
+	finally { sharp.prototype.metadata = original; }
 }
 function builtinPose(id = "pose", two = false): LhMessage {
 	return { ...fauxAssistantMessage([
@@ -87,31 +87,31 @@ test("strict admission verifies declared bytes and decodes images, rather than a
 		{ ...image(), mimeType: "image/jpeg" }, { ...image(), mimeType: "image/svg+xml" },
 		{ type: "image", mimeType: "image/png", data: Buffer.from("not an image").toString("base64") },
 		{ type: "image", mimeType: "image/gif", data: Buffer.from("GIF89a").toString("base64") },
-	]) await assert.rejects(prepareSubmissionImages([invalid as ImageContent], { model }));
+	]) await assert.rejects((prepareSubmissionImages([invalid as ImageContent], { model })));
 	const canvas = createCanvas(1, 1);
 	for (const [mimeType, bytes] of [["image/jpeg", canvas.toBuffer("image/jpeg")], ["image/webp", canvas.toBuffer("image/webp")], ["image/gif", Buffer.from("R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7", "base64")]] as const) {
 		const prepared = await prepareSubmissionImages([{ type: "image", mimeType, data: bytes.toString("base64") }], { model });
-		assert.deepEqual(dimensions(prepared![0]!), [1, 1]);
+		assert.deepEqual(await dimensions(prepared![0]!), [1, 1]);
 	}
 	const prepared = await prepareSubmissionImages([image()], { model });
-	assert.deepEqual(dimensions(prepared![0]!), [2, 1]);
+	assert.deepEqual(await dimensions(prepared![0]!), [2, 1]);
 	assert.equal(prepared!.length, 1);
 	assert.deepEqual(await prepareSubmissionImageChannels({ answer: [], thinking: [image()] }, { model }), { thinking: prepared });
 	assert.equal(await prepareSubmissionImageChannels({ answer: [] }, { model }), undefined);
-	await assert.rejects(prepareSubmissionImages([image()], { model: textModel }), /does not support images/);
+	await assert.rejects((prepareSubmissionImages([image()], { model: textModel })), /does not support images/);
 	assert.equal(await prepareSubmissionImages(undefined, { model: textModel }), undefined, "historical images are not re-admitted");
 });
 
 test("image preparation reuses the processor defaults when the actual engine has no resize override", async () => {
 	const noOverride = { ...model, inputLimits: undefined };
 	const [prepared] = (await prepareSubmissionImages([image(2101, 2)], { model: noOverride }))!;
-	assert.deepEqual(dimensions(prepared!), [2000, 2]);
+	assert.deepEqual(await dimensions(prepared!), [2000, 2]);
 	assert(prepared!.data.length < 4.5 * 1024 * 1024);
 });
 
 test("new turn admission uses the actual Strong conversation engine for prober, teacher and practice and persists normalized native bytes", async () => {
 	for (const kind of ["prober", "teacher", "practice"] as const) {
-		const chat = stores.chatStore.createChat(`Synthetic ${kind}`, kind === "practice" ? "practice" : undefined);
+		const chat = (await stores.chatStore.createChat(`Synthetic ${kind}`, kind === "practice" ? "practice" : undefined));
 		const original = image(); contexts = [];
 		faux.setResponses([fauxAssistantMessage("Offline response")]);
 		const response = await handleChatInput(chat.id, { type: "text", text: "", images: [original] }, options => {
@@ -122,34 +122,34 @@ test("new turn admission uses the actual Strong conversation engine for prober, 
 		});
 		assert.equal(response.status, 200); const wire = await response.clone().text(); await drain(chat.id, response);
 		assert(!wire.includes('"type":"error"'), wire);
-		const accepted = stores.chatStore.getChat(chat.id)!.messages[0]!;
+		const accepted = (await stores.chatStore.getChat(chat.id))!.messages[0]!;
 		assert.equal(accepted.role, "user");
 		const acceptedImage = (accepted.content as ImageContent[])[0]!;
 		assert.notEqual(acceptedImage.data, original.data);
-		assert.deepEqual(dimensions(acceptedImage), [2, 1]);
+		assert.deepEqual(await dimensions(acceptedImage), [2, 1]);
 		assert(JSON.stringify(contexts).includes(acceptedImage.data), "normalized native bytes must actually reach the model");
 		assert(!JSON.stringify(accepted.content).includes("[Image"), "processor hints never become learner text");
 	}
 });
 
 test("text-only effective model refuses fresh images without persistence or agent construction", async () => {
-	const chat = stores.chatStore.createChat("Synthetic unsupported model");
-	stores.chatStore.saveSettings(chat.id, { model: { provider, id: "text" } });
+	const chat = (await stores.chatStore.createChat("Synthetic unsupported model"));
+	(await stores.chatStore.saveSettings(chat.id, { model: { provider, id: "text" } }));
 	const response = await handleChatInput(chat.id, { type: "text", text: "", images: [image()] }, () => { throw new Error("must not construct"); });
 	assert.equal(response.status, 400); assert.match(await response.text(), /does not support images/);
-	assert.equal(stores.chatStore.getChat(chat.id)!.messages.length, 0);
+	assert.equal((await stores.chatStore.getChat(chat.id))!.messages.length, 0);
 	assert.equal(isTurnRunning(chat.id), false);
 });
 
 test("save-only parallel answers normalize all channels before persistence without starting a model", async () => {
-	const chat = stores.chatStore.createChat("Synthetic sibling questions");
-	stores.chatStore.saveMessages(chat.id, [builtinPose("pose", true)]);
+	const chat = (await stores.chatStore.createChat("Synthetic sibling questions"));
+	(await stores.chatStore.saveMessages(chat.id, [builtinPose("pose", true)]));
 	const response = await handleChatInput(chat.id, answerInput(), () => { throw new Error("save-only must not construct"); });
 	assert.equal(response.status, 200, await response.clone().text()); await response.text();
 	assert.equal(isTurnRunning(chat.id), false);
-	const saved = stores.chatStore.getChat(chat.id)!.messages.at(-1)! as any;
+	const saved = (await stores.chatStore.getChat(chat.id))!.messages.at(-1)! as any;
 	assert.equal(saved.role, "toolResult");
-	for (const channel of ["answer", "thinking", "readingThinking"]) assert.deepEqual(dimensions(saved.details.images[channel][0]), [2, 1]);
+	for (const channel of ["answer", "thinking", "readingThinking"]) assert.deepEqual(await dimensions(saved.details.images[channel][0]), [2, 1]);
 	assert.equal(saved.content.filter((block: any) => block.type === "image").length, 3);
 	const projected = toLlmMessages([saved])[0]!;
 	assert(Array.isArray(projected.content));
@@ -157,55 +157,55 @@ test("save-only parallel answers normalize all channels before persistence witho
 });
 
 for (const change of ["model", "resize", "catalog-removal", "occurrence"] as const) test(`async ${change} change refuses before save-only acceptance with a non-busy stale response`, async () => {
-	const chat = stores.chatStore.createChat(`Synthetic stale ${change}`);
-	stores.chatStore.saveMessages(chat.id, [builtinPose("pose", true)]);
-	const response = await duringProcessing(() => {
-		if (change === "model") stores.chatStore.saveSettings(chat.id, { model: { provider, id: "text" } });
+	const chat = (await stores.chatStore.createChat(`Synthetic stale ${change}`));
+	(await stores.chatStore.saveMessages(chat.id, [builtinPose("pose", true)]));
+	const response = await duringProcessing(async () => {
+		if (change === "model") (await stores.chatStore.saveSettings(chat.id, { model: { provider, id: "text" } }));
 		if (change === "resize") { model.inputLimits.images.resize.maxWidth = 1; registerModels(); }
 		if (change === "catalog-removal") piModels().deleteProvider(provider);
-		if (change === "occurrence") stores.chatStore.saveMessages(chat.id, [builtinPose("replacement", true)]);
-	}, () => handleChatInput(chat.id, answerInput(), () => { throw new Error("stale input must not construct"); }));
+		if (change === "occurrence") (await stores.chatStore.saveMessages(chat.id, [builtinPose("replacement", true)]));
+	}, async () => (await handleChatInput(chat.id, answerInput(), () => { throw new Error("stale input must not construct"); })));
 	assert.equal(response.status, 412); assert.equal((await response.json()).code, "submission-stale");
 	assert.equal(isTurnRunning(chat.id), false);
-	assert.equal(stores.chatStore.getChat(chat.id)!.messages.length, 1);
+	assert.equal((await stores.chatStore.getChat(chat.id))!.messages.length, 1);
 	model.inputLimits.images.resize.maxWidth = 2; registerModels();
 });
 
 test("async model changes refuse new-turn admission before its claim or write", async () => {
-	const chat = stores.chatStore.createChat("Synthetic stale new turn");
-	const response = await duringProcessing(() => stores.chatStore.saveSettings(chat.id, { model: { provider, id: "text" } }), () => handleChatInput(chat.id, { type: "text", text: "", images: [image()] }, () => { throw new Error("must not construct stale run"); }));
+	const chat = (await stores.chatStore.createChat("Synthetic stale new turn"));
+	const response = await duringProcessing(async () => (await stores.chatStore.saveSettings(chat.id, { model: { provider, id: "text" } })), async () => (await handleChatInput(chat.id, { type: "text", text: "", images: [image()] }, () => { throw new Error("must not construct stale run"); })));
 	assert.equal(response.status, 412);
-	assert.equal(stores.chatStore.getChat(chat.id)!.messages.length, 0);
+	assert.equal((await stores.chatStore.getChat(chat.id))!.messages.length, 0);
 	assert.equal(isTurnRunning(chat.id), false);
 });
 
 test("practice thinking checks the original active problem after image processing, not only its reused call ID", async () => {
-	const chat = stores.chatStore.createChat("Synthetic stale problem", "practice");
+	const chat = (await stores.chatStore.createChat("Synthetic stale problem", "practice"));
 	const pose = { ...fauxAssistantMessage([fauxToolCall("problem", { statement: "Synthetic problem" }, { id: "call" })], { stopReason: "toolUse" }), id: "pose" } as LhMessage;
 	const ack = { id: "ack", role: "toolResult", toolCallId: "call", toolName: "problem", content: [{ type: "text", text: "Problem posed" }], isError: false, timestamp: 1 } as LhMessage;
-	stores.chatStore.saveMessages(chat.id, [pose, ack]);
-	const response = await duringProcessing(() => stores.chatStore.saveMessages(chat.id, [{ ...pose, id: "replacement" }, ack]), () => handleChatInput(chat.id, { type: "thinking", problemCallId: "call", text: "", images: [image()], occurrence: { ...occurrence, toolName: "problem" } }, () => { throw new Error("must not construct"); }));
-	assert.equal(response.status, 412); assert.equal(stores.chatStore.getChat(chat.id)!.messages.length, 2);
+	(await stores.chatStore.saveMessages(chat.id, [pose, ack]));
+	const response = await duringProcessing(async () => (await stores.chatStore.saveMessages(chat.id, [{ ...pose, id: "replacement" }, ack])), async () => (await handleChatInput(chat.id, { type: "thinking", problemCallId: "call", text: "", images: [image()], occurrence: { ...occurrence, toolName: "problem" } }, () => { throw new Error("must not construct"); })));
+	assert.equal(response.status, 412); assert.equal((await stores.chatStore.getChat(chat.id))!.messages.length, 2);
 });
 
 for (const change of ["settings", "replacement", "model", "resize", "settled"] as const) test(`busy steer uses captured private live agent and handles ${change} during processing`, async () => {
-	const chat = stores.chatStore.createChat(`Synthetic busy ${change}`);
-	stores.chatStore.saveSettings(chat.id, { model: { provider, id: "text" } });
+	const chat = (await stores.chatStore.createChat(`Synthetic busy ${change}`));
+	(await stores.chatStore.saveSettings(chat.id, { model: { provider, id: "text" } }));
 	const received: LhMessage[] = [];
 	const agent = { state: { model }, steer: (message: LhMessage) => received.push(message) } as unknown as Agent;
 	registerLiveAgent(chat.id, agent);
 	try {
-		const result = await duringProcessing(() => {
-			if (change === "settings") stores.chatStore.saveSettings(chat.id, { model: { provider, id: "vision" } });
+		const result = await duringProcessing(async () => {
+			if (change === "settings") (await stores.chatStore.saveSettings(chat.id, { model: { provider, id: "vision" } }));
 			if (change === "replacement") registerLiveAgent(chat.id, { state: { model }, steer() { throw new Error("must not retarget"); } } as unknown as Agent);
 			if (change === "model") agent.state.model = textModel;
 			if (change === "resize") model.inputLimits.images.resize.maxWidth = 1;
 			if (change === "settled") unregisterLiveAgent(chat.id);
-		}, () => prepareAndSteerChat(chat.id, { type: "steer", id: "steer-fixture", text: "", images: [image()] }));
+		}, async () => (await prepareAndSteerChat(chat.id, { type: "steer", id: "steer-fixture", text: "", images: [image()] })));
 		assert.equal(result, change === "settings" ? "accepted" : change === "settled" ? "settled" : "stale");
 		assert.equal(received.length, change === "settings" ? 1 : 0);
-		if (received.length) assert.deepEqual(dimensions((received[0]!.content as ImageContent[])[0]!), [2, 1]);
-		assert.equal(stores.chatStore.getChat(chat.id)!.messages.length, 0, "accepted busy steering retains existing memory-only queue tradeoff");
+		if (received.length) assert.deepEqual(await dimensions((received[0]!.content as ImageContent[])[0]!), [2, 1]);
+		assert.equal((await stores.chatStore.getChat(chat.id))!.messages.length, 0, "accepted busy steering retains existing memory-only queue tradeoff");
 	} finally { unregisterLiveAgent(chat.id); discardChatDeliveries(chat.id); model.inputLimits.images.resize.maxWidth = 2; }
 });
 
@@ -248,13 +248,13 @@ test("plugin answer images stay outside arbitrary answer JSON and retain native 
 test("steer HTTP route distinguishes stale replacements from the ordinary settled fallback", async () => {
 	const { POST } = await import("../app/api/chats/[id]/steer/route.ts");
 	for (const settled of [false, true]) {
-		const chat = stores.chatStore.createChat("Synthetic steer route race");
+		const chat = (await stores.chatStore.createChat("Synthetic steer route race"));
 		registerLiveAgent(chat.id, { state: { model }, steer() { throw new Error("must not hand off"); } } as unknown as Agent);
 		try {
 			const response = await duringProcessing(() => {
 				if (settled) unregisterLiveAgent(chat.id);
 				else registerLiveAgent(chat.id, { state: { model }, steer() { throw new Error("must not retarget"); } } as unknown as Agent);
-			}, () => POST(new Request("http://fixture/steer", { method: "POST", body: JSON.stringify({ input: { type: "steer", id: "steer-route", text: "", images: [image()] } }) }), { params: Promise.resolve({ id: chat.id }) }));
+			}, async () => (await POST(new Request("http://fixture/steer", { method: "POST", body: JSON.stringify({ input: { type: "steer", id: "steer-route", text: "", images: [image()] } }) }), { params: Promise.resolve({ id: chat.id }) })));
 			assert.equal(response.status, settled ? 409 : 412);
 			if (!settled) assert.equal((await response.json()).code, "submission-stale");
 		} finally { unregisterLiveAgent(chat.id); discardChatDeliveries(chat.id); }
@@ -266,5 +266,5 @@ test("custom endpoint admission uses the existing effective-engine forced image 
 	configureProviderSource({ isCustom: id => id === provider, sync: models => models.setProvider(entry) });
 	const engine = piEngineForSpec({ provider, id: "text" });
 	assert(engine.model.input.includes("image"));
-	assert.deepEqual(dimensions((await prepareSubmissionImages([image()], engine))![0]!), [2, 1]);
+	assert.deepEqual(await dimensions((await prepareSubmissionImages([image()], engine))![0]!), [2, 1]);
 });

@@ -130,7 +130,7 @@ describe("POST /api/chats — graphContext becomes message[0]", () => {
 		assert.equal(res.status, 200);
 		const { id } = (await res.json()) as { id: string };
 
-		const record = chatStore.getChat(id)!;
+		const record = (await chatStore.getChat(id))!;
 		assert.equal(record.messages.length, 1, "the marker is message[0], alone until the first turn");
 		const m = record.messages[0] as { role: string; customType: string; content: string };
 		assert.equal(m.role, "custom");
@@ -148,7 +148,7 @@ describe("POST /api/chats — graphContext becomes message[0]", () => {
 				body: JSON.stringify(body),
 			}));
 			const { id } = (await res.json()) as { id: string };
-			assert.equal(chatStore.getChat(id)!.messages.length, 0);
+			assert.equal((await chatStore.getChat(id))!.messages.length, 0);
 		}
 	});
 });

@@ -8,7 +8,7 @@ import { modelCatalog, refreshConnectionCatalog, ownerScoped } from "@/src/serve
  */
 async function GETHandler() {
 	await refreshConnectionCatalog();
-	return Response.json(modelCatalog(), { headers: { "Cache-Control": "no-store" } });
+	return Response.json(await modelCatalog(), { headers: { "Cache-Control": "no-store" } });
 }
 
 // Tenancy: the body runs inside the caller's owner scope.

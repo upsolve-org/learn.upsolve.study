@@ -4,24 +4,25 @@ import { Button } from "@/components/ui/button";
 import { admittedEmails, isOperator, pendingSignups } from "@/src/server";
 import { issuedCredentials, provisioningAvailable } from "@/src/server";
 import { currentAccountEmail } from "@/src/server";
-import { approveAction, denyAction, forgetCredentialAction, reprovisionAction } from "./actions";
+import { approveAction, denyAction, forgetCredentialAction, reprovisionAction, retryEmailAction } from "./actions";
 
 export const dynamic = "force-dynamic";
 
 /**
- * Operator console: review account requests and hand out credentials.
+ * Operator console: review account requests and track credential emails.
  *
  * Gated by ADMIN_EMAIL, not by admission — the operator is admitted too, but
  * admission alone must not grant this page. A non-operator gets a 404 rather
  * than a redirect, so the surface is not advertised.
  *
- * Approving creates the account with a generated password and lists it below.
- * Supabase keeps only a hash, so this page is the only place a password can be
- * read; "Done" drops it once it has been sent.
+ * Approving creates the account with a generated password and emails it.
+ * Better Auth keeps only a hash, so this page is the only place a password can
+ * be read; "Done" drops it once it has been sent.
  */
-export default async function AdminPage() {
+export default async function AdminPage({ searchParams }: { searchParams: Promise<Record<string, string | string[] | undefined>> }) {
 	const email = await currentAccountEmail();
 	if (!isOperator(email)) notFound();
+	const params = await searchParams;
 
 	const pending = pendingSignups();
 	const admitted = admittedEmails();
@@ -38,10 +39,15 @@ export default async function AdminPage() {
 				<h1 className="text-lg font-semibold tracking-tight">Account requests</h1>
 				<p className="text-muted-foreground text-sm">
 					{canProvision
-						? "Approving admits the address and creates the account with a password shown below. Send it, then press Done."
-						: "Approving admits the address only — SUPABASE_SECRET_KEY is unset, so create the account by hand."}
+						? "Approving creates the account and emails its sign-in details. Check the email status below, then press Done to clear the saved password."
+						: "Approving admits the address only — DATABASE_URL is unset, so create the account by hand."}
 				</p>
 			</header>
+			{params.error === "provisioning" && (
+				<p role="alert" className="text-sm text-destructive">
+					The account could not be created. Check account provisioning, then use New password for the admitted address to retry.
+				</p>
+			)}
 
 			<section className="flex flex-col gap-3">
 				<h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
@@ -81,10 +87,10 @@ export default async function AdminPage() {
 
 			<section className="flex flex-col gap-3">
 				<h2 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-					Credentials to send ({issued.length})
+					Credential emails ({issued.length})
 				</h2>
 				{issued.length === 0 ? (
-					<p className="text-muted-foreground text-sm">Nothing to send.</p>
+					<p className="text-muted-foreground text-sm">No saved credentials.</p>
 				) : (
 					<ul className="flex flex-col divide-y divide-border rounded-lg border border-border">
 						{issued.map((credential) => (
@@ -95,10 +101,25 @@ export default async function AdminPage() {
 										{new Date(credential.issuedAt).toISOString().slice(0, 16).replace("T", " ")} UTC
 									</span>
 								</div>
+								<p className="text-muted-foreground text-xs" role="status">
+									{credential.emailDelivery?.status === "accepted"
+										? "Email accepted by Resend. Inbox delivery is not confirmed here."
+										: credential.emailDelivery?.status === "failed"
+											? credential.emailDelivery.error
+											: "Email not sent yet."}
+								</p>
 								<div className="flex flex-wrap items-center gap-2">
 									<code className="min-w-0 flex-1 break-all rounded-md border border-border bg-card px-2 py-1 font-mono text-xs select-all">
 										{credential.password}
 									</code>
+									{credential.emailDelivery?.status !== "accepted" && (
+										<form action={retryEmailAction}>
+											<input type="hidden" name="email" value={credential.email} />
+											<Button type="submit" size="sm" variant="outline">
+												{credential.emailDelivery?.status === "failed" ? "Retry email" : "Send email"}
+											</Button>
+										</form>
+									)}
 									<form action={forgetCredentialAction}>
 										<input type="hidden" name="email" value={credential.email} />
 										<Button type="submit" size="sm" variant="outline">
@@ -117,8 +138,8 @@ export default async function AdminPage() {
 					</ul>
 				)}
 				<p className="text-muted-foreground text-xs">
-					Send: <span className="text-foreground">https://learn.upsolve.study/auth/login</span> with the email and
-					password above. Supabase stores only a hash, so a password cannot be read back after Done — use Reset.
+					Retry email reuses the saved password. Reset creates a new password; use Send email to send it.
+					Done removes the saved password from this page.
 				</p>
 			</section>
 

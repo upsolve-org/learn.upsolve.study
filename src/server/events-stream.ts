@@ -25,9 +25,14 @@
  * ui-stream subscribe() pattern.
  */
 import { subscribe, type ServerEvent } from "../core/events.ts";
+import { currentOwnerId } from "../core/owner-scope.ts";
 
 /** One window's subscription as an SSE Response. */
 export function eventsResponse(): Response {
+	// Entered at the request boundary (ownerScoped) — the verified owner of
+	// THIS connection. Captured now, synchronously, before the stream's
+	// start() runs, so no async gap can swap the active scope.
+	const owner = currentOwnerId();
 	const encoder = new TextEncoder();
 	let teardown: (() => void) | undefined;
 	const stream = new ReadableStream<Uint8Array>({
@@ -60,7 +65,7 @@ export function eventsResponse(): Response {
 			unsubscribe = subscribe((event: ServerEvent) => {
 				const { type, ...payload } = event;
 				frame(`event: ${type}\ndata: ${JSON.stringify(payload)}\n\n`);
-			});
+			}, { owner });
 			heartbeat = setInterval(() => frame(": ping\n\n"), 25_000);
 
 			teardown = stop;

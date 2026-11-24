@@ -17,6 +17,8 @@ export * from "./commit-positions.ts";
 export * from "./jobs.ts";
 export { prepareSubmissionImages, prepareSubmissionImageChannels } from "./submission-images.ts";
 export * from "./stores.ts";
+export * from "./blobs.ts";
+export * from "./stt.ts";
 export { refreshWorkerRequestAdmission } from "../agent/worker-request-admission.ts";
 export { readRenderSettings, writeRenderSettings } from "../store/render-settings.ts";
 // The settings record + prompt overrides (settings-storage wave, 2026-09-19).
@@ -66,12 +68,21 @@ export { claudeCodeInstallationResponse } from "./claude-code.ts";
 export * from "./custom-provider.ts";
 export { customProviderGet, customProviderMutation } from "./custom-provider-http.ts";
 
-// Hosted session plumbing (webapp wave, 2026-11-15).
-export * from "./supabase.ts";
-export { hostedFetch } from "../core/hosted-fetch.ts";
-export { cookieWrites } from "../core/hosted-cookies.ts";
+// Hosted session plumbing (PR 4): Better Auth + standalone PostgreSQL.
+export * from "./auth.ts";
+export { provisionAccount, approveAccount, sendApprovalEmail } from "./approval-email.ts";
+export { getPgPool, closePgPool, hasDatabaseUrl, runMigrations } from "./db.ts";
 // Tenancy (2026-11-16): the request boundary that enters the owner's scope.
-export { ownerScoped, asRequestOwner, ownerOfRequest, OWNER_HEADER } from "./request-owner.ts";
+export {
+	ownerScoped,
+	asRequestOwner,
+	ownerOfRequest,
+	OWNER_HEADER,
+	OPERATOR_HEADER,
+	isOperatorRequest,
+	operatorRefusal,
+	operatorOnly,
+} from "./request-owner.ts";
 export * from "../core/owner-scope.ts";
 export {
 	admittedUser,
@@ -85,14 +96,15 @@ export {
 	type SignupRequest,
 	type SignupOutcome,
 } from "../core/hosted-admission.ts";
-// Account provisioning (2026-11-17): creates the GoTrue account on approval and
-// keeps the plaintext password, which Supabase itself cannot return.
+// Account provisioning (2026-11-17): creates the auth account on approval and
+// keeps the plaintext password, which Better Auth itself cannot return.
 export {
-	provisionAccount,
 	issuedCredentials,
 	forgetIssued,
+	recordIssued,
 	provisioningAvailable,
 	generatePassword,
 	type IssuedCredential,
 	type ProvisionResult,
+	type AccountProvisioner,
 } from "../core/hosted-credentials.ts";

@@ -6,8 +6,8 @@ const [mode, id = ""] = process.argv.slice(2);
 const { chatStore } = await import("../../src/store/chats.ts");
 const { PATHS } = await import("../../config.ts");
 if (mode === "create") {
-	const chat = chatStore.createChat("Crash fixture");
-	chatStore.saveMessages(chat.id, [{ role: "user", content: "first", timestamp: 1 }] as never);
+	const chat = await chatStore.createChat("Crash fixture");
+	await chatStore.saveMessages(chat.id, [{ role: "user", content: "first", timestamp: 1 }] as never);
 	console.log(chat.id);
 } else if (mode === "crash") {
 	const rename = fs.renameSync;
@@ -15,11 +15,11 @@ if (mode === "create") {
 		if (String(args[1]).endsWith(`${id}.json`)) process.exit(77);
 		return rename(...args);
 	};
-	chatStore.saveMessages(id, [{ role: "user", content: "second", timestamp: 2 }] as never);
+	await chatStore.saveMessages(id, [{ role: "user", content: "second", timestamp: 2 }] as never);
 } else {
 	console.log(JSON.stringify({
-		chat: chatStore.getChat(id),
-		listed: chatStore.listChats().map((c) => c.id),
+		chat: await chatStore.getChat(id),
+		listed: (await chatStore.listChats()).map((c) => c.id),
 		files: fs.readdirSync(PATHS.chats),
 	}));
 }

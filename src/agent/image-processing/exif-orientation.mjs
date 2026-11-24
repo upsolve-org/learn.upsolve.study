@@ -1,4 +1,8 @@
-// Ported from @earendil-works/pi-coding-agent 1.1.0, dist/utils/exif-orientation.js (MIT).
+// Pure EXIF orientation metadata reader (ported from
+// @earendil-works/pi-coding-agent 1.1.0, MIT). sharp/.rotate() performs the
+// actual pixel transform; this reader supplies the oriented source dimensions
+// for formats whose EXIF tag libvips does not surface via metadata() (WebP),
+// and doubles as a fixture oracle in tests.
 function readOrientationFromTiff(bytes, tiffStart) {
     if (tiffStart + 8 > bytes.length)
         return 1;
@@ -65,11 +69,10 @@ function findWebpTiffOffset(bytes) {
         if (chunkId === "EXIF") {
             if (dataStart + chunkSize > bytes.length)
                 return -1;
-            // Some WebP files have "Exif\0\0" prefix before the TIFF header
-            const tiffStart = chunkSize >= 6 && hasExifHeader(bytes, dataStart) ? dataStart + 6 : dataStart;
-            return tiffStart;
+            // Some WebP files have an "Exif\0\0" prefix before the TIFF header.
+            return chunkSize >= 6 && hasExifHeader(bytes, dataStart) ? dataStart + 6 : dataStart;
         }
-        // RIFF chunks are padded to even size
+        // RIFF chunks are padded to even size.
         offset = dataStart + chunkSize + (chunkSize % 2);
     }
     return -1;
@@ -84,11 +87,11 @@ function hasExifHeader(bytes, offset) {
 }
 export function getExifOrientation(bytes) {
     let tiffOffset = -1;
-    // JPEG: starts with FF D8
+    // JPEG: starts with FF D8.
     if (bytes.length >= 2 && bytes[0] === 0xff && bytes[1] === 0xd8) {
         tiffOffset = findJpegTiffOffset(bytes);
     }
-    // WebP: starts with RIFF....WEBP
+    // WebP: starts with RIFF....WEBP.
     else if (bytes.length >= 12 &&
         bytes[0] === 0x52 &&
         bytes[1] === 0x49 &&
@@ -103,55 +106,4 @@ export function getExifOrientation(bytes) {
     if (tiffOffset === -1)
         return 1;
     return readOrientationFromTiff(bytes, tiffOffset);
-}
-function rotate90(photon, image, dstIndex) {
-    const w = image.get_width();
-    const h = image.get_height();
-    const src = image.get_raw_pixels();
-    const dst = new Uint8Array(src.length);
-    for (let y = 0; y < h; y++) {
-        for (let x = 0; x < w; x++) {
-            const srcIdx = (y * w + x) * 4;
-            const dstIdx = dstIndex(x, y, w, h) * 4;
-            dst[dstIdx] = src[srcIdx];
-            dst[dstIdx + 1] = src[srcIdx + 1];
-            dst[dstIdx + 2] = src[srcIdx + 2];
-            dst[dstIdx + 3] = src[srcIdx + 3];
-        }
-    }
-    return new photon.PhotonImage(dst, h, w);
-}
-// Flip orientations mutate in-place. Rotations return a new image (caller must free the old one if different).
-export function applyExifOrientation(photon, image, originalBytes) {
-    const orientation = getExifOrientation(originalBytes);
-    if (orientation === 1)
-        return image;
-    switch (orientation) {
-        case 2:
-            photon.fliph(image);
-            return image;
-        case 3:
-            photon.fliph(image);
-            photon.flipv(image);
-            return image;
-        case 4:
-            photon.flipv(image);
-            return image;
-        case 5: {
-            const rotated = rotate90(photon, image, (x, y, _w, h) => x * h + (h - 1 - y));
-            photon.fliph(rotated);
-            return rotated;
-        }
-        case 6:
-            return rotate90(photon, image, (x, y, _w, h) => x * h + (h - 1 - y));
-        case 7: {
-            const rotated = rotate90(photon, image, (x, y, w, h) => (w - 1 - x) * h + y);
-            photon.fliph(rotated);
-            return rotated;
-        }
-        case 8:
-            return rotate90(photon, image, (x, y, w, h) => (w - 1 - x) * h + y);
-        default:
-            return image;
-    }
 }

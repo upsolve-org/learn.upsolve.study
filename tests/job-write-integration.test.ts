@@ -21,23 +21,23 @@ function heldWindows(t: TestContext) {
 	return { rename, warning, restorePlatform: () => Object.defineProperty(process, "platform", platform) };
 }
 
-test("native job creation and updates retain the modeled Windows in-place compatibility fallback", t => {
+test("native job creation and updates retain the modeled Windows in-place compatibility fallback", async t => {
 	const { rename, warning } = heldWindows(t);
 	const events: string[] = [];
 	const unsubscribe = subscribe(event => { if (event.type === "jobs-changed") events.push(event.chatId!); });
 	t.after(unsubscribe);
-	const job = jobStore.createJob({ kind: "research", chatId: "native", toolCallId: "native-call" });
-	assert.equal(jobStore.getJob(job.id)?.status, "running");
+	const job = await jobStore.createJob({ kind: "research", chatId: "native", toolCallId: "native-call" });
+	assert.equal((await jobStore.getJob(job.id))?.status, "running");
 	jobStore.updateJob(job.id, { status: "done", activity: "done" });
-	assert.equal(jobStore.getJob(job.id)?.status, "done");
+	assert.equal((await jobStore.getJob(job.id))?.status, "done");
 	assert.ok(rename.mock.callCount() > 2, "held-file renames are retried before fallback");
 	assert.equal(warning.mock.callCount(), 2);
 	assert.deepEqual(events, ["native", "native"], "only landed writes announce");
 });
 
-test("plugin and plugin-linked native jobs fail atomically after Windows retries, never announce or truncate", t => {
+test("plugin and plugin-linked native jobs fail atomically after Windows retries, never announce or truncate", async t => {
 	for (const [kind, metadata] of [["plugin", undefined], ["plugin", plugin], ["research", plugin]] as const) {
-		const job = jobStore.createJob({ kind, chatId: "strict", toolCallId: `call-${kind}-${!!metadata}`, ...(metadata ? { plugin: metadata } : {}) });
+		const job = await jobStore.createJob({ kind, chatId: "strict", toolCallId: `call-${kind}-${!!metadata}`, ...(metadata ? { plugin: metadata } : {}) });
 		const file = path.join(root, "data", "jobs", `${job.id}.json`);
 		const before = fs.readFileSync(file, "utf-8");
 		const held = heldWindows(t);
@@ -49,7 +49,7 @@ test("plugin and plugin-linked native jobs fail atomically after Windows retries
 		assert.ok(held.rename.mock.callCount() > 2);
 		assert.equal(held.warning.mock.callCount(), 0);
 		assert.equal(fs.readFileSync(file, "utf-8"), before);
-		assert.equal(jobStore.listJobs("strict-new").length, 0);
+		assert.equal((await jobStore.listJobs("strict-new")).length, 0);
 		assert.equal(events, 0);
 		assert.deepEqual(fs.readdirSync(path.dirname(file)).filter(name => name.includes(".tmp-")), []);
 		t.mock.restoreAll();

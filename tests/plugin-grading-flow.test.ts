@@ -39,8 +39,8 @@ async function fixture(t: TestContext, grade: (context: PluginQuestionGradingCon
 		questionSchema: Type.Object({}), answerSchema: Type.String({ minLength: 1 }),
 		probe: { toolName, description: "Pose code" }, gradeAnswer: grade });
 	t.after(off);
-	const chat = chatStore.createChat("Isolated grading flow");
-	chatStore.saveSettings(chat.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } });
+	const chat = (await chatStore.createChat("Isolated grading flow"));
+	(await chatStore.saveSettings(chat.id, { model: { provider: "openrouter", id: "z-ai/glm-5.3-flash" } }));
 	const assistantId = `${id}-assistant`;
 	const occurrence = { messageId: assistantId, contentIndex: 0, toolCallId: `${id}-call`, toolName };
 	const snapshot = { protocolVersion: 2, pluginId: "grading-fixture", typeId: id, label: "Code", variant: "probe", questionId: `${id}-question`, occurrence, contractVersion: 1,
@@ -54,7 +54,7 @@ async function fixture(t: TestContext, grade: (context: PluginQuestionGradingCon
 		annotations["1"] = { ...ungraded, protocolVersion: 1, questionId: `${id}-sibling-question`, occurrence: siblingOccurrence };
 	}
 	const assistant = { ...fauxAssistantMessage(calls, { stopReason: "toolUse" }), id: assistantId, lhQuestions: annotations } as unknown as LhMessage;
-	chatStore.saveMessages(chat.id, [newUserMessage("Start"), assistant]);
+	(await chatStore.saveMessages(chat.id, [newUserMessage("Start"), assistant]));
 	const faux = createFauxCore({}); let factoryCalls = 0, teacherInput = "", engineModel: string | undefined;
 	faux.setResponses([context => { teacherInput = context.messages.filter(message => message.role === "toolResult").flatMap(message => message.content.flatMap(block => block.type === "text" ? [block.text] : [])).join("\n"); return fauxAssistantMessage("Continued once after grading"); }]);
 	const factory: NonNullable<Parameters<typeof handleChatRequest>[1]> = opts => {
@@ -64,8 +64,8 @@ async function fixture(t: TestContext, grade: (context: PluginQuestionGradingCon
 		return createTeacherAgent(undefined, { engine: { model: faux.getModel(), streamFn: faux.streamSimple }, messages: opts.messages });
 	};
 	const input = { type: "plugin-question-answer", questionId: snapshot.questionId, occurrence, answer: "print(1)" };
-	function post(answer: unknown = input.answer, signal?: AbortSignal) {
-		return handleChatRequest(new Request("http://fixture/api/chat", { method: "POST", body: JSON.stringify({ chatId: chat.id, input: { ...input, answer } }), signal }), factory);
+	async function post(answer: unknown = input.answer, signal?: AbortSignal) {
+		return (await handleChatRequest(new Request("http://fixture/api/chat", { method: "POST", body: JSON.stringify({ chatId: chat.id, input: { ...input, answer } }), signal }), factory));
 	}
 	async function waitStarted(started: Promise<unknown>, response: Promise<Response>) {
 		await Promise.race([started, response.then(r => { throw new Error(`Grading never started: ${r.status}`); })]);
@@ -75,7 +75,7 @@ async function fixture(t: TestContext, grade: (context: PluginQuestionGradingCon
 		const handle = runningTurn(chat.id);
 		if (handle) await new Response(handle.subscribe()).text();
 	}
-	return { chat, input, off, post, waitStarted, settle, saved: () => chatStore.getChat(chat.id)!, answer: () => chatStore.getChat(chat.id)!.messages.find(m => m.role === "toolResult" && m.toolCallId === occurrence.toolCallId) as any,
+	return { chat, input, off, post, waitStarted, settle, saved: async () => (await chatStore.getChat(chat.id))!, answer: async () => (await chatStore.getChat(chat.id))!.messages.find(m => m.role === "toolResult" && m.toolCallId === occurrence.toolCallId) as any,
 		factoryCalls: () => factoryCalls, teacherInput: () => teacherInput, engineModel: () => engineModel };
 }
 
@@ -87,10 +87,10 @@ for (const result of [false, null] as const) {
 		const response = f.post(); await f.waitStarted(started.promise, response);
 		assert.equal(isTurnRunning(f.chat.id), true); assert.ok(runningTurn(f.chat.id));
 		const reattach = new Response(runningTurn(f.chat.id)!.subscribe()).text();
-		assert.equal(f.answer(), undefined); assert.equal(f.factoryCalls(), 0);
+		assert.equal((await f.answer()), undefined); assert.equal(f.factoryCalls(), 0);
 		assert.equal((await f.post()).status, 409); assert.equal(grades, 1);
 		release.resolve(result); await f.settle(await response); await reattach;
-		assert.deepEqual(f.answer().details.grading, { result });
+		assert.deepEqual((await f.answer()).details.grading, { result });
 		assert.equal(f.factoryCalls(), 1); assert.match(f.teacherInput(), new RegExp(`\\\\?"grading\\\\?":\\{\\\\?"result\\\\?":${result}`));
 		assert.equal(isTurnRunning(f.chat.id), false); assert.equal(runningTurn(f.chat.id), undefined);
 	});
@@ -99,9 +99,9 @@ for (const result of [false, null] as const) {
 test("validation refusal never grades and ordinary grader failure saves an accepted outcome", { timeout: 10000 }, async t => {
 	let grades = 0;
 	const f = await fixture(t, () => { grades++; const error = new Error("Tests could not launch"); error.name = "AbortError"; throw error; });
-	assert.equal((await f.post("")).status, 400); assert.equal(grades, 0); assert.ok(pendingPluginQuestionOf(f.saved().messages));
+	assert.equal((await f.post("")).status, 400); assert.equal(grades, 0); assert.ok(pendingPluginQuestionOf((await f.saved()).messages));
 	await f.settle(await f.post());
-	assert.deepEqual(f.answer().details.grading, { error: "Tests could not launch" }); assert.equal(f.answer().isError, false); assert.equal(grades, 1);
+	assert.deepEqual((await f.answer()).details.grading, { error: "Tests could not launch" }); assert.equal((await f.answer()).isError, false); assert.equal(grades, 1);
 });
 
 test("Stop retains ownership until underlying grading settles, then leaves the answer pending", { timeout: 10000 }, async t => {
@@ -113,7 +113,7 @@ test("Stop retains ownership until underlying grading settles, then leaves the a
 	assert.deepEqual(abortTurn(f.chat.id), { ok: true }); assert.equal(signal.aborted, true);
 	assert.equal(isTurnRunning(f.chat.id), true); assert.equal((await f.post()).status, 409);
 	release.resolve(true); assert.notEqual((await response).status, 200); await reattach;
-	assert.equal(f.answer(), undefined); assert.ok(pendingPluginQuestionOf(f.saved().messages)); assert.equal(isTurnRunning(f.chat.id), false); assert.equal(runningTurn(f.chat.id), undefined);
+	assert.equal((await f.answer()), undefined); assert.ok(pendingPluginQuestionOf((await f.saved()).messages)); assert.equal(isTurnRunning(f.chat.id), false); assert.equal(runningTurn(f.chat.id), undefined);
 });
 
 test("unregistering a definition cancels cooperative grading and cannot accept its late result", { timeout: 10000 }, async t => {
@@ -127,7 +127,7 @@ test("unregistering a definition cancels cooperative grading and cannot accept i
 	const response = f.post(); await f.waitStarted(started.promise, response);
 	f.off(); assert.equal(gradingSignal.aborted, true);
 	assert.notEqual((await response).status, 200);
-	assert.equal(f.answer(), undefined); assert.equal(f.factoryCalls(), 0); assert.ok(pendingPluginQuestionOf(f.saved().messages)); assert.equal(isTurnRunning(f.chat.id), false); assert.equal(runningTurn(f.chat.id), undefined);
+	assert.equal((await f.answer()), undefined); assert.equal(f.factoryCalls(), 0); assert.ok(pendingPluginQuestionOf((await f.saved()).messages)); assert.equal(isTurnRunning(f.chat.id), false); assert.equal(runningTurn(f.chat.id), undefined);
 });
 
 test("a model change during grading preserves the admitted model and applies only to the next request", { timeout: 10000 }, async t => {
@@ -136,11 +136,11 @@ test("a model change during grading preserves the admitted model and applies onl
 	const f = await fixture(t, async context => { gradingSignal = context.signal; started.resolve(); return release.promise; });
 	const response = f.post(); await f.waitStarted(started.promise, response);
 	const nextSettings = { model: { provider: "openai", id: "gpt-4" } };
-	chatStore.saveSettings(f.chat.id, nextSettings);
+	(await chatStore.saveSettings(f.chat.id, nextSettings));
 	assert.equal(gradingSignal.aborted, false);
 	release.resolve(true); await f.settle(await response);
-	assert.deepEqual(f.answer().details.grading, { result: true });
-	assert.equal(f.engineModel(), "z-ai/glm-5.3-flash"); assert.deepEqual(f.saved().settings, nextSettings);
+	assert.deepEqual((await f.answer()).details.grading, { result: true });
+	assert.equal(f.engineModel(), "z-ai/glm-5.3-flash"); assert.deepEqual((await f.saved()).settings, nextSettings);
 });
 
 test("HTTP abandonment and view detach do not cancel accepted grading work", { timeout: 10000 }, async t => {
@@ -153,7 +153,7 @@ test("HTTP abandonment and view detach do not cancel accepted grading work", { t
 	await reader.cancel("view detached"); caller.abort("HTTP request disconnected");
 	assert.equal(gradingSignal.aborted, false); assert.equal(isTurnRunning(f.chat.id), true);
 	release.resolve(true); await f.settle(await response);
-	assert.deepEqual(f.answer().details.grading, { result: true }); assert.equal(f.factoryCalls(), 1);
+	assert.deepEqual((await f.answer()).details.grading, { result: true }); assert.equal(f.factoryCalls(), 1);
 });
 
 test("session deletion and activation replacement cannot commit a late grade", { timeout: 10000 }, async t => {
@@ -161,12 +161,12 @@ test("session deletion and activation replacement cannot commit a late grade", {
 		const started = deferred<void>(), release = deferred<JsonValue>(); t.after(() => release.resolve(true));
 		const f = await fixture(t, async () => { started.resolve(); return release.promise; });
 		const response = f.post(); await f.waitStarted(started.promise, response);
-		if (mutate === "deletion") assert.equal(chatStore.deleteChat(f.chat.id), true);
+		if (mutate === "deletion") assert.equal((await chatStore.deleteChat(f.chat.id)), true);
 		else { await host.setEnabled("grading-fixture", false); await host.setEnabled("grading-fixture", true); ctx = await host.call("grading-fixture", "context") as PluginBackendContext; }
 		release.resolve(true); assert.notEqual((await response).status, 200);
 		assert.equal(f.factoryCalls(), 0); assert.equal(isTurnRunning(f.chat.id), false); assert.equal(runningTurn(f.chat.id), undefined);
-		if (mutate === "deletion") assert.equal(chatStore.getChat(f.chat.id), null);
-		else assert.ok(pendingPluginQuestionOf(f.saved().messages));
+		if (mutate === "deletion") assert.equal((await chatStore.getChat(f.chat.id)), null);
+		else assert.ok(pendingPluginQuestionOf((await f.saved()).messages));
 	}
 });
 
@@ -175,9 +175,9 @@ test("the post-grading save uses current canonical history rather than its captu
 	const f = await fixture(t, async () => { started.resolve(); return release.promise; });
 	const response = f.post(); await f.waitStarted(started.promise, response);
 	const concurrent = newUserMessage("External canonical annotation");
-	chatStore.saveMessages(f.chat.id, [...f.saved().messages, concurrent]);
+	(await chatStore.saveMessages(f.chat.id, [...(await f.saved()).messages, concurrent]));
 	release.resolve(true); await f.settle(await response);
-	assert.ok(f.saved().messages.some(message => message.id === concurrent.id)); assert.deepEqual(f.answer().details.grading, { result: true });
+	assert.ok((await f.saved()).messages.some(message => message.id === concurrent.id)); assert.deepEqual((await f.answer()).details.grading, { result: true });
 });
 
 test("sibling-only acceptance settles waiting views without creating a teacher", { timeout: 10000 }, async t => {
@@ -186,22 +186,22 @@ test("sibling-only acceptance settles waiting views without creating a teacher",
 	const response = f.post(); await f.waitStarted(started.promise, response);
 	const reattach = new Response(runningTurn(f.chat.id)!.subscribe()).text();
 	release.resolve(true); const accepted = await response; assert.equal(accepted.status, 200); assert.match(await reattach, /turn-settled/);
-	assert.deepEqual(f.answer().details.grading, { result: true }); assert.ok(pendingPluginQuestionOf(f.saved().messages)); assert.equal(f.factoryCalls(), 0); assert.equal(isTurnRunning(f.chat.id), false);
+	assert.deepEqual((await f.answer()).details.grading, { result: true }); assert.ok(pendingPluginQuestionOf((await f.saved()).messages)); assert.equal(f.factoryCalls(), 0); assert.equal(isTurnRunning(f.chat.id), false);
 });
 
 test("save failure releases ownership without acceptance and explicit resubmission may grade again", { timeout: 10000 }, async t => {
 	let grades = 0; const f = await fixture(t, () => { grades++; return true; });
 	const save = chatStore.saveMessages;
-	chatStore.saveMessages = (id, messages) => { if (id === f.chat.id && messages.some(m => m.role === "toolResult")) throw new Error("fixture disk full"); return save(id, messages); };
+	chatStore.saveMessages = async (id, messages) => { if (id === f.chat.id && messages.some(m => m.role === "toolResult")) throw new Error("fixture disk full"); return (await save(id, messages)); };
 	try { assert.equal((await f.post()).status, 500); } finally { chatStore.saveMessages = save; }
-	assert.equal(f.answer(), undefined); assert.equal(isTurnRunning(f.chat.id), false); assert.equal(runningTurn(f.chat.id), undefined);
-	await f.settle(await f.post()); assert.equal(grades, 2); assert.deepEqual(f.answer().details.grading, { result: true });
+	assert.equal((await f.answer()), undefined); assert.equal(isTurnRunning(f.chat.id), false); assert.equal(runningTurn(f.chat.id), undefined);
+	await f.settle(await f.post()); assert.equal(grades, 2); assert.deepEqual((await f.answer()).details.grading, { result: true });
 });
 
 test("teacher construction failure after durable acceptance does not misreport an unsaved answer", { timeout: 10000 }, async t => {
 	const f = await fixture(t, () => true, { constructorFailure: true });
 	assert.equal((await f.post()).status, 200);
-	assert.deepEqual(f.answer().details.grading, { result: true }); assert.equal(isTurnRunning(f.chat.id), false); assert.equal(runningTurn(f.chat.id), undefined); assert.ok(turnFailure(f.chat.id));
+	assert.deepEqual((await f.answer()).details.grading, { result: true }); assert.equal(isTurnRunning(f.chat.id), false); assert.equal(runningTurn(f.chat.id), undefined); assert.ok(turnFailure(f.chat.id));
 });
 
 test("cancelled grading applies an occurrence-bound parked dismissal before releasing ownership", { timeout: 10000 }, async t => {
@@ -210,5 +210,5 @@ test("cancelled grading applies an occurrence-bound parked dismissal before rele
 	const response = f.post(); await f.waitStarted(started.promise, response);
 	parkDismissal(f.chat.id, { type: "dismiss-plugin-question", questionId: f.input.questionId, occurrence: f.input.occurrence });
 	abortTurn(f.chat.id); release.resolve(true); assert.notEqual((await response).status, 200);
-	assert.equal(f.answer().details.kind, "plugin-question-cancelled"); assert.equal(f.answer().details.reason, "dismissed"); assert.equal(pendingPluginQuestionOf(f.saved().messages), undefined); assert.equal(isTurnRunning(f.chat.id), false);
+	assert.equal((await f.answer()).details.kind, "plugin-question-cancelled"); assert.equal((await f.answer()).details.reason, "dismissed"); assert.equal(pendingPluginQuestionOf((await f.saved()).messages), undefined); assert.equal(isTurnRunning(f.chat.id), false);
 });

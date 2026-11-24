@@ -4,18 +4,22 @@
  * desktop and local-work behaviour, byte for byte. The switch is an env
  * value and never a request header: a client cannot turn the gate off.
  *
- * `on` has a hard prerequisite - Supabase - and fails closed at boot with
- * ONE error naming everything missing, rather than degrading to the
- * loopback trust of browser-only mode (src/server/desktop-access.ts).
+ * `on` has two hard prerequisites - DATABASE_URL and BETTER_AUTH_SECRET -
+ * and fails closed at boot with ONE error naming everything missing, rather
+ * than degrading to the loopback trust of browser-only mode
+ * (src/server/desktop-access.ts).
  *
- * The Supabase URL and publishable key are NEXT_PUBLIC_*, because the
- * browser client needs them too.
+ * Both prerequisites are server-only. The browser never sees a database URL
+ * or the auth secret; Google sign-in availability is a boolean derived here
+ * from the presence of the provider credentials.
  */
 export type HostedConfig = {
-	url: string;
-	publishableKey: string;
+	databaseUrl: string;
+	secret: string;
 	/** Public app origin, for redirects (APP_ORIGIN). */
 	origin: string;
+	/** Show the Google button only when both provider credentials exist. */
+	googleEnabled: boolean;
 };
 
 type Env = Record<string, string | undefined>;
@@ -26,10 +30,7 @@ export function hostedMode(env: Env = process.env): boolean {
 	return raw === "on" || raw === "1" || raw === "true";
 }
 
-const REQUIRED = [
-	"NEXT_PUBLIC_SUPABASE_URL",
-	"NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY",
-] as const;
+const REQUIRED = ["DATABASE_URL", "BETTER_AUTH_SECRET"] as const;
 
 /** One message listing every missing name, or null when hosted mode is sound. */
 export function hostedConfigurationError(env: Env = process.env): string | null {
@@ -53,8 +54,9 @@ export function hostedConfig(env: Env = process.env): HostedConfig | null {
 	const error = hostedConfigurationError(env);
 	if (error) throw new Error(error);
 	return {
-		url: env.NEXT_PUBLIC_SUPABASE_URL!.trim().replace(/\/+$/, ""),
-		publishableKey: env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!.trim(),
+		databaseUrl: env.DATABASE_URL!.trim(),
+		secret: env.BETTER_AUTH_SECRET!.trim(),
 		origin: (env.APP_ORIGIN ?? "http://localhost:3000").trim().replace(/\/+$/, ""),
+		googleEnabled: Boolean(env.GOOGLE_CLIENT_ID?.trim() && env.GOOGLE_CLIENT_SECRET?.trim()),
 	};
 }

@@ -4,19 +4,19 @@ import { pendingPluginQuestionOf, activeProblemOf } from "@/src/core";
 async function GETHandler(_req: Request, { params }: { params: Promise<{ id: string }> }) {
 	const { id } = await params;
 	await reconcilePluginQuestionCompatibility(stores.chatStore, id);
-	let chat = getChat(id);
+	let chat = await getChat(id);
 	if (!chat) return Response.json({ error: "Not found" }, { status: 404 });
 	let questionResolver: QuestionTypeResolver | undefined;
 	if (pendingPluginQuestionOf(chat.messages)) {
 		try { questionResolver = await getPluginQuestionTypeResolver(); } catch { /* unavailable fallback */ }
 		// No awaited plugin startup may separate this read from the response projection.
-		chat = getChat(id);
+		chat = await getChat(id);
 		if (!chat) return Response.json({ error: "Not found" }, { status: 404 });
 	}
 	let problemResolver: ProblemTypeResolver | undefined;
 	if (activeProblemOf(chat.messages)?.pluginProblem) {
 		try { problemResolver = (await getPluginHost()).resolveProblemType; } catch { /* unavailable fallback */ }
-		chat = getChat(id);
+		chat = await getChat(id);
 		if (!chat) return Response.json({ error: "Not found" }, { status: 404 });
 	}
 	// turnInFlight lets a returning client re-attach to a running turn
@@ -41,7 +41,7 @@ async function GETHandler(_req: Request, { params }: { params: Promise<{ id: str
 		// Also reaches idle views that missed the failing turn's stream.
 		turnError: turnFailure(id),
 		compacting: compactionInFlight(id),
-		coverage: sessionCoverage(id),
+		coverage: await sessionCoverage(id),
 	});
 }
 
@@ -54,13 +54,13 @@ async function GETHandler(_req: Request, { params }: { params: Promise<{ id: str
  */
 async function PUTHandler(req: Request, { params }: { params: Promise<{ id: string }> }) {
 	const { id } = await params;
-	if (!getChat(id)) return Response.json({ error: "Not found" }, { status: 404 });
+	if (!(await getChat(id))) return Response.json({ error: "Not found" }, { status: 404 });
 	const body = (await req.json().catch(() => null)) as { title?: unknown } | null;
 	if (typeof body?.title !== "string" || body.title.trim() === "") {
 		return Response.json({ error: "title must be a non-empty string" }, { status: 400 });
 	}
 	const title = body.title.trim();
-	const record = stores.chatStore.renameChat(id, title);
+	const record = await stores.chatStore.renameChat(id, title);
 	return Response.json({ title: record.title });
 }
 

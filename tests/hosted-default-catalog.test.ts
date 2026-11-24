@@ -44,22 +44,22 @@ afterEach(() => {
 // catalog offered no custom provider row and no models, so the client's
 // zero-keys gate still fired and the setup dialog opened over a working app.
 describe("the picker catalog carries the default", () => {
-	it("offers the custom provider row with a present key", () => {
+	it("offers the custom provider row with a present key", async () => {
 		env(complete);
-		const row = catalogProviders().find((p) => p.id === "custom");
+		const row = (await catalogProviders()).find((p) => p.id === "custom");
 		assert.equal(row?.keyPresent, true, "the default must clear the zero-keys gate");
 	});
 
-	it("lists the default model so the pickers have something to offer", () => {
+	it("lists the default model so the pickers have something to offer", async () => {
 		env(complete);
-		const catalog = modelCatalog();
+		const catalog = await modelCatalog();
 		assert.deepEqual(catalog.models.map((m) => m.id), ["auto"]);
 		assert.equal(catalog.slots.strong?.model?.provider, "custom");
 	});
 
-	it("offers no custom row when the default is off", () => {
+	it("offers no custom row when the default is off", async () => {
 		env({});
-		assert.equal(catalogProviders().some((p) => p.id === "custom"), false);
-		assert.equal(modelCatalog().models.length, 0);
+		assert.equal((await catalogProviders()).some((p) => p.id === "custom"), false);
+		assert.equal((await modelCatalog()).models.length, 0);
 	});
 });

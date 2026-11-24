@@ -726,6 +726,7 @@ export interface PluginWorkerStartOptions {
     maxTurns: number;
     options?: PluginInferenceOptions;
     timeoutMs?: number;
+    owner?: string;
 }
 ```
 
@@ -741,6 +742,7 @@ export interface PluginWorkerStartOptions {
 - [maxTurns](#pluginworkerstartoptions-maxturns)
 - [options](#pluginworkerstartoptions-options)
 - [timeoutMs](#pluginworkerstartoptions-timeoutms)
+- [owner](#pluginworkerstartoptions-owner)
 
 ### PluginWorkerStartOptions requestId
 
@@ -794,4 +796,14 @@ Wall-clock lifetime from acceptance, including admission waits.
 
 ```ts
 timeoutMs?: number;
+```
+
+### PluginWorkerStartOptions owner
+
+The accepting caller's owner (tenancy). Omitted when unscoped, which
+keeps desktop and plain-dev records byte-for-byte. Not part of the
+caller's options: the service stamps it from the active scope.
+
+```ts
+owner?: string;
 ```

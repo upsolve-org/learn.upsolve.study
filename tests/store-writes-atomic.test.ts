@@ -47,17 +47,17 @@ function assertAllOrNothing(t: TestContext, file: string, seed: () => void, save
 }
 
 describe("failed saves leave the old file whole", () => {
-	it("chat", (t) => {
-		const { id } = chatStore.createChat("atomic");
+	it("chat", async (t) => {
+		const { id } = await chatStore.createChat("atomic");
 		assertAllOrNothing(t, path.join(config.PATHS.chats, `${id}.json`),
 			() => chatStore.saveMessages(id, [{ role: "user", content: "old", timestamp: 1 }] as never),
 			() => chatStore.saveMessages(id, [{ role: "user", content: "new", timestamp: 2 }] as never));
 	});
 
-	it("job", (t) => {
+	it("job", async (t) => {
 		assertAllOrNothing(t, path.join(config.PATHS.data, "jobs", "unborn.json"), () => {},
 			() => jobStore.createJob({ kind: "research", chatId: "chat_atomic", toolCallId: "tc_unborn" }));
-		const job = jobStore.createJob({ kind: "research", chatId: "chat_atomic", toolCallId: "tc_atomic" });
+		const job = await jobStore.createJob({ kind: "research", chatId: "chat_atomic", toolCallId: "tc_atomic" });
 		assertAllOrNothing(t, path.join(config.PATHS.data, "jobs", `${job.id}.json`), () => {}, () => jobStore.updateJob(job.id, { status: "done" }));
 	});
 
@@ -111,14 +111,14 @@ describe("failed saves leave the old file whole", () => {
 });
 
 describe("Windows sharing violations: per-writer compatibility policy (modeled)", () => {
-	const cases: { name: string; fallback: boolean; prepare: () => { file?: string; save: () => unknown } }[] = [
-		{ name: "chat", fallback: true, prepare: () => {
-			const { id } = chatStore.createChat("compatibility");
+	const cases: { name: string; fallback: boolean; prepare: () => { file?: string; save: () => unknown } | Promise<{ file?: string; save: () => unknown }> }[] = [
+		{ name: "chat", fallback: true, prepare: async () => {
+			const { id } = await chatStore.createChat("compatibility");
 			return { file: path.join(config.PATHS.chats, `${id}.json`), save: () => chatStore.renameChat(id, "saved") };
 		} },
 		{ name: "job create", fallback: true, prepare: () => ({ save: () => jobStore.createJob({ kind: "research", chatId: "chat_policy", toolCallId: "tc_new" }) }) },
-		{ name: "job update", fallback: true, prepare: () => {
-			const { id } = jobStore.createJob({ kind: "research", chatId: "chat_policy", toolCallId: "tc_update" });
+		{ name: "job update", fallback: true, prepare: async () => {
+			const { id } = await jobStore.createJob({ kind: "research", chatId: "chat_policy", toolCallId: "tc_update" });
 			return { file: path.join(config.PATHS.data, "jobs", `${id}.json`), save: () => jobStore.updateJob(id, { status: "done" }) };
 		} },
 		{ name: "settings", fallback: true, prepare: () => ({ file: config.SETTINGS_FILE, save: () => writeSettings({ version: 1, appearance: { theme: "catppuccin-latte" } }) }) },
@@ -140,9 +140,9 @@ describe("Windows sharing violations: per-writer compatibility policy (modeled)"
 		{ name: "source organization", fallback: false, prepare: () => ({ file: config.SOURCE_ORGANIZATION_FILE, save: () => sourceOrganizationStore.write({ version: 1, folders: [], placements: {} }) }) },
 	];
 	for (const { name, fallback, prepare } of cases) {
-		it(`${name}: ${fallback ? "retains" : "does not acquire"} in-place fallback`, (t) => {
+		it(`${name}: ${fallback ? "retains" : "does not acquire"} in-place fallback`, async (t) => {
 			ensureGraphFormat();
-			const { file, save } = prepare();
+			const { file, save } = await prepare();
 			const before = file ? snapshot(file) : null;
 			const platform = Object.getOwnPropertyDescriptor(process, "platform")!;
 			Object.defineProperty(process, "platform", { value: "win32" });

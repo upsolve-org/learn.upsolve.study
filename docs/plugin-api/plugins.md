@@ -253,6 +253,7 @@ export interface PluginBackendContext {
     readonly manifest: PluginManifest;
     readonly directory: string;
     readonly dataDirectory: string;
+    ownerDirectory(pluginId: string): string;
     readonly signal: AbortSignal;
     cleanup(dispose: PluginCleanup): void;
     learning: PluginLearningData;
@@ -279,6 +280,7 @@ export interface PluginBackendContext {
 - [manifest](#pluginbackendcontext-manifest)
 - [directory](#pluginbackendcontext-directory)
 - [dataDirectory](#pluginbackendcontext-datadirectory)
+- [ownerDirectory](#pluginbackendcontext-ownerdirectory)
 - [signal](#pluginbackendcontext-signal)
 - [cleanup](#pluginbackendcontext-cleanup)
 - [learning](#pluginbackendcontext-learning)
@@ -312,10 +314,30 @@ readonly directory: string;
 ### PluginBackendContext dataDirectory
 
 Writable records: core-plugin-data/<id> or community plugins/<id>/data.
+Resolved ONCE at activation, so it is the UNSCOPED root and is shared by
+every learner. Anything per-learner must go through `ownerDirectory`.
+Kept for host-owned records that are naturally per-activation (tasks).
 
 ```ts
 readonly dataDirectory: string;
 ```
+
+### PluginBackendContext ownerDirectory
+
+The same directory for the CALLER's owner (tenant), resolved at call
+time. Falls back to the unscoped `dataDirectory` outside any owner
+scope (desktop, plain dev). Any per-learner plugin record (card decks,
+notes, saved files) belongs under this one.
+
+```ts
+ownerDirectory(pluginId: string): string;
+```
+
+| Parameter | Type |
+| --- | --- |
+| `pluginId` | `string` |
+
+**Returns:** `string`.
 
 ### PluginBackendContext signal
 
@@ -1498,14 +1520,14 @@ a cross-file transaction; keep plugin-derived data in plugin-owned storage.
 ```ts
 export interface PluginLearningData {
     readonly directory: string;
-    listSessions(): ChatListItem[];
-    getSession(id: string): ChatRecord | null;
-    graph(): GraphSnapshot;
-    readGraphFile<K extends keyof PluginGraphFileData>(name: K): PluginGraphFileData[K];
+    listSessions(): MaybePromise<ChatListItem[]>;
+    getSession(id: string): MaybePromise<ChatRecord | null>;
+    graph(): MaybePromise<GraphSnapshot>;
+    readGraphFile<K extends keyof PluginGraphFileData>(name: K): MaybePromise<PluginGraphFileData[K]>;
 }
 ```
 
-**Related types:** [ChatListItem](contracts-chat.md#chatlistitem), [ChatRecord](contracts-chat.md#chatrecord), [GraphSnapshot](contracts-graph.md#graphsnapshot), [PluginGraphFileData](plugins.md#plugingraphfiledata).
+**Related types:** [ChatListItem](contracts-chat.md#chatlistitem), [ChatRecord](contracts-chat.md#chatrecord), [GraphSnapshot](contracts-graph.md#graphsnapshot), [MaybePromise](ports.md#maybepromise), [PluginGraphFileData](plugins.md#plugingraphfiledata).
 
 **Member index** (including nested object members; inherited members are defined in the linked base types):
 
@@ -1528,10 +1550,10 @@ readonly directory: string;
 List saved session summaries with current busy/compacting flags; no model work.
 
 ```ts
-listSessions(): ChatListItem[];
+listSessions(): MaybePromise<ChatListItem[]>;
 ```
 
-**Returns:** `ChatListItem[]`.
+**Returns:** `MaybePromise<ChatListItem[]>`.
 
 ### PluginLearningData getSession
 
@@ -1539,14 +1561,14 @@ Read a complete saved native session, or null when absent. Invalid IDs throw.
 Transcripts preserve learner answers/thinking not represented by the graph.
 
 ```ts
-getSession(id: string): ChatRecord | null;
+getSession(id: string): MaybePromise<ChatRecord | null>;
 ```
 
 | Parameter | Type |
 | --- | --- |
 | `id` | `string` |
 
-**Returns:** `ChatRecord \| null`.
+**Returns:** `MaybePromise<ChatRecord \| null>`.
 
 ### PluginLearningData graph
 
@@ -1554,10 +1576,10 @@ Read the current graph projection and raw records, without a second query
 language. This is not a complete learner-response transcript.
 
 ```ts
-graph(): GraphSnapshot;
+graph(): MaybePromise<GraphSnapshot>;
 ```
 
-**Returns:** `GraphSnapshot`.
+**Returns:** `MaybePromise<GraphSnapshot>`.
 
 ### PluginLearningData readGraphFile
 
@@ -1565,14 +1587,14 @@ Read graph ledger/metadata JSON using the host's current file interpretation.
 Host validation/version guards apply; unknown file names throw.
 
 ```ts
-readGraphFile<K extends keyof PluginGraphFileData>(name: K): PluginGraphFileData[K];
+readGraphFile<K extends keyof PluginGraphFileData>(name: K): MaybePromise<PluginGraphFileData[K]>;
 ```
 
 | Parameter | Type |
 | --- | --- |
 | `name` | `K` |
 
-**Returns:** `PluginGraphFileData[K]`.
+**Returns:** `MaybePromise<PluginGraphFileData[K]>`.
 
 ## PluginManifest
 

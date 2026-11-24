@@ -25,8 +25,8 @@ it("folder-relative identity separates duplicate basenames and builds nested org
 	assert.deepEqual(called, paths);
 	const { results } = await response.json();
 	assert.deepEqual(results.map((r: { filePath: string }) => r.filePath).sort(), [...paths].sort());
-	assert.deepEqual(stores.sourceOrganizationStore.read().folders.map((f) => f.importPath), ["Course", "Course/Week 1", "Course/Week 2"]);
-	assert.equal(Object.keys(stores.sourceOrganizationStore.read().placements).length, 2);
+	assert.deepEqual((await stores.sourceOrganizationStore.read()).folders.map((f) => f.importPath), ["Course", "Course/Week 1", "Course/Week 2"]);
+	assert.equal(Object.keys((await stores.sourceOrganizationStore.read()).placements).length, 2);
 });
 
 it("Chromium full relative multipart filenames and ordinary basename requests both remain valid", async () => {

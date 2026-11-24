@@ -27,10 +27,11 @@ async function main() {
 		.sort();
 	console.log(`[import-notes] ${files.length} note files from ${dir} (concurrency ${limit})`);
 
+	const effective = await effectiveSettings();
 	const pipeline = createExtractionPipeline({
 		...stores,
-		// Live budget: the graph section's setting, same as the app's trigger
-		getChunkTokens: () => effectiveSettings().graph.extractionChunkTokens,
+		// One-time script: a single fresh read at startup is the live budget.
+		getChunkTokens: () => effective.graph.extractionChunkTokens,
 	});
 	const queue = [...files];
 	const totals = { nodes: 0, chains: 0, failed: 0 };
@@ -55,7 +56,7 @@ async function main() {
 	});
 	await Promise.all(workers);
 
-	const graph = getGraph(stores.graphStore);
+	const graph = await getGraph(stores.graphStore);
 	console.log(
 		`[import-notes] done: +${totals.nodes} nodes, +${totals.chains} chains, ${totals.failed} failed — ` +
 			`graph now ${graph.nodes.length} nodes, ${graph.chains.length} chains`,

@@ -69,7 +69,7 @@ for (const slot of slots) test(`${slot} can be replaced while the other disconne
 	assert.deepEqual(stored.general, { autoUpdate: false });
 	assert.deepEqual(stored.graph, { rendering: false });
 	assert.deepEqual((await response.json()).settings, stored);
-	assert(!modelCatalog().models.some((model) => model.provider === copilot.provider), "saving stale pins must not make them available choices");
+	assert(!(await modelCatalog()).models.some((model) => model.provider === copilot.provider), "saving stale pins must not make them available choices");
 });
 
 test("all three slots can be repaired successively without reconnecting", async () => {

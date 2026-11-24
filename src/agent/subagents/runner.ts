@@ -27,7 +27,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { ModelRole } from "../../../config.ts";
 import { ROLE_SLOT, modelsNotConfigured, type ModelSlotName, type ProviderKeyMissing } from "../../core/settings.ts";
-import type { ChatStore, JobStore } from "../../core/ports.ts";
+import type { ChatStore, JobStore, MaybePromise } from "../../core/ports.ts";
 import { runDemoBuilder } from "./demo-builder.ts";
 import { runPdfReaderAgent } from "./pdf-reader.ts";
 import { runResearcherAgent } from "./researcher.ts";
@@ -65,7 +65,7 @@ export const visualModelOverride: { current?: PiEngine } = {};
 export const pdfModelOverride: { current?: PiEngine } = {};
 
 /** The dispatch-time tool input (from src/agent/tools/jobs.ts schemas). */
-type JobToolInput = ResearchToolInput | DemoToolInput | VisualToolInput | PdfToolInput;
+export type JobToolInput = ResearchToolInput | DemoToolInput | VisualToolInput | PdfToolInput;
 
 export interface JobRunnerDeps {
 	chatStore: ChatStore;
@@ -82,7 +82,7 @@ export interface JobRunnerDeps {
 	 *  (below) still win. BYOK (owner, 2026-09-22): the chain may end
 	 *  EMPTY → undefined; runJob then refuses the spawn honestly instead
 	 *  of guessing a model. */
-	engineFor?: (role: ModelRole) => PiEngine | undefined;
+	engineFor?: (role: ModelRole) => MaybePromise<PiEngine | undefined>;
 	/** The search seam (search port wave, 2026-09-20): resolves the LIVE
 	 *  provider fresh per job — server/search.ts composition injected by
 	 *  the wiring; null = honestly unavailable (the researcher's web_search
@@ -128,6 +128,15 @@ const KIND_ROLE: Record<BuiltinJobKind, ModelRole> = {
 	pdf: "pdfReader",
 };
 
+/** Progress writes (activity line, running usage) are fire-and-forget: they
+ *  must never block the loop, and under an async backend a failed write must
+ *  not surface as an unhandled rejection (which would kill the process). */
+function progressWrite(written: unknown): void {
+	if (written && typeof (written as Promise<unknown>).then === "function") {
+		void (written as Promise<unknown>).catch((error: unknown) => console.warn("[job] progress write failed:", error));
+	}
+}
+
 export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 	const { chatStore, jobStore, deliver } = deps;
 
@@ -135,8 +144,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 	 * then writes through the job store so the poll sees progress). */
 	const usageTotals = new Map<string, JobUsage>();
 
-	function makeLoopContext(jobId: string, engine: PiEngine): LoopContext {
-		const chatId = jobStore.getJob(jobId)?.chatId;
+	async function makeLoopContext(jobId: string, engine: PiEngine): Promise<LoopContext> {
+		const chatId = (await jobStore.getJob(jobId))?.chatId;
 		// Provider-qualified stamp: the engine's actual model — the only
 		// thing that ran (BYOK: no config-pin fallback stamps exist).
 		const model = `${engine.model.provider}:${engine.model.id}`;
@@ -151,7 +160,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			onUsage: (step) => {
 				const next = accumulateJobUsage(usageTotals.get(jobId), model, step);
 				usageTotals.set(jobId, next);
-				jobStore.updateJob(jobId, { usage: next }); // merge patch — status untouched
+				progressWrite(jobStore.updateJob(jobId, { usage: next })); // merge patch — status untouched
 			},
 		};
 	}
@@ -160,8 +169,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 	 * steer). False once abortJob has flipped it to error ("Aborted by learner") —
 	 * the runner then unwinds silently; the abort path owns the record and
 	 * the abort steer. */
-	function stillRunning(jobId: string): boolean {
-		return jobStore.getJob(jobId)?.status === "running";
+	async function stillRunning(jobId: string): Promise<boolean> {
+		return (await jobStore.getJob(jobId))?.status === "running";
 	}
 
 	/** The kind→runner map: one sub-agent loop per kind. Each kind's
@@ -171,14 +180,14 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 	 *  tests swap scripted engines without touching deps), then the injected
 	 *  settings-resolved engineFor. undefined = the BYOK chain came up
 	 *  empty (owner, 2026-09-22) — runJob refuses below, honestly. */
-	function pickEngine(kind: BuiltinJobKind): PiEngine | undefined {
+	async function pickEngine(kind: BuiltinJobKind): Promise<PiEngine | undefined> {
 		const testOverride: Record<string, { current?: PiEngine } | undefined> = {
 			researcher: researchModelOverride,
 			demoBuilder: demoModelOverride,
 			visualMaker: visualModelOverride,
 			pdfReader: pdfModelOverride,
 		};
-		return testOverride[KIND_ROLE[kind]]?.current ?? deps.engineFor?.(KIND_ROLE[kind]);
+		return testOverride[KIND_ROLE[kind]]?.current ?? await deps.engineFor?.(KIND_ROLE[kind]);
 	}
 
 	const KIND_RUNNERS: Record<
@@ -192,7 +201,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 	};
 
 	async function runJob(jobId: string, input?: JobToolInput): Promise<void> {
-		const job = jobStore.getJob(jobId);
+		const job = await jobStore.getJob(jobId);
 		if (!job) {
 			console.error(`[job ${jobId}] not found — nothing to run`);
 			return;
@@ -201,10 +210,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		const run = KIND_RUNNERS[job.kind];
 		if (!run) {
 			console.error(`[job ${jobId}] unknown kind: ${job.kind}`);
-			jobStore.updateJob(jobId, { status: "error", error: `unknown kind ${job.kind}`, activity: "failed" });
+			await jobStore.updateJob(jobId, { status: "error", error: `unknown kind ${job.kind}`, activity: "failed" });
 			return;
 		}
-		const engine = pickEngine(job.kind);
+		const engine = await pickEngine(job.kind);
 		// The per-need refusal guards (BYOK 2026-09-22 / provider-key
 		// interlude 2026-09-25): no engine for the kind's tier, or the
 		// resolved engine's provider key gone — both refuse through the SAME
@@ -214,8 +223,8 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		// pipeline resumes the lesson and the teacher reads the refusal
 		// instead of waiting forever on a job it already dispatched.
 		const refuse = async (reason: string): Promise<void> => {
-			if (stillRunning(jobId)) jobStore.updateJob(jobId, { error: reason });
-			const resolved = resolveInput(job, input) as
+			if (await stillRunning(jobId)) await jobStore.updateJob(jobId, { error: reason });
+			const resolved = (await resolveInput(job, input)) as
 				| ResearchToolInput
 				| DemoToolInput
 				| VisualToolInput
@@ -262,14 +271,14 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			return;
 		}
 		try {
-			await run(jobId, engine, input, makeLoopContext(jobId, engine));
+			await run(jobId, engine, input, await makeLoopContext(jobId, engine));
 		} finally {
 			unregisterJobAbort(jobId);
 			// The last usage write may have been mid-flight when the loop died;
 			// persist what was folded (the abort path patches only status, so
 			// this never resurrects an aborted job — merge patch).
 			const usage = usageTotals.get(jobId);
-			if (usage) jobStore.updateJob(jobId, { usage });
+			if (usage) await jobStore.updateJob(jobId, { usage });
 			usageTotals.delete(jobId);
 		}
 	}
@@ -277,13 +286,13 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 	/** Dispatch input wins, then the job's saved arguments. Legacy jobs
 	 * without saved input fall back to the durable transcript, which may
 	 * lack a call if the dispatching turn died before settlement. */
-	function resolveInput(
+	async function resolveInput(
 		job: JobRecord,
 		input: JobToolInput | undefined,
-	): JobToolInput | undefined {
+	): Promise<JobToolInput | undefined> {
 		if (input) return input;
 		if (job.input !== undefined) return job.input as JobToolInput;
-		const chat = chatStore.getChat(job.chatId);
+		const chat = await chatStore.getChat(job.chatId);
 		if (!chat) return undefined;
 		// Wave D: the record is native history — the scan reads the native
 		// assistant blocks directly (a toolCall's arguments are the input).
@@ -304,14 +313,14 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 	 * Worker liveness ends after cleanup, not after a lesson consumes the result.
 	 */
 	async function finishJob(jobId: string, result: ResearchResult | DemoResult | VisualResult | PdfResult): Promise<void> {
-		const job = jobStore.getJob(jobId);
+		const job = await jobStore.getJob(jobId);
 		if (!job) return;
 		// Aborted mid-run (abortJob flips the record before
 		// the loop unwinds): no result write, no steer — the abort path owns
 		// the record and queues the abort steer itself.
 		if (job.status !== "running") return;
 		const failed = isSubagentFailure(job.kind, result);
-		jobStore.updateJob(jobId, {
+		await jobStore.updateJob(jobId, {
 			result,
 			status: failed ? "error" : "done",
 			activity: failed ? "failed" : "finished",
@@ -325,12 +334,12 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 	}
 
 	/** Chat-record + input resolution shared by all three runners. */
-	function jobContext(jobId: string): { job: JobRecord; chatId: string } | null {
-		const job = jobStore.getJob(jobId);
+	async function jobContext(jobId: string): Promise<{ job: JobRecord; chatId: string } | null> {
+		const job = await jobStore.getJob(jobId);
 		if (!job || job.status !== "running") return null;
-		const chat = chatStore.getChat(job.chatId);
+		const chat = await chatStore.getChat(job.chatId);
 		if (!chat) {
-			jobStore.updateJob(jobId, { status: "error", error: `Chat not found: ${job.chatId}`, activity: "failed" });
+			await jobStore.updateJob(jobId, { status: "error", error: `Chat not found: ${job.chatId}`, activity: "failed" });
 			return null;
 		}
 		return { job, chatId: job.chatId };
@@ -344,13 +353,13 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		passedInput: JobToolInput | undefined,
 		loop: LoopContext,
 	): Promise<void> {
-		const ctx = jobContext(jobId);
+		const ctx = await jobContext(jobId);
 		if (!ctx) return;
 		const { job } = ctx;
 
-		const input = (passedInput ?? resolveInput(job, passedInput)) as ResearchToolInput | undefined;
+		const input = (passedInput ?? await resolveInput(job, passedInput)) as ResearchToolInput | undefined;
 		if (!(typeof input?.question === "string" && input.question.trim())) {
-			jobStore.updateJob(jobId, { error: "research question unavailable" });
+			await jobStore.updateJob(jobId, { error: "research question unavailable" });
 			await finishJob(jobId, { brief: "Research failed: the research question is unavailable.", sources: [] });
 			return;
 		}
@@ -372,7 +381,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		const pdfDir = await fs.mkdtemp(path.join(os.tmpdir(), "lh-research-"));
 
 		try {
-			jobStore.updateJob(jobId, { activity: "researching" });
+			progressWrite(jobStore.updateJob(jobId, { activity: "researching" }));
 			const brief = await runResearcherAgent(prompt, {
 				engine: model,
 				search: deps.searchProvider,
@@ -387,7 +396,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 					if (typeof input?.url === "string" && (toolName === "web_fetch" || toolName === "web_fetch_pdf")) {
 						fetchedUrls.push(input.url);
 					}
-					jobStore.updateJob(jobId, { activity: activityLine(toolName, input) });
+					progressWrite(jobStore.updateJob(jobId, { activity: activityLine(toolName, input) }));
 				},
 			});
 			if (!brief.trim()) throw new Error("the researcher produced no text");
@@ -399,7 +408,7 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			// folded so far (flushed by runJob's finally).
 			if (loop.abortSignal.aborted) return;
 			const reason = err instanceof Error ? err.message : String(err);
-			if (stillRunning(jobId)) jobStore.updateJob(jobId, { error: reason });
+			if (await stillRunning(jobId)) await jobStore.updateJob(jobId, { error: reason });
 			await finishJob(jobId, { brief: `Research failed: ${reason}`, sources: [] });
 		} finally {
 			await fs.rm(pdfDir, { recursive: true, force: true });
@@ -414,16 +423,16 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		passedInput: JobToolInput | undefined,
 		loop: LoopContext,
 	): Promise<void> {
-		const ctx = jobContext(jobId);
+		const ctx = await jobContext(jobId);
 		if (!ctx) return;
 		const { job } = ctx;
 
-		const input = (passedInput ?? resolveInput(job, passedInput)) as DemoToolInput | undefined;
+		const input = (passedInput ?? await resolveInput(job, passedInput)) as DemoToolInput | undefined;
 		const title = typeof input?.title === "string" && input.title.trim() ? input.title : "Interactive demo";
 		const brief = typeof input?.brief === "string" ? input.brief : "";
 
 		try {
-			jobStore.updateJob(jobId, { activity: "building demo" });
+			progressWrite(jobStore.updateJob(jobId, { activity: "building demo" }));
 			const result = await runDemoBuilder(
 				{ title, brief },
 				{
@@ -431,16 +440,16 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 					abortSignal: loop.abortSignal,
 					chatId: loop.chatId,
 					onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
-					onActivity: (line) => jobStore.updateJob(jobId, { activity: line }),
+					onActivity: (line) => progressWrite(jobStore.updateJob(jobId, { activity: line })),
 				},
 			);
-			if (isDemoFailure(result) && stillRunning(jobId))
-				jobStore.updateJob(jobId, { error: result.notes ?? "demo build failed" });
+			if (isDemoFailure(result) && await stillRunning(jobId))
+				await jobStore.updateJob(jobId, { error: result.notes ?? "demo build failed" });
 			await finishJob(jobId, result);
 		} catch (err) {
 			if (loop.abortSignal.aborted) return;
 			const reason = err instanceof Error ? err.message : String(err);
-			if (stillRunning(jobId)) jobStore.updateJob(jobId, { error: reason });
+			if (await stillRunning(jobId)) await jobStore.updateJob(jobId, { error: reason });
 			await finishJob(jobId, { title, html: "", tested: true, notes: `FAILED: ${reason}` });
 		}
 	}
@@ -451,11 +460,11 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		passedInput: JobToolInput | undefined,
 		loop: LoopContext,
 	): Promise<void> {
-		const ctx = jobContext(jobId);
+		const ctx = await jobContext(jobId);
 		if (!ctx) return;
 		const { job } = ctx;
 
-		const input = (passedInput ?? resolveInput(job, passedInput)) as VisualToolInput | undefined;
+		const input = (passedInput ?? await resolveInput(job, passedInput)) as VisualToolInput | undefined;
 		const brief = typeof input?.brief === "string" ? input.brief : "";
 		const imagePath = typeof input?.image === "string" ? input.image : undefined;
 
@@ -464,10 +473,10 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 			// and rides into the maker bounded for storage.
 			let image: LearnerImage | undefined;
 			if (imagePath !== undefined) {
-				jobStore.updateJob(jobId, { activity: "loading image" });
+				progressWrite(jobStore.updateJob(jobId, { activity: "loading image" }));
 				image = await loadLearnerImage(imagePath, loop.abortSignal);
 			}
-			jobStore.updateJob(jobId, { activity: image ? "annotating image" : "drawing figure" });
+			progressWrite(jobStore.updateJob(jobId, { activity: image ? "annotating image" : "drawing figure" }));
 			const result = await runVisualMaker(
 				{ brief, image },
 				{
@@ -475,17 +484,17 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 					abortSignal: loop.abortSignal,
 					chatId: loop.chatId,
 					onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
-					onActivity: (line) => jobStore.updateJob(jobId, { activity: line }),
+					onActivity: (line) => progressWrite(jobStore.updateJob(jobId, { activity: line })),
 				},
 			);
-			if (image && result.svg && stillRunning(jobId)) chatStore.saveImageSnapshot(job.chatId, image.snapshotId, image);
-			if (isVisualFailure(result) && stillRunning(jobId))
-				jobStore.updateJob(jobId, { error: result.notes ?? "visual build failed" });
+			if (image && result.svg && await stillRunning(jobId)) await chatStore.saveImageSnapshot(job.chatId, image.snapshotId, image);
+			if (isVisualFailure(result) && await stillRunning(jobId))
+				await jobStore.updateJob(jobId, { error: result.notes ?? "visual build failed" });
 			await finishJob(jobId, result);
 		} catch (err) {
 			if (loop.abortSignal.aborted) return;
 			const reason = err instanceof Error ? err.message : String(err);
-			if (stillRunning(jobId)) jobStore.updateJob(jobId, { error: reason });
+			if (await stillRunning(jobId)) await jobStore.updateJob(jobId, { error: reason });
 			await finishJob(jobId, { svg: "", notes: `FAILED: ${reason}` });
 		}
 	}
@@ -498,16 +507,16 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 		passedInput: JobToolInput | undefined,
 		loop: LoopContext,
 	): Promise<void> {
-		const ctx = jobContext(jobId);
+		const ctx = await jobContext(jobId);
 		if (!ctx) return;
 		const { job } = ctx;
 
-		const input = (passedInput ?? resolveInput(job, passedInput)) as PdfToolInput | undefined;
+		const input = (passedInput ?? await resolveInput(job, passedInput)) as PdfToolInput | undefined;
 		const path = typeof input?.path === "string" && input.path.trim() ? input.path.trim() : "";
 		const question = typeof input?.question === "string" ? input.question : "";
 
 		try {
-			jobStore.updateJob(jobId, { activity: "reading pdf" });
+			progressWrite(jobStore.updateJob(jobId, { activity: "reading pdf" }));
 			const result = await runPdfReaderAgent(
 				{ path, question },
 			{
@@ -515,16 +524,16 @@ export function createJobRunner(deps: JobRunnerDeps): JobRunner {
 				abortSignal: loop.abortSignal,
 				chatId: loop.chatId,
 				onUsage: (usage) => loop.onUsage(piUsageToStep(usage)),
-				onActivity: (line) => jobStore.updateJob(jobId, { activity: line }),
+				onActivity: (line) => progressWrite(jobStore.updateJob(jobId, { activity: line })),
 			},
 			);
-			if (isPdfFailure(result) && stillRunning(jobId))
-				jobStore.updateJob(jobId, { error: result.brief.replace(/^PDF failed:\s*/i, "") });
+			if (isPdfFailure(result) && await stillRunning(jobId))
+				await jobStore.updateJob(jobId, { error: result.brief.replace(/^PDF failed:\s*/i, "") });
 			await finishJob(jobId, result);
 		} catch (err) {
 			if (loop.abortSignal.aborted) return;
 			const reason = err instanceof Error ? err.message : String(err);
-			if (stillRunning(jobId)) jobStore.updateJob(jobId, { error: reason });
+			if (await stillRunning(jobId)) await jobStore.updateJob(jobId, { error: reason });
 			await finishJob(jobId, { path, question, brief: `PDF failed: ${reason}`, pagesRead: [], pagesConsulted: [] });
 		}
 	}

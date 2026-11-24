@@ -1,8 +1,8 @@
 import * as fs from "node:fs/promises";
-import path from "node:path";
-import { Worker } from "node:worker_threads";
 import { createHash } from "node:crypto";
 import { resolveSourcePath } from "./fs-shared.ts";
+import { convertImageBytesToPng } from "../image-processing/convert.mjs";
+import { resizeImageInProcess } from "../image-processing/resize-core.mjs";
 import { detectSupportedImageMimeType, detectSupportedImageMimeTypeFromFile, type ResizedImage } from "../image-processing/index.ts";
 import { checkImageDimensions, MAX_LEARNER_IMAGE_BYTES } from "./learner-image-dimensions.ts";
 import type { ImageSnapshot } from "../../core/contracts.ts";
@@ -49,23 +49,13 @@ async function readBounded(absolute: string, signal?: AbortSignal): Promise<Uint
 
 async function normalize(bytes: Uint8Array, signal?: AbortSignal): Promise<ResizedImage> {
 	signal?.throwIfAborted();
-	const worker = new Worker(path.join(process.cwd(), "src/agent/image-processing/learner-image-worker.mjs"));
-	try {
-		return await new Promise((resolve, reject) => {
-			const abort = () => reject(signal?.reason ?? new Error("Operation aborted"));
-			const cleanup = () => signal?.removeEventListener("abort", abort);
-			worker.once("message", (message: { result?: ResizedImage; error?: string }) => {
-				cleanup();
-				if (message.result) resolve(message.result);
-				else reject(new Error(message.error ?? "Image normalization failed"));
-			});
-			worker.once("error", (error) => { cleanup(); reject(error); });
-			worker.once("exit", (code) => { cleanup(); reject(new Error(`Image normalization worker exited (${code})`)); });
-			signal?.addEventListener("abort", abort, { once: true });
-			if (signal?.aborted) abort();
-			else worker.postMessage({ bytes });
-		});
-	} finally { await worker.terminate(); }
+	const png = await convertImageBytesToPng(bytes);
+	if (!png) throw new Error("Could not decode image");
+	signal?.throwIfAborted();
+	const result = await resizeImageInProcess(png, "image/png", { maxWidth: 1600, maxHeight: 1600, maxBytes: 1024 * 1024 });
+	signal?.throwIfAborted();
+	if (!result) throw new Error("Could not shrink image to an embeddable size");
+	return result;
 }
 
 export async function loadLearnerImage(rawPath: string, signal?: AbortSignal): Promise<LearnerImage> {

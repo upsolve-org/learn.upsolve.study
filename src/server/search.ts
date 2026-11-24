@@ -20,8 +20,14 @@
  */
 
 import { SEARCH_ENGINES, type SearchEngineId, type SearchHit, type SearchProvider, type SearchStatus } from "../core/search.ts";
+import { resolveSettings } from "../core/settings-resolution.ts";
 import { keyValue } from "./keys.ts";
-import { effectiveSettings } from "./stores.ts";
+import { cachedSettings } from "./stores.ts";
+
+/** The tool-layer search gates are synchronous callbacks into the agent;
+ *  the per-owner settings cache keeps them non-throwing under an async
+ *  backend (and read-fresh after every settings write). */
+const syncSettings = () => resolveSettings(cachedSettings());
 
 /** The wire-callable shape the adapters close over (tests inject a stub). */
 type FetchLike = (input: string, init: RequestInit) => Promise<Response>;
@@ -280,7 +286,7 @@ export function resolveSearchEngineFor(
  *  mid-session activates on the next check (no restart). */
 export function searchStatus(): SearchStatus {
 	const { available, engine, reason } = resolveSearchEngineFor(
-		effectiveSettings().agent.search?.engine,
+		syncSettings().agent.search?.engine,
 		engineKeys(),
 	);
 	return { available, engine, reason };
@@ -295,7 +301,7 @@ export function searchAvailable(): boolean {
  *  the tool layer (Teacher stream) calls this once per search, so key
  *  rotations take effect immediately. */
 export function searchProvider(): SearchProvider | null {
-	const resolved = resolveSearchEngineFor(effectiveSettings().agent.search?.engine, engineKeys());
+	const resolved = resolveSearchEngineFor(syncSettings().agent.search?.engine, engineKeys());
 	if (!resolved.available || !resolved.key) return null;
 	switch (resolved.engine) {
 		case "tavily":

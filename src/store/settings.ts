@@ -130,5 +130,5 @@ export function writeSettings(raw: unknown): UserSettings {
 /** The typed adapter (core/ports.ts SettingsStore), for the composition root. */
 export const settingsStore: SettingsStore = {
 	readSettings,
-	writeSettings,
+	writeSettings(settings) { writeSettings(settings); },
 };

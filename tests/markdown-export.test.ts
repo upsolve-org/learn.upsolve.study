@@ -22,7 +22,7 @@ process.env.LH_DATA_DIR = TMP_DATA;
 /** The route handler + the store seam, loaded AFTER the env is set. */
 type Get = (req: Request, ctx: { params: Promise<{ id: string }> }) => Promise<Response>;
 let GET: Get;
-let createChat: (title: string, kind?: "practice") => { id: string; title: string };
+let createChat: typeof import("../src/server/chats.ts").createChat;
 let saveMessages: (id: string, messages: unknown[]) => void;
 
 before(async () => {
@@ -41,7 +41,7 @@ describe("GET /api/chats/:id/markdown", () => {
 	});
 
 	it("exports the session as an anchorless markdown attachment, filename from the title", async () => {
-		const chat = createChat("Relational Databases — Joins & Normal Forms");
+		const chat = await createChat("Relational Databases — Joins & Normal Forms");
 		saveMessages(chat.id, [
 			{ id: "m1", role: "user", content: "Teach me joins" },
 			{ id: "m2", role: "assistant", content: "A join combines rows." },
@@ -60,7 +60,7 @@ describe("GET /api/chats/:id/markdown", () => {
 	});
 
 	it("an unsalvageable title falls back to 'session'", async () => {
-		const chat = createChat("日本語"); // no ascii alphanumerics survive the slug
+		const chat = await createChat("日本語"); // no ascii alphanumerics survive the slug
 		saveMessages(chat.id, [{ id: "m1", role: "user", content: "hello" }]);
 		const res = await GET(new Request("http://x/api"), { params: Promise.resolve({ id: chat.id }) });
 		assert.equal(res.status, 200);
@@ -68,7 +68,7 @@ describe("GET /api/chats/:id/markdown", () => {
 	});
 
 	it("an empty session exports the bare header document", async () => {
-		const chat = createChat("Quiet one");
+		const chat = await createChat("Quiet one");
 		const res = await GET(new Request("http://x/api"), { params: Promise.resolve({ id: chat.id }) });
 		assert.equal(res.status, 200);
 		const body = await res.text();

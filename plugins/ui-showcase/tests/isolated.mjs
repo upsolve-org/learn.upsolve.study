@@ -88,7 +88,7 @@ export async function runPackagedProof(verify) {
   const built = path.join(pluginRoot, "dist");
   const manifest = JSON.parse(fs.readFileSync(path.join(built, "manifest.json"), "utf8"));
   assert.equal(manifest.id, "ui-showcase"); assert.equal(manifest.backend, undefined, "Frontend-only package");
-  const runtime = process.env.LH_NODE_RUNTIME ?? path.resolve(pluginRoot, "../../node_modules/electron/dist/Electron.app/Contents/MacOS/Electron");
+  const runtime = process.env.LH_NODE_RUNTIME ?? process.execPath;
   const chrome = process.env.CHROME_PATH ?? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
   for (const file of [runtime, chrome]) fs.accessSync(file, fs.constants.X_OK);
   const scratch = fs.realpathSync(fs.mkdtempSync("/tmp/lh-ui-showcase-native-"));
@@ -141,7 +141,7 @@ export async function runPackagedProof(verify) {
     const guard = path.join(scratch, "imports.mjs");
     fs.writeFileSync(guard, `import {registerHooks} from 'node:module';import {realpathSync} from 'node:fs';import {fileURLToPath} from 'node:url';import path from 'node:path';const roots=${JSON.stringify([standalone, path.join(data, "plugins")])};registerHooks({resolve(s,c,n){const r=n(s,c);if(r.url.startsWith('file:')){const f=realpathSync(fileURLToPath(r.url));if(!roots.some(root=>f===root||f.startsWith(root+path.sep)))throw Error('Import escaped disposable payload: '+f)}return r}});`);
     const log = fs.openSync(path.join(scratch, "server.log"), "w");
-    child = spawn(runtime, ["--import", guard, path.join(standalone, "server.js")], { cwd: standalone, env: { ...cleanEnv, ELECTRON_RUN_AS_NODE: "1", HOSTNAME: "127.0.0.1", PORT: port }, stdio: ["ignore", log, log] }); fs.closeSync(log);
+    child = spawn(runtime, ["--import", guard, path.join(standalone, "server.js")], { cwd: standalone, env: { ...cleanEnv, HOSTNAME: "127.0.0.1", PORT: port }, stdio: ["ignore", log, log] }); fs.closeSync(log);
     child.on("error", error => { failure = error; });
     await until(async () => { if (failure) throw failure; assert.equal(child.exitCode, null, "Packaged server exited; inspect server.log"); try { return (await fetch(base, { signal: AbortSignal.timeout(1000) })).status === 200; } catch { return false; } }, "packaged server boot");
     const api = async (route, method = "GET", body, headers = {}) => {

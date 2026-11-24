@@ -1,11 +1,13 @@
 /**
  * CREDENTIAL PROVISIONING (2026-11-17).
  *
- * Approving a signup now creates the GoTrue account with a generated password
- * and records it, so the operator can read it back and send it. Supabase keeps
+ * Approving a signup creates the auth account with a generated password and
+ * records it, so the operator can read it back and send it. Better Auth keeps
  * only a bcrypt hash, so this store is the ONLY place the plaintext survives.
  *
- * Server-only: needs the secret key and Node fs.
+ * This module is pure core (fs only): the actual account write is injected as
+ * an AccountProvisioner by the server barrel, which keeps provisioning
+ * testable without a live PostgreSQL database.
  *
  * `data/issued-credentials.json` is operator-level (outside every owner root)
  * and written 0600 because it holds live passwords.
@@ -14,7 +16,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { randomBytes } from "node:crypto";
 import { baseDataRoot } from "../../config.ts";
-import { hostedConfig } from "./hosted.ts";
+import { hostedMode } from "./hosted.ts";
 import { normalizeEmail } from "./admission.ts";
 
 export interface IssuedCredential {
@@ -22,7 +24,12 @@ export interface IssuedCredential {
 	password: string;
 	userId: string;
 	issuedAt: string;
+	emailDelivery?: CredentialEmailDelivery;
 }
+
+export type CredentialEmailDelivery =
+	| { status: "accepted"; messageId: string; acceptedAt: string }
+	| { status: "failed"; error: string };
 
 type Env = Record<string, string | undefined>;
 
@@ -30,22 +37,21 @@ function credentialsFile(): string {
 	return path.join(/* turbopackIgnore: true */ baseDataRoot(), "issued-credentials.json");
 }
 
-/** GoTrue admin base: the internal transport when configured. */
-function adminBase(env: Env): string | undefined {
-	const config = hostedConfig(env);
-	if (!config) return undefined;
-	return (env.SUPABASE_INTERNAL_URL ?? config.url).trim().replace(/\/+$/, "");
-}
+/**
+ * The server-side write step: create/reset the account for an address with
+ * the supplied plaintext. Kept as a port so core stays free of DB imports.
+ */
+export type AccountProvisioner = (
+	email: string,
+	password: string,
+	env: Env,
+) => Promise<{ ok: true; userId: string } | { ok: false; error: string }>;
 
-/** The admin key, or undefined when the deployment did not supply one. */
-export function adminKey(env: Env = process.env): string | undefined {
-	const key = (env.SUPABASE_SECRET_KEY ?? "").trim();
-	return key || undefined;
-}
-
-/** Is automated provisioning configured? */
+/** Is automated provisioning configured? Mirrors hasDatabaseUrl() from the
+ *  server barrel — core cannot import it (import law), and the check is the
+ *  same non-empty DATABASE_URL trim. */
 export function provisioningAvailable(env: Env = process.env): boolean {
-	return Boolean(adminKey(env) && adminBase(env));
+	return hostedMode(env) && Boolean(env.DATABASE_URL?.trim());
 }
 
 /**
@@ -97,6 +103,16 @@ export function issuedCredentials(): IssuedCredential[] {
 	return readIssued().sort((a, b) => b.issuedAt.localeCompare(a.issuedAt));
 }
 
+/** A delayed send must not restore a forgotten password or overwrite a reset. */
+export function recordCredentialEmail(credential: IssuedCredential, delivery: CredentialEmailDelivery): void {
+	const list = readIssued();
+	const current = list.find(entry => entry.email === credential.email &&
+		entry.password === credential.password && entry.issuedAt === credential.issuedAt);
+	if (!current || current.emailDelivery?.status === "accepted") return;
+	current.emailDelivery = delivery;
+	writeIssued(list);
+}
+
 /** Forget one address (after handing it over and changing the password). */
 export function forgetIssued(email: string): void {
 	writeIssued(readIssued().filter((r) => r.email !== email));
@@ -107,63 +123,29 @@ export type ProvisionResult =
 	| { ok: false; error: string };
 
 /**
- * Create (or re-password) the GoTrue account for an address and record the
- * password. Idempotent per address: an existing account gets a fresh password
- * rather than an error, so a re-approval always yields usable credentials.
+ * Create (or re-password) the account for an address and record the password.
+ * Idempotent per address: the injected provisioner preserves an existing id
+ * and resets its password, so a re-approval always yields usable credentials.
  */
-export async function provisionAccount(rawEmail: unknown, env: Env = process.env): Promise<ProvisionResult> {
+export async function provisionAccount(
+	rawEmail: unknown,
+	env: Env = process.env,
+	provisioner?: AccountProvisioner,
+): Promise<ProvisionResult> {
 	const email = normalizeEmail(rawEmail);
 	if (!email) return { ok: false, error: "Invalid email address." };
-	const key = adminKey(env);
-	const base = adminBase(env);
-	if (!key || !base) return { ok: false, error: "SUPABASE_SECRET_KEY is not configured; create the account by hand." };
-
+	if (!provisioner) {
+		return { ok: false, error: "DATABASE_URL is not configured; create the account by hand." };
+	}
 	const password = generatePassword();
-	const response = await fetch(`${base}/auth/v1/admin/users`, {
-		method: "POST",
-		headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json" },
-		body: JSON.stringify({ email, password, email_confirm: true }),
-		// Never let a redirect silently become an HTML page.
-		redirect: "error",
-		signal: AbortSignal.timeout(15_000),
-	}).catch(() => undefined);
-	if (!response) return { ok: false, error: "GoTrue unreachable." };
-
-	const body = await response.json().catch(() => ({})) as { id?: string; msg?: string; error_code?: string };
-
-	// Already exists: reset the password so the operator still gets credentials.
-	if (!response.ok && (body.error_code === "email_exists" || /already/i.test(body.msg ?? ""))) {
-		const existing = await findUserId(email, base, key);
-		if (!existing) return { ok: false, error: "Account exists but its id could not be resolved." };
-		const reset = await fetch(`${base}/auth/v1/admin/users/${existing}`, {
-			method: "PUT",
-			headers: { apikey: key, authorization: `Bearer ${key}`, "content-type": "application/json" },
-			body: JSON.stringify({ password }),
-			redirect: "error",
-			signal: AbortSignal.timeout(15_000),
-		}).catch(() => undefined);
-		if (!reset?.ok) return { ok: false, error: "Account exists but the password reset failed." };
-		const credential = { email, password, userId: existing, issuedAt: new Date().toISOString() };
-		recordIssued(credential);
-		return { ok: true, credential };
+	let result: Awaited<ReturnType<AccountProvisioner>>;
+	try {
+		result = await provisioner(email, password, env);
+	} catch {
+		return { ok: false, error: "Account provisioning failed." };
 	}
-
-	if (!response.ok || !body.id) {
-		return { ok: false, error: body.msg ?? `GoTrue returned HTTP ${response.status}.` };
-	}
-	const credential = { email, password, userId: body.id, issuedAt: new Date().toISOString() };
+	if (!result.ok) return { ok: false, error: result.error };
+	const credential = { email, password, userId: result.userId, issuedAt: new Date().toISOString() };
 	recordIssued(credential);
 	return { ok: true, credential };
-}
-
-/** Look up a user id by address (GoTrue's list is paginated; filter client-side). */
-async function findUserId(email: string, base: string, key: string): Promise<string | undefined> {
-	const response = await fetch(`${base}/auth/v1/admin/users?per_page=200`, {
-		headers: { apikey: key, authorization: `Bearer ${key}` },
-		redirect: "error",
-		signal: AbortSignal.timeout(15_000),
-	}).catch(() => undefined);
-	if (!response?.ok) return undefined;
-	const body = await response.json().catch(() => ({})) as { users?: { id?: string; email?: string }[] };
-	return body.users?.find((u) => normalizeEmail(u.email) === email)?.id;
 }

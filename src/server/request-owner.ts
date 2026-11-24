@@ -25,6 +25,8 @@ import { isOwnerId } from "../core/owner.ts";
 import { hostedMode } from "../core/hosted.ts";
 
 export const OWNER_HEADER = "x-lh-owner";
+/** Internal capability header. The Proxy sets it to "1" for the operator only. */
+export const OPERATOR_HEADER = "x-lh-operator";
 
 /** Canonicalise a header value, or undefined when it is not a usable id. */
 function ownerOf(value: string | null | undefined): string | undefined {
@@ -60,6 +62,43 @@ export function ownerScoped<A extends unknown[], R>(
 	return (...args: A): R => {
 		const owner = ownerOfRequest(args[0] instanceof Request ? args[0] : undefined);
 		return owner === undefined ? handler(...args) : runAsOwner(owner, () => handler(...args));
+	};
+}
+
+/**
+ * Is this request from the operator? Desktop/plain-dev has one user who owns
+ * everything, so the operator gates are inert there. In hosted mode the ONLY
+ * trusted signal is the Proxy-set header — it is stripped from client input
+ * before forwarding (proxy.ts), so a forged header cannot reach a route.
+ */
+export function isOperatorRequest(request: Request | undefined): boolean {
+	if (!hostedMode()) return true;
+	return request?.headers.get(OPERATOR_HEADER) === "1";
+}
+
+/** A 403 refusal for a non-operator in hosted mode; otherwise no refusal. */
+export function operatorRefusal(request: Request | undefined): Response | undefined {
+	if (isOperatorRequest(request)) return undefined;
+	return Response.json({ error: "Operator access required." }, {
+		status: 403,
+		headers: { "Cache-Control": "no-store" },
+	});
+}
+
+/**
+ * Operator-only route wrapper: refuse BEFORE entering any owner scope, then
+ * run the handler exactly as `ownerScoped` would. The refusal happens on the
+ * capability, not on identity — when hosted mode is off every request is an
+ * operator request and the wrapper is a transparent pass-through.
+ */
+export function operatorOnly<A extends unknown[], R>(
+	handler: (...args: A) => R,
+): (...args: A) => R | Response {
+	const scoped = ownerScoped(handler);
+	return (...args: A): R | Response => {
+		const refusal = operatorRefusal(args[0] instanceof Request ? args[0] : undefined);
+		if (refusal) return refusal;
+		return scoped(...args);
 	};
 }
 

@@ -3,8 +3,9 @@ import { createHash } from "node:crypto";
 import type { AgentTool } from "@earendil-works/pi-agent-core";
 import type { TSchema } from "typebox";
 import { buildJobFailureSteer, buildSubagentSteer, type JobRecord, type SteerMessage } from "../core/contracts/jobs.ts";
-import type { JobStore } from "../core/ports.ts";
+import type { JobStore, MaybePromise } from "../core/ports.ts";
 import type { PluginToolContext } from "../core/plugins.ts";
+import { currentOwnerId } from "../core/owner-scope.ts";
 import type { PluginBackgroundResult, PluginBackgroundTool, PluginTaskOutcome, PluginTaskRecord, PluginWorkerService } from "../core/plugin-workers.ts";
 
 interface JobDeliveryDeps {
@@ -26,6 +27,9 @@ export interface PluginBackgroundRecoveryDeps extends JobDeliveryDeps {
 	readTask: (pluginId: string, taskId?: string, requestId?: string) => PluginTaskRecord | null | Promise<PluginTaskRecord | null>;
 }
 function reason(error: unknown): string { return error instanceof Error ? error.message : String(error); }
+function isPromiseLike<T>(value: MaybePromise<T>): value is Promise<T> {
+	return value !== null && typeof value === "object" && typeof (value as Promise<T>).then === "function";
+}
 /** Stop waiting, not a claim that arbitrary author code can be forcibly killed. */
 function abortable<T>(run: () => T | Promise<T>, signal: AbortSignal): Promise<T> {
 	return new Promise((resolve, reject) => {
@@ -66,8 +70,8 @@ function fallback(job: JobRecord, outcome: PluginTaskOutcome): PluginBackgroundR
 function acknowledge(job: JobRecord) {
 	return { content: [{ type: "text" as const, text: `Dispatched ${job.plugin?.toolName ?? "background tool"} — continue your turn. The result will arrive separately.` }], details: { jobId: job.id, dispatched: true } };
 }
-function deliver(job: JobRecord, result: PluginBackgroundResult, deps: JobDeliveryDeps): void {
-	const current = deps.jobStore.getJob(job.id);
+async function deliver(job: JobRecord, result: PluginBackgroundResult, deps: JobDeliveryDeps): Promise<void> {
+	const current = await deps.jobStore.getJob(job.id);
 	if (current?.delivery?.kind !== "result" || current.delivery.status !== "pending") return;
 	// Session delivery owns this promise. Failed starts cannot rewrite the
 	// terminal computation or keep worker abort/resources registered.
@@ -78,8 +82,8 @@ function deliver(job: JobRecord, result: PluginBackgroundResult, deps: JobDelive
 async function notifyFailure(job: JobRecord, error: string, deps: JobDeliveryDeps): Promise<void> {
 	// Not a worker outcome or learner cancellation. The teacher still needs to
 	// learn why its acknowledged dispatch cannot produce a delivered result.
-	if (deps.jobStore.getJob(job.id)?.status !== "running") return;
-	deps.jobStore.updateJob(job.id, { status: "error", error, activity: "delivery failed", delivery: { kind: "failure", status: "pending" } });
+	if ((await deps.jobStore.getJob(job.id))?.status !== "running") return;
+	await deps.jobStore.updateJob(job.id, { status: "error", error, activity: "delivery failed", delivery: { kind: "failure", status: "pending" } });
 	void deps.deliver(buildJobFailureSteer(job, error)).catch(() => { /* retained session-owned failure notice */ });
 }
 
@@ -87,18 +91,23 @@ export function createPluginBackgroundTool<T extends TSchema>(deps: PluginBackgr
 	const { definition, context, workers, jobStore } = deps;
 	const { workerId, prepare, format, ...native } = definition;
 	return { ...native, execute: async (toolCallId, input, executionSignal) => {
-		const known = jobStore.findJobByToolCallId(context.chatId, toolCallId);
+		const known = await jobStore.findJobByToolCallId(context.chatId, toolCallId);
 		if (known) return acknowledge(known);
 		const preacceptSignal = executionSignal ? AbortSignal.any([executionSignal, deps.signal]) : deps.signal;
 		if (preacceptSignal.aborted) throw new Error("Background tool call aborted: plugin disabled or operation cancelled");
 		if (!deps.isActive()) throw new Error("Plugin is disabled");
 		const requestId = `background_${createHash("sha256").update(JSON.stringify([context.chatId, toolCallId])).digest("hex")}`;
+		// TENANCY: stamp the accepting owner here, not at `workers.start`.
+		// `execute` yields between this line and the start (prepare, the job
+		// lookup), and by then the calling turn's scope is gone. Derived from
+		// the same inputs as requestId so a replayed acceptance keeps the owner.
+		const owner = currentOwnerId();
 		// An accepted standalone task can survive a failed job write. Never replay
 		// preparation or execution when this host-derived acceptance is known.
 		let snapshot = workers.list().find((task) => task.requestId === requestId);
-		if (snapshot && (snapshot.definitionId !== workerId || snapshot.purpose !== "background")) throw new Error("Background request identity belongs to a different worker or purpose");
+		if (snapshot && (snapshot.definitionId !== workerId || snapshot.purpose !== "background" || snapshot.owner !== owner)) throw new Error("Background request identity belongs to a different worker or purpose");
 		const options = snapshot ? undefined : await abortable(() => prepare.call(definition, input, context), preacceptSignal);
-		const accepted = jobStore.findJobByToolCallId(context.chatId, toolCallId);
+		const accepted = await jobStore.findJobByToolCallId(context.chatId, toolCallId);
 		if (accepted) return acknowledge(accepted);
 		if (preacceptSignal.aborted) throw new Error("Background tool call aborted before worker dispatch: plugin disabled or operation cancelled");
 		if (!deps.isActive()) throw new Error("Plugin disabled before worker dispatch");
@@ -109,7 +118,7 @@ export function createPluginBackgroundTool<T extends TSchema>(deps: PluginBackgr
 		snapshot ??= workers.start(workerId, { ...options!, requestId, purpose: "background" });
 		let job: JobRecord;
 		try {
-			job = jobStore.createJob({ kind: "plugin", chatId: context.chatId, toolCallId, input, activity: snapshot.activity ?? snapshot.status, plugin: {
+			job = await jobStore.createJob({ kind: "plugin", chatId: context.chatId, toolCallId, input, activity: snapshot.activity ?? snapshot.status, plugin: {
 				pluginId: deps.pluginId, toolName: definition.name, workerId, requestId,
 				taskId: snapshot.id, input, label: definition.label,
 			} });
@@ -127,13 +136,13 @@ export function createPluginBackgroundTool<T extends TSchema>(deps: PluginBackgr
 			try {
 				// Learner abort already owns its separate durable notice. Keep the
 				// real task outcome without replacing that notice or invoking authors.
-				if (jobStore.getJob(job.id)?.status !== "running") {
-					jobStore.updateJob(job.id, { result });
+				if ((await jobStore.getJob(job.id))?.status !== "running") {
+					await jobStore.updateJob(job.id, { result });
 					return;
 				}
 				// Computation ends now, independently of session delivery. Persist
 				// the real generic outcome BEFORE asynchronous author formatting.
-				jobStore.updateJob(job.id, { result, status: outcome.status === "succeeded" ? "done" : "error",
+				await jobStore.updateJob(job.id, { result, status: outcome.status === "succeeded" ? "done" : "error",
 					error: outcome.status === "succeeded" ? undefined : outcome.error.message,
 					activity: outcome.status === "succeeded" ? "finished" : "failed",
 					delivery: { kind: "result", status: "pending" },
@@ -150,23 +159,44 @@ export function createPluginBackgroundTool<T extends TSchema>(deps: PluginBackgr
 						result = { ...result, text, ...(data === undefined ? {} : { data }) };
 					} catch (error) { result = { ...result, formatError: reason(error) }; }
 				}
-				jobStore.updateJob(job.id, { result });
-				if (!controller.signal.aborted) deliver(job, result, deps);
+				await jobStore.updateJob(job.id, { result });
+				if (!controller.signal.aborted) await deliver(job, result, deps);
 			} catch (error) {
-				const saved = jobStore.getJob(job.id);
+				const saved = await jobStore.getJob(job.id);
 				if (saved?.result && saved.delivery?.kind === "result") {
 					// The generic outcome was already committed. A later presentation
 					// write failure cannot retroactively fail the worker.
 					console.error(`[plugin job ${job.id}] presentation persistence failed:`, error);
-					deliver(saved, saved.result as PluginBackgroundResult, deps);
+					await deliver(saved, saved.result as PluginBackgroundResult, deps);
 				} else await notifyFailure(job, `Background result persistence failed: ${reason(error)}`, deps);
 			}
 			finally { deps.unregisterAbort(job.id); }
 		};
 		try {
+			// The worker progress listener is a synchronous seam: with a sync
+			// adapter the write runs inline (preserving the historical order);
+			// under an async adapter the writes serialize through one per-job
+			// chain, and a failure stays ephemeral bookkeeping.
+			let progressChain: Promise<void> | undefined;
+			const runWrite = (task: PluginTaskRecord): MaybePromise<void> => {
+				if (terminal) return;
+				const current = jobStore.getJob(job.id);
+				const apply = (record: JobRecord | null): MaybePromise<void> => {
+					const written = jobStore.updateJob(job.id, { usage: task.usage,
+						...(record?.status === "running" ? { activity: task.activity ?? task.status } : {}),
+					});
+					return isPromiseLike(written) ? written.then(() => undefined) : undefined;
+				};
+				return isPromiseLike(current) ? current.then(apply) : apply(current);
+			};
 			const update = (task: PluginTaskRecord) => {
 				if (terminal) return;
-				jobStore.updateJob(job.id, { usage: task.usage, ...(jobStore.getJob(job.id)?.status === "running" ? { activity: task.activity ?? task.status } : {}) });
+				if (progressChain) {
+					progressChain = progressChain.then(() => runWrite(task)).then(() => undefined).catch(() => {});
+				} else {
+					const started = runWrite(task);
+					if (isPromiseLike(started)) progressChain = started.then(() => undefined).catch(() => {});
+				}
 				const outcome = taskOutcome(task);
 				if (outcome) void finish(outcome);
 			};
@@ -205,19 +235,19 @@ export async function recoverPluginBackgroundJob(job: JobRecord, deps: PluginBac
 			const outcome = taskOutcome(task);
 			if (!outcome) throw new Error(`Canonical worker task is unexpectedly ${task.status}; no task was replayed`);
 			result = fallback(job, outcome);
-			if (controller.signal.aborted || deps.jobStore.getJob(job.id)?.status !== "running") return;
-			deps.jobStore.updateJob(job.id, { usage: task.usage, plugin: { ...job.plugin, taskId: task.id } });
+			if (controller.signal.aborted || (await deps.jobStore.getJob(job.id))?.status !== "running") return;
+			await deps.jobStore.updateJob(job.id, { usage: task.usage, plugin: { ...job.plugin, taskId: task.id } });
 		}
 		if (!controller.signal.aborted) {
-			const current = deps.jobStore.getJob(job.id);
+			const current = await deps.jobStore.getJob(job.id);
 			if (!current) return;
-			if (current.status === "running") deps.jobStore.updateJob(job.id, { result,
+			if (current.status === "running") await deps.jobStore.updateJob(job.id, { result,
 				status: result.outcome.status === "succeeded" ? "done" : "error",
 				error: result.outcome.status === "succeeded" ? undefined : result.outcome.error.message,
 				activity: result.outcome.status === "succeeded" ? "finished" : "failed",
 				delivery: { kind: "result", status: "pending" },
 			});
-			deliver(job, result, deps);
+			await deliver(job, result, deps);
 		}
 	} catch (error) {
 		// An unreadable task might have completed. Never fabricate an outcome.

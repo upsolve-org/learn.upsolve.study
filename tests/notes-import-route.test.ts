@@ -152,7 +152,7 @@ it("an off-list type and a non-text file are refused with a short message before
 	const registered: string[] = [];
 	extraction.importNotes = async () => { imports++; return { nodes: 0, chains: 0 }; };
 	const realRegister = sourceDirectory.registerImport;
-	sourceDirectory.registerImport = (filePath) => { registered.push(filePath); };
+	sourceDirectory.registerImport = async (filePath) => { registered.push(filePath); };
 	try {
 		const pdf = tinyPdf([{ runs: [{ text: "Slide text", x: 72, y: 700 }] }]);
 		const zip = new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0x00]);

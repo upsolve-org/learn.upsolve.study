@@ -17,11 +17,18 @@
  * file, and `shadowedByEnv` explains why a saved key is not the live one
  * (env always wins).
  */
-import { keyStatuses, providerKeyList, ownerScoped } from "@/src/server";
+import { hostedMode } from "@/src/core";
+import { keyStatuses, providerKeyList, ownerScoped, isOperatorRequest } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
-async function GETHandler() {
+async function GETHandler(_request?: Request) {
+	// Hosted learners must not see the operator's key inventory. Return the
+	// empty SHAPE so the settings UI still renders normally; an empty list is
+	// indistinguishable from "no keys configured" to a non-operator.
+	if (hostedMode() && !isOperatorRequest(_request)) {
+		return Response.json({ keys: [], providers: [] }, { headers: { "Cache-Control": "no-store" } });
+	}
 	return Response.json({ keys: keyStatuses(), providers: providerKeyList() });
 }
 

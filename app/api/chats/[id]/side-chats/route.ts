@@ -17,7 +17,7 @@ import { sideChats, ownerScoped } from "@/src/server";
 
 async function GETHandler(_req: Request, ctx: { params: Promise<{ id: string }> }): Promise<Response> {
 	const { id } = await ctx.params;
-	const listed = sideChats.list(id);
+	const listed = await sideChats.list(id);
 	if (!listed) return Response.json({ error: "Unknown chat" }, { status: 404 });
 	return Response.json(listed);
 }

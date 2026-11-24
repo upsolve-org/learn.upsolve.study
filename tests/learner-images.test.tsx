@@ -22,7 +22,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { after, describe, it } from "node:test";
 import { createCanvas } from "@napi-rs/canvas";
-import * as photon from "@silvia-odwyer/photon-node";
+import sharp from "sharp";
 import {
 	createFauxCore,
 	fauxAssistantMessage,
@@ -60,7 +60,7 @@ const JOBS_DIR = path.join(PATHS.data, "jobs");
 const createdChats: string[] = [];
 const createdJobs: string[] = [];
 const snapshots = new Map<string, ImageSnapshot>();
-const showImageTool = createShowImageTool({ chatId: "test", chatStore: { saveImageSnapshot: (_chatId, id, image) => snapshots.set(id, image) } });
+const showImageTool = createShowImageTool({ chatId: "test", chatStore: { saveImageSnapshot: (_chatId, id, image) => { snapshots.set(id, image); } } });
 
 after(() => {
 	fs.rmSync(scratch, { recursive: true, force: true });
@@ -84,14 +84,8 @@ function raster(width: number, height: number, mime: "image/png" | "image/jpeg" 
 }
 
 /** A 12×8 JPEG tagged with an EXIF orientation (tests/image-processing.test.ts). */
-function exifJpeg(orientation: number): Buffer {
-	const image = photon.PhotonImage.new_from_byteslice(raster(12, 8));
-	let jpeg: Buffer;
-	try {
-		jpeg = Buffer.from(image.get_bytes_jpeg(80));
-	} finally {
-		image.free();
-	}
+async function exifJpeg(orientation: number): Promise<Buffer> {
+	const jpeg = await sharp(raster(12, 8)).jpeg({ quality: 80 }).toBuffer();
 	const exif = Buffer.alloc(36);
 	exif.set([0xff, 0xe1, 0, 34]);
 	exif.write("Exif\0\0", 4, "binary");
@@ -112,15 +106,10 @@ function file(name: string, bytes: Buffer | string): string {
 	return p;
 }
 
-function pixel(png: Buffer, x: number, y: number): [number, number, number] {
-	const image = photon.PhotonImage.new_from_byteslice(png);
-	try {
-		const at = (y * image.get_width() + x) * 4;
-		const raw = image.get_raw_pixels();
-		return [raw[at]!, raw[at + 1]!, raw[at + 2]!];
-	} finally {
-		image.free();
-	}
+async function pixel(png: Buffer, x: number, y: number): Promise<[number, number, number]> {
+	const { data, info } = await sharp(png).raw().toBuffer({ resolveWithObject: true });
+	const at = (y * info.width + x) * info.channels;
+	return [data[at]!, data[at + 1]!, data[at + 2]!];
 }
 
 /** A faux engine that snapshots every provider-facing context. */
@@ -191,7 +180,7 @@ describe("learner image loader", () => {
 		assert.equal(image.mimeType, "image/png");
 		assert.equal(image.width, 40);
 		assert.equal(image.height, 30);
-		assert.deepEqual(pixel(Buffer.from(image.data, "base64"), 5, 15), pixel(bytes, 5, 15));
+		assert.deepEqual(await pixel(Buffer.from(image.data, "base64"), 5, 15), await pixel(bytes, 5, 15));
 		assert.match(image.snapshotId, /^[a-f0-9]{64}$/);
 	});
 
@@ -205,7 +194,7 @@ describe("learner image loader", () => {
 	});
 
 	it("bakes an EXIF rotation into the stored pixels", async () => {
-		const p = file("rotated.jpg", exifJpeg(6));
+		const p = file("rotated.jpg", await exifJpeg(6));
 		const image = await loadLearnerImage(p);
 		assert.equal(image.width, 8, "stored upright: the 12×8 frame turned a quarter");
 		assert.equal(image.height, 12);
@@ -370,8 +359,8 @@ describe("native render of an embedded learner image (real resvg)", () => {
 		const image = await loadLearnerImage(file("resvg.png", raster(40, 30)));
 		const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="40" height="30"><image href="data:${image.mimeType};base64,${image.data}" x="0" y="0" width="40" height="30"/></svg>`;
 		const png = await realHeadless.renderSvg(svg, { nativeOnly: true });
-		const [lr, lg, lb] = pixel(png, 5, 15);
-		const [rr, rg, rb] = pixel(png, 35, 15);
+		const [lr, lg, lb] = await pixel(png, 5, 15);
+		const [rr, rg, rb] = await pixel(png, 35, 15);
 		assert.ok(lr > 200 && lg > 150 && lb < 80, `left half is the picture's yellow (got ${lr},${lg},${lb})`);
 		assert.ok(rr < 80 && rb > 150, `right half is the picture's blue (got ${rr},${rg},${rb})`);
 	});
@@ -386,7 +375,7 @@ describe("visual job runner with an image", () => {
 			deliver: async (steer) => {
 				steers.push(steer);
 				const jobId = (steer.details as { jobId: string }).jobId;
-				const job = jobStore.getJob(jobId);
+				const job = await jobStore.getJob(jobId);
 				if (job && job.status === "running") {
 					const failed = job.result ? isSubagentFailure(job.kind, job.result as never) : true;
 					jobStore.updateJob(jobId, { status: failed ? "error" : "done", activity: failed ? "failed" : "delivered" });
@@ -396,10 +385,10 @@ describe("visual job runner with an image", () => {
 		return { steers, runner };
 	}
 
-	function visualChat(title: string, input: { brief: string; image: string }) {
-		const chat = chatStore.createChat(title);
+	async function visualChat(title: string, input: { brief: string; image: string }) {
+		const chat = await chatStore.createChat(title);
 		createdChats.push(chat.id);
-		chatStore.saveMessages(chat.id, [
+		await chatStore.saveMessages(chat.id, [
 			{ id: "u1", role: "user", content: "mark my photo", timestamp: 1 } as never,
 			{
 				id: "a1",
@@ -423,14 +412,14 @@ describe("visual job runner with an image", () => {
 				timestamp: 1,
 			} as never,
 		]);
-		const job = jobStore.createJob({ kind: "visual", chatId: chat.id, toolCallId: "call-vi", input });
+		const job = await jobStore.createJob({ kind: "visual", chatId: chat.id, toolCallId: "call-vi", input });
 		createdJobs.push(job.id);
 		return job;
 	}
 
 	it("loads the image, annotates it, and steers an annotated image", async () => {
 		const p = file("runner.png", raster(40, 30));
-		const job = visualChat("Test: annotate runner", { brief: "Circle the yellow half.", image: p });
+		const job = await visualChat("Test: annotate runner", { brief: "Circle the yellow half.", image: p });
 		headlessOverride.current = fakeHeadless();
 		visualModelOverride.current = scripted([
 			fauxAssistantMessage(
@@ -446,19 +435,19 @@ describe("visual job runner with an image", () => {
 			headlessOverride.current = undefined;
 			visualModelOverride.current = undefined;
 		}
-		const result = jobStore.getJob(job.id)!.result as VisualResult;
+		const result = (await jobStore.getJob(job.id))!.result as VisualResult;
 		const image = await loadLearnerImage(p);
 		assert.deepEqual(result.image, { path: fs.realpathSync.native(p), snapshotId: image.snapshotId });
 		assert.ok(result.svg.includes('href="learner-image"'));
 		assert.ok(!result.svg.includes(image.data));
-		assert.equal(chatStore.getChat(job.chatId)?.imageSnapshots?.[image.snapshotId]?.data, image.data);
+		assert.equal((await chatStore.getChat(job.chatId))?.imageSnapshots?.[image.snapshotId]?.data, image.data);
 		assert.equal(steers.length, 1);
 		assert.match(steers[0]!.content as string, /^The annotated image is drawn, verified by inspection/);
 	});
 
 	it("an image gone by run time delivers a FAILED steer", async () => {
 		const p = file("vanishing.png", raster(8, 8));
-		const job = visualChat("Test: annotate runner, vanished image", { brief: "b", image: p });
+		const job = await visualChat("Test: annotate runner, vanished image", { brief: "b", image: p });
 		fs.rmSync(p);
 		headlessOverride.current = fakeHeadless();
 		visualModelOverride.current = scripted([]).engine;
@@ -472,7 +461,7 @@ describe("visual job runner with an image", () => {
 		const result = (steers[0]!.details as { result: VisualResult }).result;
 		assert.equal(result.svg, "");
 		assert.match(result.notes ?? "", /^FAILED: Cannot open image .*vanishing\.png: no such file/);
-		assert.equal(jobStore.getJob(job.id)!.status, "error");
+		assert.equal((await jobStore.getJob(job.id))!.status, "error");
 	});
 });
 

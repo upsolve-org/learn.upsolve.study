@@ -29,6 +29,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run plugins:setup
+      # tests/flashcards-owner.test.ts imports the built core plugin bundle
+      # (core-plugins/ is gitignored), so build it before typecheck/tests.
+      - run: npm run plugins:build-core
       - run: npm run typecheck
       - run: npm test
       - run: npm run lint

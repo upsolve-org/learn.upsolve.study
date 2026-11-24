@@ -1,11 +1,9 @@
 import { NextResponse, type NextRequest } from "next/server";
-import { createServerClient } from "@supabase/ssr";
 import { apiRequestRefusal } from "./src/server/desktop-access.ts";
 import { hostedConfig } from "./src/core/hosted.ts";
-import { deniedPath, documentEndpointExempt, loginPath, safeReturnPath, signInCallbackPath, signupPath } from "./src/core/auth-routes.ts";
-import { cookieWrites } from "./src/core/hosted-cookies.ts";
-import { hostedFetch } from "./src/core/hosted-fetch.ts";
-import { admittedUser, hostedIdentity } from "./src/core/hosted-admission.ts";
+import { authApiPath, deniedPath, documentEndpointExempt, loginPath, safeReturnPath, signInCallbackPath, signupPath } from "./src/core/auth-routes.ts";
+import { admittedUser, isOperator } from "./src/core/hosted-admission.ts";
+import { getSessionUser, hostedIdentityFromHeaders } from "./src/server/auth.ts";
 
 /**
  * Deskstop/browser-API gate. Protects API methods, including SSE and
@@ -26,66 +24,57 @@ async function apiGate(request: NextRequest) {
 			{ status: 403, headers: { "Cache-Control": "no-store" } },
 		);
 	}
-	const identity = await hostedIdentity(request);
+	const identity = await hostedIdentityFromHeaders(request.headers);
 	if ("refusal" in identity) return identity.refusal;
-	return NextResponse.next({ request: { headers: ownerHeaders(request, identity.owner) } });
+	return NextResponse.next({ request: { headers: ownerHeaders(request, identity.owner, identity.operator) } });
 }
 
 /**
  * The internal header carrying the VERIFIED owner id upstream. It is set here
- * from the GoTrue-verified user and never trusted from the client: the Proxy
- * overwrites it on every hosted request.
+ * from the authenticated user and never trusted from the client: the Proxy
+ * overwrites it on every request.
  */
 const OWNER_HEADER = "x-lh-owner";
+/** Internal capability header: "1" ONLY for the operator. Never client-set. */
+const OPERATOR_HEADER = "x-lh-operator";
 
 /**
- * Request headers with the verified owner set, or cleared when there is none.
- * A client-supplied value is always dropped first, so only the Proxy decides.
+ * Request headers with the verified owner/operator set, or cleared when there
+ * is none. A client-supplied value is always dropped FIRST, so only the Proxy
+ * decides — a learner cannot grant itself operator access by sending the
+ * header (Next deletes any header not in this forwarded set downstream).
  */
-function ownerHeaders(request: NextRequest, owner: string | undefined): Headers {
+function ownerHeaders(request: NextRequest, owner: string | undefined, operator = false): Headers {
 	const headers = new Headers(request.headers);
 	headers.delete(OWNER_HEADER);
+	headers.delete(OPERATOR_HEADER);
 	if (owner) headers.set(OWNER_HEADER, owner.toLowerCase());
+	if (operator) headers.set(OPERATOR_HEADER, "1");
 	return headers;
 }
 
 /**
- * Hosted mode: refresh the Supabase session cookies and keep signed-out
- * traffic out. Returns the response whose cookies carry the refresh.
- *
- * Private pages verify the session against GoTrue over the internal
- * transport. The verified id is forwarded as `x-lh-owner` so route handlers
- * and server components can enter the owner's storage scope
- * (src/core/owner-scope.ts) without another round trip.
+ * Hosted mode: keep signed-out traffic out of private pages. Session cookies
+ * are Better Auth's; getSessionUser resolves them through the same server
+ * seam the route handlers use. The verified id is forwarded as `x-lh-owner`
+ * so route handlers and server components can enter the owner's storage scope
+ * (src/core/owner-scope.ts) without a second lookup.
  */
-async function sessionGate(request: NextRequest, config: NonNullable<ReturnType<typeof hostedConfig>>) {
-	const jar = cookieWrites();
-	const supabase = createServerClient(config.url, config.publishableKey, {
-		global: { fetch: hostedFetch(config.url) },
-		cookies: {
-			getAll: () => request.cookies.getAll(),
-			setAll: (list) => {
-				for (const { name, value } of list) request.cookies.set(name, value);
-				jar.setAll(list);
-			},
-		},
-	});
+async function sessionGate(request: NextRequest) {
 	const { pathname, search } = request.nextUrl;
 	const publicPage = loginPath(pathname) || signupPath(pathname) || deniedPath(pathname) || signInCallbackPath(pathname) || isPublicAsset(pathname);
-	const { data } = publicPage ? { data: { user: null } } : await supabase.auth.getUser();
+	const user = publicPage ? null : await getSessionUser(request.headers);
 
-	// Built only now, so a refresh is already in the headers Next copies on.
-	const admitted = Boolean(data.user && admittedUser(data.user));
-	const upstream = NextResponse.next({ request: { headers: ownerHeaders(request, admitted ? data.user!.id : undefined) } });
-	if (admitted || publicPage) {
-		return jar.landOn(upstream, upstream);
-	}
+	// Built only now, so the verified identity is already in the headers Next copies on.
+	const admitted = Boolean(user && admittedUser(user));
+	const upstream = NextResponse.next({ request: { headers: ownerHeaders(request, admitted ? user!.id : undefined, admitted && isOperator(user?.email)) } });
+	if (admitted || publicPage) return upstream;
 	// Signed in but not admitted: explain rather than loop back to sign-in.
-	if (data.user) return jar.landOn(upstream, NextResponse.redirect(new URL("/auth/denied", request.url)));
+	if (user) return NextResponse.redirect(new URL("/auth/denied", request.url));
 	const target = new URL("/auth/login", request.url);
 	const back = safeReturnPath(`${pathname}${search}`);
 	if (back !== "/") target.searchParams.set("next", back);
-	return jar.landOn(upstream, NextResponse.redirect(target));
+	return NextResponse.redirect(target);
 }
 
 /** Files under /public and the manifest family: no session needed. */
@@ -96,6 +85,8 @@ function isPublicAsset(pathname: string): boolean {
 
 export async function proxy(request: NextRequest) {
 	const { pathname } = request.nextUrl;
+	// Fail closed on a misconfigured hosted deployment before any gate runs
+	// (same boot check the instrumentation uses).
 	const hosted = hostedConfig();
 
 	// The streamed document endpoint opts out for every method in every
@@ -103,13 +94,19 @@ export async function proxy(request: NextRequest) {
 	// the identical request policy inside its own handler.
 	if (documentEndpointExempt(request.nextUrl)) return NextResponse.next();
 
+	// Better Auth owns /api/auth/*: login, sign-out, sessions and OAuth
+	// callbacks must work while signed out. Still strip client-supplied
+	// owner/operator headers before handing the request to the handler.
+	if (authApiPath(pathname)) {
+		return NextResponse.next({ request: { headers: ownerHeaders(request, undefined, false) } });
+	}
+
 	if (hosted && (pathname === "/api" || pathname.startsWith("/api/"))) {
-		// The auth callback exchanges the code itself; everything else is
-		// an API call and keeps the browser-API gate.
+		// The page callback only redirects; unchanged from the previous gate.
 		if (signInCallbackPath(pathname)) return NextResponse.next();
 		return apiGate(request);
 	}
-	if (hosted) return sessionGate(request, hosted);
+	if (hosted) return sessionGate(request);
 	return apiGate(request);
 }
 

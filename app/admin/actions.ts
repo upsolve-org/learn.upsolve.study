@@ -1,7 +1,8 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { approveSignup, denySignup, forgetIssued, provisionAccount } from "@/src/server";
+import { redirect } from "next/navigation";
+import { approveAccount, sendApprovalEmail, denySignup, forgetIssued, provisionAccount } from "@/src/server";
 import { isOperator } from "@/src/core";
 import { currentAccountEmail } from "@/src/server";
 
@@ -10,10 +11,8 @@ import { currentAccountEmail } from "@/src/server";
  * here rather than trusted from the form, because the page guard is a render
  * concern and a Server Action can be invoked directly.
  *
- * Approval also CREATES the GoTrue account with a generated password and
- * records it, so the operator can read the credentials off the page and send
- * them. If provisioning fails the address stays admitted — the account can
- * still be made by hand, and the page says so.
+ * Approval creates the account and emails its saved password. Sending failures
+ * remain visible on the credential, where the operator can retry the email.
  */
 async function requireOperator(): Promise<boolean> {
 	return isOperator(await currentAccountEmail());
@@ -23,8 +22,16 @@ export async function approveAction(formData: FormData): Promise<void> {
 	if (!(await requireOperator())) return;
 	const email = formData.get("email");
 	if (typeof email !== "string") return;
-	approveSignup(email);
-	await provisionAccount(email);
+	const result = await approveAccount(email);
+	revalidatePath("/admin");
+	if (!result.ok) redirect("/admin?error=provisioning");
+}
+
+export async function retryEmailAction(formData: FormData): Promise<void> {
+	if (!(await requireOperator())) return;
+	const email = formData.get("email");
+	if (typeof email !== "string") return;
+	await sendApprovalEmail(email);
 	revalidatePath("/admin");
 }
 

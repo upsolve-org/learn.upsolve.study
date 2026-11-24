@@ -514,7 +514,9 @@ from the frontend with `await ctx.call(name, input)`. This routes only to that p
 not arbitrary HTTP endpoints. Validate inputs, expose genuine errors, and use atomic
 writes for important plugin-owned state under `ctx.dataDirectory`.
 
-`ctx.learning` is read-only:
+`ctx.learning` is read-only. Every read method may return a promise (the host can
+serve learning data from an async database), so always `await` it:
+`const { propositions } = await ctx.learning.graph();`
 
 | Member | Meaning |
 | --- | --- |

@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { AgentEvent, AgentTool } from "@earendil-works/pi-agent-core";
 import type { AssistantMessage, ToolResultMessage, Usage } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
-import type { PluginTaskRecordStore } from "../core/ports.ts";
+import { expectSync, type PluginTaskRecordStore } from "../core/ports.ts";
 import type { PluginCallPurpose, PluginModelSpec } from "../core/plugin-agents.ts";
 import type { PluginInferenceOptions } from "../core/plugins.ts";
 import type { PluginTaskError, PluginTaskOutcome, PluginTaskRecord, PluginTaskSnapshot, PluginWorkerContext, PluginWorkerDefinition, PluginWorkerService, PluginWorkerStartOptions } from "../core/plugin-workers.ts";
@@ -11,10 +11,11 @@ import { accumulateJobUsage, piUsageToStep } from "../core/contracts/jobs.ts";
 import type { PiEngine } from "./models.ts";
 import { usageWasAdmitted } from "./subscription-request-cycle.ts";
 import { runSubagent } from "./subagents/pi-run.ts";
+import { currentOwnerId, runAsOwner } from "../core/owner-scope.ts";
 
 /** Host observability only: never project prompts, inputs, transcripts or results. */
 export type PluginWorkerActivityMetadata = Pick<PluginTaskRecord,
-	"id" | "definitionId" | "status" | "createdAt" | "updatedAt" | "activity" | "model" | "usage">;
+	"id" | "definitionId" | "status" | "createdAt" | "updatedAt" | "activity" | "model" | "usage" | "owner">;
 
 export interface PluginWorkerServiceDeps {
 	store: PluginTaskRecordStore;
@@ -93,8 +94,11 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 		wake(t);
 		if (!disposed && t.activityRecord !== t.record) {
 			t.activityRecord = t.record;
-			const { id, definitionId, status, createdAt, updatedAt, activity, model, usage } = t.record;
-			try { deps.onChange?.(clone({ id, definitionId, status, createdAt, updatedAt, activity, model, usage })); } catch { /* Observe only. */ }
+			const { id, definitionId, status, createdAt, updatedAt, activity, model, usage, owner } = t.record;
+			// The owner travels with the live metadata so the activity feed can
+			// filter rows by tenant. Unscoped records omit the key entirely,
+			// preserving the desktop metadata shape byte-for-byte.
+			try { deps.onChange?.(clone({ id, definitionId, status, createdAt, updatedAt, activity, model, usage, ...(owner === undefined ? {} : { owner }) })); } catch { /* Observe only. */ }
 		}
 		if (disposed || t.notifying) return;
 		t.notifying = true;
@@ -108,7 +112,7 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 		if (disposed || t.closed) throw new Error("Task writer is closed");
 		if (t.poisoned) throw t.poisoned;
 		const next = clone({ ...record, updatedAt: new Date().toISOString() });
-		try { deps.store.save(next); }
+		try { expectSync(deps.store.save(next), "Plugin task save"); }
 		catch (error) {
 			t.poisoned = new Error(`Plugin task storage failed: ${text(error)}`);
 			t.controller.abort();
@@ -116,11 +120,11 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 			// a later checkpoint failure. Otherwise try to durably expose failure.
 			let uncertainSuccess = false;
 			if (next.status === "succeeded") {
-				try { uncertainSuccess = deps.store.get(next.id)?.status === "succeeded"; } catch { uncertainSuccess = true; }
+				try { uncertainSuccess = expectSync(deps.store.get(next.id), "Plugin task get")?.status === "succeeded"; } catch { uncertainSuccess = true; }
 			}
 			if (!terminal(t.record) && !uncertainSuccess) {
 				const failed: PluginTaskRecord = { ...t.record, status: "failed", completedAt: new Date().toISOString(), error: { code: "storage_error", message: t.poisoned.message } };
-				try { deps.store.save(clone(failed)); t.record = failed; } catch { /* wait rejects, rather than inventing a durable terminal state. */ }
+				try { expectSync(deps.store.save(clone(failed)), "Plugin task failure save"); t.record = failed; } catch { /* wait rejects, rather than inventing a durable terminal state. */ }
 			}
 			notify(t); throw t.poisoned;
 		}
@@ -133,7 +137,7 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 		commit(t, { ...t.record, status, error, completedAt: new Date().toISOString() });
 		t.controller.abort(); t.partial = undefined;
 	};
-	for (const loaded of deps.store.list()) {
+	for (const loaded of expectSync(deps.store.list(), "Plugin task list")) {
 		id(loaded.id, "task id"); id(loaded.definitionId, "worker id");
 		if (typeof loaded.requestId !== "string" || !loaded.requestId.length) throw new Error("Invalid persisted worker requestId");
 		if (tasks.has(loaded.id) || [...tasks.values()].some(t => t.record.requestId === loaded.requestId)) throw new Error("Duplicate persisted task identity");
@@ -151,6 +155,15 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 	const expired = (t: Task) => t.record.timeoutMs !== undefined && Date.now() - Date.parse(t.record.createdAt) >= t.record.timeoutMs;
 	const timeoutError: PluginTaskError = { code: "timeout", message: "Worker task timed out" };
 	const execute = async (t: Task, d: PluginWorkerDefinition) => {
+		// TENANCY: the run is detached from any request, so it re-enters the
+		// ACCEPTING owner's scope from its own record, never ambient state.
+		// Task-record writes are host-level (fixed directory); what needs the
+		// scope is plugin code and its worker tools resolving owner paths.
+		const owner = t.record.owner;
+		if (owner === undefined) return await executeScoped(t, d);
+		return await runAsOwner(owner, () => executeScoped(t, d));
+	};
+	const executeScoped = async (t: Task, d: PluginWorkerDefinition) => {
 		const active = () => {
 			if (disposed || t.closed || t.poisoned || t.controller.signal.aborted || t.record.status !== "running") throw t.poisoned ?? new Error("Task is no longer running");
 			if (expired(t)) { finish(t, "failed", timeoutError); throw new Error(timeoutError.message); }
@@ -267,9 +280,13 @@ export function createPluginWorkerService(deps: PluginWorkerServiceDeps): Plugin
 			const d = definitions.get(definitionId); if (!d) throw new Error(`Worker definition unavailable: ${definitionId}`);
 			const now = new Date().toISOString();
 			const record: PluginTaskRecord = { ...options, version: 1, id: randomUUID(), definitionId, createdAt: now, updatedAt: now, status: "queued", messages: [{ role: "user", content: options.prompt, timestamp: Date.now() }], turns: 0 };
+			// Stamped from the ACCEPTING scope, not acceptedOptions: the request-id
+			// equality check above compares the caller's options only.
+			const owner = currentOwnerId();
+			if (owner !== undefined) record.owner = owner;
 			// A post-rename fsync failure has an uncertain durable outcome. Stop
 			// further acceptance rather than risking duplicate request identities.
-			try { deps.store.save(clone(record)); }
+			try { expectSync(deps.store.save(clone(record)), "Plugin task acceptance save"); }
 			catch (error) { acceptanceError = new Error(`Plugin task acceptance storage failed: ${text(error)}`); throw acceptanceError; }
 			const t: Task = { record, controller: new AbortController(), listeners: new Set(), waiters: new Set() }; tasks.set(record.id, t);
 			if (options.timeoutMs !== undefined) {

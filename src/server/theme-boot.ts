@@ -20,10 +20,10 @@ export interface ThemeBoot {
 }
 
 /** Read the record and selected custom file; resolve the active theme and its vars. */
-export function readThemeBoot(): ThemeBoot {
-	const appearance = readSettings()?.appearance;
+export async function readThemeBoot(): Promise<ThemeBoot> {
+	const appearance = (await readSettings())?.appearance;
 	const id = appearance?.theme;
-	const custom = id && !isBuiltinThemeId(id) ? themeStore.readTheme(id) : null;
+	const custom = id && !isBuiltinThemeId(id) ? await themeStore.readTheme(id) : null;
 	const theme = resolveTheme(id, custom ? [custom] : []);
 	return { appearance, theme, vars: themeVars(effectiveColors(theme, appearance), theme.mode) };
 }

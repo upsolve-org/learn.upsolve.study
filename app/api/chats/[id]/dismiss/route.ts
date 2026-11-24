@@ -26,7 +26,7 @@ import { abortTurn, getChat, isTurnRunning, parkDismissal, stores, preparePlugin
 async function POSTHandler(req: Request, ctx: { params: Promise<{ id: string }> }): Promise<Response> {
 	const { id } = await ctx.params;
 	await reconcilePluginQuestionCompatibility(stores.chatStore, id);
-	let chat = getChat(id);
+	let chat = await getChat(id);
 	if (!chat) return Response.json({ error: "Unknown chat" }, { status: 404 });
 
 	let input;
@@ -43,7 +43,7 @@ async function POSTHandler(req: Request, ctx: { params: Promise<{ id: string }> 
 	// Body parsing yields: validate against current truth for every target,
 	// never overwrite entries appended while this body was arriving. Plugin
 	// targets additionally require exact saved-occurrence authority below.
-	chat = getChat(id);
+	chat = await getChat(id);
 	if (!chat) return Response.json({ error: "Unknown chat" }, { status: 404 });
 
 	let appends;
@@ -76,7 +76,7 @@ async function POSTHandler(req: Request, ctx: { params: Promise<{ id: string }> 
 	// Write-ahead, turn-less: the record is the only state that moves.
 	// No teacher request runs here. Side exchanges remain pending for the
 	// next budget-checked call, never pre-published into compaction history.
-	stores.chatStore.saveMessages(id, [...chat.messages, ...appends]);
+	await stores.chatStore.saveMessages(id, [...chat.messages, ...appends]);
 	emit("record-changed", { chatId: id });
 	return Response.json({ ok: true });
 }

@@ -77,7 +77,7 @@ test("external teaching example composes native tools, validated workers, separa
 	assert.equal(foreground.state.callCount + worker.state.callCount, 0, "discovery makes no model calls");
 	await host.setEnabled("teaching-extension", true);
 	assert.equal(worker.state.callCount, 0, "activation registers definitions but does not start work");
-	const chat = chatStore.createChat("Offline teaching extension proof");
+	const chat = await chatStore.createChat("Offline teaching extension proof");
 	const agent = createTeacherAgent(undefined, { chatId: chat.id, engine: { model: foreground.getModel(), streamFn: foreground.streamSimple }, pluginContributions: host.agentContributions });
 	assert.equal(host.list()[0]?.status, "active", JSON.stringify(host.list()));
 	assert.equal(host.list()[0]?.error, undefined, JSON.stringify(host.list()));
@@ -101,7 +101,7 @@ test("external teaching example composes native tools, validated workers, separa
 	const nativeHistory = agent.state.messages.filter(message => (message as { role: string }).role !== "system")
 		.map((message, index) => ({ ...message, id: `native_${index}` }) as LhMessage);
 	chatStore.saveMessages(chat.id, [...nativeHistory, steer]);
-	const saved = chatStore.getChat(chat.id)!;
+	const saved = (await chatStore.getChat(chat.id))!;
 	assert(saved.messages.some(message => message.id === steer.id));
 	const view = projectView(saved.messages);
 	assert(view.flatMap(message => message.parts).some(part => part.type === "tool-teaching_extension_echo"));

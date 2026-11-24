@@ -15,7 +15,7 @@
  * MODEL-PROVIDER env vars (provider-keys interlude); anything else is 404
  * — unknown file vars are preserved, not editable.
  */
-import { deleteKey, isWritableAuthKey, ownerScoped, saveKey } from "@/src/server";
+import { deleteKey, isWritableAuthKey, operatorOnly, saveKey } from "@/src/server";
 
 export const dynamic = "force-dynamic";
 
@@ -48,6 +48,7 @@ async function DELETEHandler(_req: Request, { params }: Params) {
 	return Response.json({ status: deleteKey(id) });
 }
 
-// Tenancy: the body runs inside the caller's owner scope.
-export const PUT = ownerScoped(PUTHandler);
-export const DELETE = ownerScoped(DELETEHandler);
+// Tenancy: the body runs inside the caller's owner scope, and key mutations
+// are operator-only in hosted mode (learners must not install provider keys).
+export const PUT = operatorOnly(PUTHandler);
+export const DELETE = operatorOnly(DELETEHandler);

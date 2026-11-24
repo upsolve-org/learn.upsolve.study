@@ -183,10 +183,19 @@ Sign in at `/auth/login`. `/admin` (operator only) lists signup requests.
 it creates no account. You approve on `/admin` (reachable from the **Requests**
 row at the bottom of the sidebar, operator only).
 
-Approving does two things: it admits the address, and — when `SUPABASE_SECRET_KEY`
-is set — it creates the GoTrue account with a generated password and lists that
-password on the page. Send it, then press **Done**. Supabase keeps only a hash, so
-the page is the only place a password can be read; **Reset** issues a new one.
+Approving admits the address, creates the GoTrue account with a generated password,
+and emails its sign-in details through Resend. The server needs `SUPABASE_SECRET_KEY`
+for provisioning and `RESEND_API_KEY` for sending. Set `RESEND_FROM` to
+`UPsolve <noreply@upsolve.study>` and `APP_ORIGIN` to `https://learn.upsolve.study`.
+Verify the sender domain in Resend. Keep the API key in server environment
+configuration, never in a public variable or committed file.
+
+Admin shows whether Resend accepted the email or the send failed. Acceptance does
+not confirm inbox delivery. **Retry email** reuses the saved password and sends
+with a Resend idempotency key, which prevents duplicates within 24 hours. A recorded
+acceptance prevents subsequent retries. **Done** clears the saved credential.
+**Reset** creates a new password without sending; use **Send email** afterwards.
+Existing saved credentials are not emailed automatically when deploying this change.
 
 A verified but unadmitted account lands on `/auth/denied` rather than looping back
 to sign-in.

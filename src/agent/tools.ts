@@ -26,6 +26,7 @@ import { grepTool } from "./tools/grep.ts";
 import { createShowImageTool } from "./tools/show-image.ts";
 import { healToolRecord } from "./tools/heal.ts";
 import type { GraphStore } from "../core/ports.ts";
+import { hostedMode } from "../core/hosted.ts";
 
 export { jobTools };
 export type { ProbeDoneContext } from "./tools/probe.ts";
@@ -231,7 +232,7 @@ export function teachExplainToolFor(
 		executionMode: "sequential",
 		execute: async (_toolCallId, input) => {
 			const problems = [...explainInputProblems(input)];
-			const nodeIdProblemText = nodeIdProblem(ctx, input.nodeId);
+			const nodeIdProblemText = await nodeIdProblem(ctx, input.nodeId);
 			if (nodeIdProblemText) problems.push(nodeIdProblemText);
 			if (problems.length > 0) return invalidInputResult("explain", problems);
 			return questionResult();
@@ -289,6 +290,11 @@ export function createProberTools(
 	ctx: ProberToolContext,
 	enabled?: EnabledTools,
 ): Record<string, AgentTool<any>> {
+	// Hosted learners have NO host filesystem. Their files live in the app's
+	// own store, not on the server; read/ls/find/grep would resolve paths on
+	// the shared server root and cross tenants. Desktop/local keeps the full
+	// set byte-for-byte.
+	const hosted = hostedMode();
 	// probe_done is re-added AFTER the filter, always-on by construction — it
 	// is how the phase ENDS; a prober that can never conclude is a lockout.
 	const done = probeDoneTool(ctx);
@@ -320,13 +326,11 @@ export function createProberTools(
 			{
 				...quizzing,
 				ask_user_question: askUserQuestionTool,
-				// The learner-filesystem set is always-on (user-decided 2026-09,
-				// sources v1): the prober inspects and LOCATES learner-referenced
-				// files while assessing the edge. Read-only by construction.
-				read: readTool,
-				ls: lsTool,
-				find: findTool,
-				grep: grepTool,
+				// The learner-filesystem set is always-on on desktop (user-decided
+				// 2026-09, sources v1): the prober inspects and LOCATES learner-
+				// referenced files while assessing the edge. Read-only by
+				// construction — but hosted mode removes it entirely.
+				...(hosted ? {} : { read: readTool, ls: lsTool, find: findTool, grep: grepTool }),
 				// Job dispatch in the probe phase (owner ruling, 2026-09-20):
 				// research + pdf are ALWAYS available in every phase — the
 				// prober can verify facts or read learner PDFs while assessing.
@@ -352,8 +356,8 @@ export function createProberTools(
 
 /** The nodeId-against-live-tree check the teacher's quiz chains after the
  *  shared authoring contract (the old superRefine, verbatim). */
-function nodeIdProblem(ctx: Pick<PlanToolContext, "chatId" | "chatStore">, nodeId: string): string | null {
-	const record = ctx.chatStore.getChat(ctx.chatId);
+async function nodeIdProblem(ctx: Pick<PlanToolContext, "chatId" | "chatStore">, nodeId: string): Promise<string | null> {
+	const record = await ctx.chatStore.getChat(ctx.chatId);
 	const known = record?.tree?.nodes.map((n) => n.id) ?? [];
 	if (!known.includes(nodeId)) {
 		return (
@@ -383,7 +387,7 @@ export function teachQuizToolFor(ctx: Pick<PlanToolContext, "chatId" | "chatStor
 		executionMode: "sequential",
 		execute: async (_toolCallId, input) => {
 			const problems = [...quizInputProblems(input)];
-			const nodeIdProblemText = nodeIdProblem(ctx, input.nodeId);
+			const nodeIdProblemText = await nodeIdProblem(ctx, input.nodeId);
 			if (nodeIdProblemText) problems.push(nodeIdProblemText);
 			if (problems.length > 0) return invalidInputResult("quiz", problems);
 			return questionResult();
@@ -436,6 +440,10 @@ export function createTeacherTools(
 	ctx: TeacherToolContext,
 	enabled?: EnabledTools,
 ): Record<string, AgentTool<any>> {
+	// Hosted learners have NO host filesystem: the read/ls/find/grep family
+	// (and show_image, which displays a host path) is absent in hosted mode.
+	// Desktop/local behaviour is unchanged.
+	const hosted = hostedMode();
 	// Quizzing mechanics (owner 2026-09-27): free-recall swaps the teach
 	// quiz for the teach explain — one quizzing tool at a time, whichever
 	// the settings arm. ask stays always-on.
@@ -450,17 +458,20 @@ export function createTeacherTools(
 			{
 			...quizzing,
 			ask_user_question: askUserQuestionTool,
-			// The learner-filesystem set is always-on (user-decided 2026-09,
-			// sources v1): the teacher locates and reads learner-referenced
-			// files on its own terms — nothing auto-injects. Read-only by
-			// construction (fs-shared.ts).
-			read: readTool,
-			ls: lsTool,
-			find: findTool,
-			grep: grepTool,
-			// The learner-image display twin of read (issue #363): teacher
-			// only, always on — it shows the learner their own file.
-			show_image: createShowImageTool(ctx),
+			// The learner-filesystem set is always-on on desktop (user-decided
+			// 2026-09, sources v1): the teacher locates and reads learner-
+			// referenced files on its own terms — nothing auto-injects.
+			// Read-only by construction (fs-shared.ts), but hosted mode drops
+			// the whole family including the image display twin of read.
+			...(hosted ? {} : {
+				read: readTool,
+				ls: lsTool,
+				find: findTool,
+				grep: grepTool,
+				// The learner-image display twin of read (issue #363): teacher
+				// only, always on — it shows the learner their own file.
+				show_image: createShowImageTool(ctx),
+			}),
 			...planTools(ctx),
 			...jobTools({ chatId: ctx.chatId, jobStore: ctx.jobStore, spawn: ctx.spawn, searchAvailable: ctx.searchAvailable }),
 		},

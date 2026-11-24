@@ -63,6 +63,7 @@ import {
 	buildSubagentSteer,
 	isSubagentFailure,
 	steerDelivered,
+	type ChatRecord,
 	type JobRecord,
 	type SteerMessage,
 } from "../core/contracts.ts";
@@ -70,8 +71,9 @@ import type { TurnInput, UserSteerInput } from "../core/input-events.ts";
 import { hasUnresolvedQuestion, endsInDismissal, endsInQuestionRecovery, newUserSteer, type LhMessage } from "../core/native-messages.ts";
 import { prepareSubmissionImages, submissionImagePolicyKey } from "./submission-images.ts";
 import { fireJobAbort, isJobLive } from "../agent/subagents/aborts.ts";
-import { stores, effectiveSettings } from "./stores.ts";
-import { resolveConversationSpec } from "../core/settings-resolution.ts";
+import { stores } from "./stores.ts";
+import type { MaybePromise } from "../core/ports.ts";
+import { resolveConversationSpec, resolveSettings } from "../core/settings-resolution.ts";
 import { connectionBackgroundAllowed, isSubscriptionProvider, onSubscriptionChange } from "../agent/subscription-connections.ts";
 import { isTurnRunning } from "./turn-liveness.ts";
 import { currentOwnerId, runAsOwner } from "../core/owner-scope.ts";
@@ -133,12 +135,24 @@ interface WakeState {
 	 *  settlement, before settleSteers). The pump's live path hands
 	 *  markers to this agent's follow-up queue. */
 	liveAgents: Map<string, Agent>;
+	/** In-flight deliverJobResult promises, keyed by steer id. Resolving a
+	 *  job's chat is async under a real backend, so duplicate callers must
+	 *  share one deferred promise (the registry's idempotence contract). */
+	deliveries: Map<string, Promise<void>>;
 	/** Chats whose pump loop is currently active (serialization per chat). */
 	pumping: Set<string>;
 	/** Throttle bookkeeping for the stale-job sweep, per owner (tenancy). */
 	lastSweepAt: Map<string, number>;
 	stopConnectionWatch?: () => void;
 	automaticDeferred: WeakSet<Agent>;
+	/** Set only in the standalone job worker (scripts/worker.ts): a finished
+	 *  job's steer is handed to the web process instead of waking a turn
+	 *  here — the web process owns live agents and the turn pump. */
+	remoteDelivery?: RemoteJobDelivery;
+	/** Set in the web process when sub-agent jobs run in the worker: true
+	 *  while the durable queue still holds (queued/active) this job, so the
+	 *  sweep never re-runs or relabels a loop executing in another process. */
+	remoteLiveness?: RemoteJobLiveness;
 }
 
 interface LhWakeGlobal {
@@ -147,7 +161,7 @@ interface LhWakeGlobal {
 
 function state(): WakeState {
 	const g = globalThis as typeof globalThis & LhWakeGlobal;
-	return (g.__lhWakePipeline ??= { queues: new Map(), liveAgents: new Map(), userSteers: new Map(), pumping: new Set(), lastSweepAt: new Map(), automaticDeferred: new WeakSet() });
+	return (g.__lhWakePipeline ??= { queues: new Map(), liveAgents: new Map(), userSteers: new Map(), deliveries: new Map(), pumping: new Set(), lastSweepAt: new Map(), automaticDeferred: new WeakSet() });
 }
 
 /** TENANCY (2026-11-16): `owner:chatId` — the same composite key every other
@@ -160,6 +174,19 @@ function key(chatId: string): string {
 /** chat-handler wires this at module init: its adapter around handleChatRequest. */
 export function setTurnRunner(run: TurnRunner): void {
 	state().turnRunner = run;
+}
+
+export type RemoteJobDelivery = (steer: SteerMessage) => Promise<void>;
+export type RemoteJobLiveness = (jobId: string) => Promise<boolean>;
+
+/** Worker-only: route job deliveries to the web process (see WakeState). */
+export function setRemoteJobDelivery(deliver: RemoteJobDelivery | undefined): void {
+	state().remoteDelivery = deliver;
+}
+
+/** Web-only: report jobs the durable queue is still running elsewhere. */
+export function setRemoteJobLiveness(liveness: RemoteJobLiveness | undefined): void {
+	state().remoteLiveness = liveness;
 }
 
 /** chat-handler wires this at module init: its job runner's runJob. */
@@ -195,6 +222,19 @@ function delay(ms: number): Promise<void> {
 function jobIdOf(steer: SteerMessage): string | null {
 	const details = steer.details as { jobId?: string } | undefined;
 	return typeof details?.jobId === "string" ? details.jobId : null;
+}
+
+/** True for a thenable port result (async backend under Postgres). */
+function isPromiseLike<T>(value: MaybePromise<T>): value is Promise<T> {
+	return value !== null && typeof value === "object" && typeof (value as Promise<T>).then === "function";
+}
+
+/** Continue with `next` once `value` settles. A synchronous value runs
+ *  `next` INLINE: today's fs adapters must keep the synchronous bookkeeping
+ *  the registry contract relies on, while an async adapter never throws. */
+function onReady<T>(value: MaybePromise<T>, next: (value: T) => void, onError: (error: unknown) => void): void {
+	if (isPromiseLike(value)) void value.then(next, onError);
+	else { try { next(value); } catch (error) { onError(error); } }
 }
 
 /** Call only after canonical conversation persistence. Streaming visibility
@@ -233,7 +273,9 @@ export function discardChatDeliveries(chatId: string): void {
 /** Finalize a delivered steer's job bookkeeping — job steers only. */
 function finalizeSteer(steer: SteerMessage): void {
 	const jobId = jobIdOf(steer);
-	if (jobId) finalizeJob(jobId);
+	// Bookkeeping off a sync event hook: the save itself is fire-and-forget,
+	// and finalizeJob observes its own failures so no rejection escapes.
+	if (jobId) void finalizeJob(jobId);
 }
 
 /** Queue one logical delivery per ID, including in-flight wake cargo.
@@ -241,10 +283,31 @@ function finalizeSteer(steer: SteerMessage): void {
  * failed starts stay pending. Non-job probe handoffs keep their existing
  * wake-acceptance/error semantics. Workers never await this promise. */
 export function deliverJobResult(steer: SteerMessage): Promise<void> {
+	// Standalone worker: the outcome and its pending delivery are already
+	// durable on the job record; only announce it to the web process.
+	const remote = state().remoteDelivery;
+	if (remote) return remote(steer);
 	const chatId = chatIdOf(steer);
-	const entry = queueSteer(chatId, steer);
-	void pump(chatId);
-	return entry.promise;
+	if (!isPromiseLike(chatId)) {
+		// Sync adapters: identical to the historical path — one registry
+		// entry, stable promise identity for duplicate callers.
+		const entry = queueSteer(chatId, steer);
+		void pump(chatId);
+		return entry.promise;
+	}
+	// Async backend: resolving the job's chat is a read, so duplicate callers
+	// share one deferred promise until the registry entry exists.
+	const s = state();
+	const shared = s.deliveries.get(steer.id);
+	if (shared) return shared;
+	const promise = chatId.then((id) => {
+		const entry = queueSteer(id, steer);
+		void pump(id);
+		return entry.promise;
+	}).finally(() => { s.deliveries.delete(steer.id); });
+	s.deliveries.set(steer.id, promise);
+	void promise.catch(() => undefined);
+	return promise;
 }
 
 function queueSteer(chatId: string, steer: SteerMessage): QueuedSteer {
@@ -270,9 +333,25 @@ function queueSteer(chatId: string, steer: SteerMessage): QueuedSteer {
  *  beats the loop's synchronous start-poll drain and the marker rides the
  *  run's FIRST LLM call (the native equivalent of the old continuation
  *  coalescing). */
-export function automaticFollowUpAllowed(chatId: string, agent?: Agent): boolean {
+export function automaticFollowUpAllowed(_chatId: string, agent?: Agent): boolean {
 	if (agent && state().automaticDeferred.has(agent)) return false;
-	const provider = agent?.state?.model?.provider ?? resolveConversationSpec(stores.chatStore.getChat(chatId)?.settings, effectiveSettings().models.strong)?.provider;
+	// Sync seams (live hand-off, consent watch) must never touch storage: a
+	// live agent carries its own provider, and an async adapter cannot be
+	// awaited here. With no provider the connection gate answers its honest
+	// default (BYOK allowed) — the pump's async form below resolves the real
+	// conversation chain when there is no live agent.
+	return connectionBackgroundAllowed(agent?.state?.model?.provider);
+}
+
+/** The pump (and other async seams) can resolve the chat's conversation
+ *  chain when no live agent supplies a provider. Same consent gate, no
+ *  synchronous store reads. */
+export async function automaticFollowUpAllowedAsync(chatId: string, agent?: Agent): Promise<boolean> {
+	if (agent && state().automaticDeferred.has(agent)) return false;
+	const provider = agent?.state?.model?.provider ?? resolveConversationSpec(
+		(await stores.chatStore.getChat(chatId))?.settings,
+		resolveSettings(await stores.settingsStore.readSettings()).models.strong,
+	)?.provider;
 	return connectionBackgroundAllowed(provider);
 }
 
@@ -335,12 +414,12 @@ export async function prepareAndSteerChat(chatId: string, input: UserSteerInput)
 	const agent = state().liveAgents.get(key(chatId));
 	if (!agent) return "settled";
 	const model = agent.state.model;
-	const session = stores.chatStore.getChat(chatId);
+	const session = await stores.chatStore.getChat(chatId);
 	if (!model || !session) return "stale";
 	const policy = submissionImagePolicyKey({ model });
 	const { text, id } = input;
 	const images = await prepareSubmissionImages(input.images, { model });
-	const currentSession = stores.chatStore.getChat(chatId);
+	const currentSession = await stores.chatStore.getChat(chatId);
 	if (!currentSession || currentSession.createdAt !== session.createdAt || currentSession.kind !== session.kind) return "stale";
 	const current = state().liveAgents.get(key(chatId));
 	if (!current) return "settled";
@@ -457,16 +536,16 @@ export interface AbortOutcome {
  * The runner writes the usage folded so far in its finally (merge patch),
  * so an aborted job's money record survives the kill.
  */
-export function abortJob(jobId: string): AbortOutcome {
-	const job = stores.jobStore.getJob(jobId);
+export async function abortJob(jobId: string): Promise<AbortOutcome> {
+	const job = await stores.jobStore.getJob(jobId);
 	if (!job) return { ok: false, reason: "not_found" };
 	if (job.status !== "running") return { ok: false, reason: "not_running" };
 	if (job.result) {
-		normalizeLegacyResult(job);
+		await normalizeLegacyResult(job);
 		return { ok: false, reason: "not_running" };
 	}
 
-	stores.jobStore.updateJob(jobId, {
+	await stores.jobStore.updateJob(jobId, {
 		status: "error", error: "Aborted by learner", activity: "aborted",
 		delivery: { kind: "abort", status: "pending" },
 	});
@@ -477,17 +556,18 @@ export function abortJob(jobId: string): AbortOutcome {
 	return { ok: true };
 }
 
-function chatIdOf(steer: SteerMessage): string {
+function chatIdOf(steer: SteerMessage): MaybePromise<string> {
 	// The probe handoff carries its chat directly in the marker details (the
 	// job record would say it too, but the details are the cheap path).
 	if (steer.customType === "probe-handoff") {
 		return (steer.details as { chatId: string }).chatId;
 	}
 	// The chat is resolvable from the job record; the steer's details
-	// carry jobId, which indexes the store.
+	// carry jobId, which indexes the store (may be async under Postgres).
 	const jobId = jobIdOf(steer);
-	const job = jobId ? stores.jobStore.getJob(jobId) : undefined;
-	return job?.chatId ?? "";
+	if (!jobId) return "";
+	const job = stores.jobStore.getJob(jobId);
+	return isPromiseLike(job) ? job.then((record) => record?.chatId ?? "") : job?.chatId ?? "";
 }
 
 /**
@@ -536,7 +616,7 @@ async function pumpInner(chatId: string): Promise<void> {
 			}
 
 			// Gone chat: nothing to deliver into.
-			const record = stores.chatStore.getChat(chatId);
+			const record = await stores.chatStore.getChat(chatId);
 			if (!record) {
 				s.queues.delete(key(chatId));
 				for (const entry of queue) {
@@ -551,7 +631,7 @@ async function pumpInner(chatId: string): Promise<void> {
 			noteSteersDurable(chatId, record.messages);
 			const stillPending = (s.queues.get(key(chatId)) ?? []).filter((entry) => !entry.waking && !entry.deferred);
 			if (stillPending.length === 0) { parked = true; return; }
-			if (!automaticFollowUpAllowed(chatId, s.liveAgents.get(key(chatId)))) { parked = true; return; }
+			if (!(await automaticFollowUpAllowedAsync(chatId, s.liveAgents.get(key(chatId))))) { parked = true; return; }
 
 			// VEHICLE 1 — THE LIVE RUN: pi's steering queue. The agent of the
 			// streaming turn takes every eligible marker; pi injects at the
@@ -587,7 +667,7 @@ async function pumpInner(chatId: string): Promise<void> {
 			// Re-fetch AFTER the gates open — waitForIdle can wait out a quiz
 			// answer (minutes), and sending the pre-wait snapshot would clobber
 			// the client's answer + continuation in the write-ahead persist.
-			const fresh = stores.chatStore.getChat(chatId);
+			const fresh = await stores.chatStore.getChat(chatId);
 			if (!fresh) {
 				continue; // the gone-chat branch rejects next iteration
 			}
@@ -616,7 +696,7 @@ async function pumpInner(chatId: string): Promise<void> {
 			// derived from the tail, so any user message un-holds by construction.
 			// An interrupted question-recovery request also waits for explicit
 			// input; a queued job must not restart its replacement turn.
-			if (endsInDismissal(fresh.messages) || endsInQuestionRecovery(fresh.messages) || !automaticFollowUpAllowed(chatId)) {
+			if (endsInDismissal(fresh.messages) || endsInQuestionRecovery(fresh.messages) || !(await automaticFollowUpAllowedAsync(chatId))) {
 				parked = true;
 				return;
 			}
@@ -633,7 +713,7 @@ async function pumpInner(chatId: string): Promise<void> {
 				console.error(`[steer ${steers.map((x) => x.id).join(",")}] wake turn crashed:`, err);
 				return -1;
 			});
-			const saved = stores.chatStore.getChat(chatId);
+			const saved = await stores.chatStore.getChat(chatId);
 			if (saved) noteSteersDurable(chatId, saved.messages);
 			const owned = fire.filter((entry) => s.queues.get(key(chatId))?.includes(entry));
 			if (status === 403 || status === 409) {
@@ -661,7 +741,7 @@ async function pumpInner(chatId: string): Promise<void> {
 		// a live run are NOT stragglers (settleSteers owns their resurrection)
 		// — restarting for them would just park in waitForIdle forever.
 		const q = state().queues.get(key(chatId)) ?? [];
-		if (!parked && automaticFollowUpAllowed(chatId, state().liveAgents.get(key(chatId))) && q.some((e) => e.handedTo === undefined && !e.waking && !e.deferred)) void pump(chatId);
+		if (!parked && (await automaticFollowUpAllowedAsync(chatId, state().liveAgents.get(key(chatId)))) && q.some((e) => e.handedTo === undefined && !e.waking && !e.deferred)) void pump(chatId);
 	}
 }
 
@@ -683,7 +763,9 @@ state().stopConnectionWatch = onSubscriptionChange(() => {
 	// Keys are `owner:chatId`; the entry carries the raw id back for pump().
 	for (const [composite, entries] of s.queues) {
 		const raw = entries[0]?.chatId;
-		if (raw !== undefined && automaticFollowUpAllowed(raw, s.liveAgents.get(composite))) void pump(raw);
+		if (raw !== undefined) void automaticFollowUpAllowedAsync(raw, s.liveAgents.get(composite)).then((allowed) => {
+		if (allowed) void pump(raw);
+	}, () => { /* an unresolvable chat stays parked until its next wake */ });
 	}
 });
 
@@ -699,51 +781,96 @@ function deferOrReject(chatId: string, entry: QueuedSteer, error: Error): void {
 	}
 }
 
-/** Acknowledge session delivery without changing the worker outcome. */
+/** Acknowledge session delivery without changing the worker outcome.
+ *  Synchronous under a sync adapter (the registry's bookkeeping contract);
+ *  an async adapter is followed without ever throwing into the hook. */
 function finalizeJob(jobId: string): void {
-	try {
-		let job = stores.jobStore.getJob(jobId);
-		if (!job) return;
-		if (!job.delivery) job = normalizeLegacyResult(job);
-		if (job.delivery?.status !== "pending") return;
-		stores.jobStore.updateJob(jobId, { delivery: { ...job.delivery, status: "delivered" } });
-	} catch (error) {
+	const fail = (error: unknown) => {
 		// The conversation is already durable. A bookkeeping failure must
 		// never replay that marker or turn a successful worker into a failure.
 		console.error(`[job ${jobId}] delivery acknowledgement failed:`, error);
-	}
+	};
+	const fromRecord = (job: JobRecord | null): void => {
+		if (!job) return;
+		onReady(job.delivery ? job : normalizeLegacyResult(job), (resolved) => {
+			if (resolved.delivery?.status !== "pending") return;
+			const written = stores.jobStore.updateJob(jobId, { delivery: { ...resolved.delivery, status: "delivered" } });
+			if (isPromiseLike(written)) void written.catch(fail);
+		}, fail);
+	};
+	onReady(stores.jobStore.getJob(jobId), fromRecord, fail);
 }
 
-function normalizeLegacyResult(job: JobRecord): JobRecord {
+function normalizeLegacyResult(job: JobRecord): MaybePromise<JobRecord> {
 	if (job.delivery || job.status !== "running" || !job.result) return job;
 	const failed = isSubagentFailure(job.kind, job.result as never);
-	return stores.jobStore.updateJob(job.id, {
+	const written = stores.jobStore.updateJob(job.id, {
 		status: failed ? "error" : "done", activity: failed ? "failed" : "finished",
 		delivery: { kind: "result", status: "pending" },
-	}) ?? job;
+	});
+	return isPromiseLike(written) ? written.then((updated) => updated ?? job) : written ?? job;
+}
+
+/**
+ * Plugin result preparation persists an honest generic fallback before
+ * awaiting the author formatter. Do not deliver that fallback early while the
+ * live formatter still owns preparation; a restart has no registration and
+ * can restore it without replaying author code.
+ */
+function pluginStillPreparing(chatId: string, stored: JobRecord, live: boolean): boolean {
+	return stored.kind === "plugin" && live && !(state().queues.get(key(chatId)) ?? []).some((entry) => jobIdOf(entry.steer) === stored.id);
+}
+
+/** Queue (or finalize, when already in the transcript) one job's pending steer. */
+function restoreJobSteer(chatId: string, record: ChatRecord, job: JobRecord): void {
+	if (job.delivery?.status !== "pending") return;
+	const steer = job.delivery.kind === "abort" ? buildAbortSteer(job)
+		: job.delivery.kind === "failure" ? buildJobFailureSteer(job, job.error ?? "Background job recovery or delivery failed")
+		: job.result ? buildSubagentSteer(job, job.result as never) : undefined;
+	if (!steer) return;
+	if (steerDelivered(record.messages, steer.id)) finalizeSteer(steer);
+	else queueSteer(chatId, steer);
 }
 
 /** Restore known obligations only; old terminal records are never replayed. */
 function restorePendingDeliveries(chatId: string): void {
-	const record = stores.chatStore.getChat(chatId);
+	const fail = (error: unknown) => {
+		console.error(`[chat ${chatId}] pending delivery restore failed:`, error);
+	};
+	const withRecord = (record: ChatRecord | null): void => {
+		if (!record) return;
+		noteSteersDurable(chatId, record.messages);
+		onReady(stores.jobStore.listJobs(chatId), (jobs) => {
+			for (const stored of jobs) {
+				const live = isJobLive(stored.id);
+				if (pluginStillPreparing(chatId, stored, live)) continue;
+				const finish = (job: JobRecord): void => restoreJobSteer(chatId, record, job);
+				if (live) finish(stored);
+				else onReady(normalizeLegacyResult(stored), finish, fail);
+			}
+		}, fail);
+	};
+	onReady(stores.chatStore.getChat(chatId), withRecord, fail);
+}
+
+/**
+ * Restore every pending job delivery of `chatId` and start its pump — the
+ * awaited form of restorePendingDeliveries. Under an async backend the
+ * restore must FINISH before the pump looks at the registry, or the pump
+ * would find nothing and exit. Used by the stale-job sweep and by the web
+ * process when the job worker announces a finished job (lh_job_delivery).
+ * Must run inside the chat owner's scope.
+ */
+export async function resumeChatDelivery(chatId: string): Promise<void> {
+	const record = await stores.chatStore.getChat(chatId);
 	if (!record) return;
 	noteSteersDurable(chatId, record.messages);
-	for (const stored of stores.jobStore.listJobs(chatId)) {
+	for (const stored of await stores.jobStore.listJobs(chatId)) {
 		const live = isJobLive(stored.id);
-		// Plugin result preparation persists an honest generic fallback before
-		// awaiting the author formatter. Do not deliver that fallback early
-		// while the live formatter still owns preparation; a restart has no
-		// registration and can restore it without replaying author code.
-		if (stored.kind === "plugin" && live && !(state().queues.get(key(chatId)) ?? []).some((entry) => jobIdOf(entry.steer) === stored.id)) continue;
-		const job = live ? stored : normalizeLegacyResult(stored);
-		if (job.delivery?.status !== "pending") continue;
-		const steer = job.delivery.kind === "abort" ? buildAbortSteer(job)
-			: job.delivery.kind === "failure" ? buildJobFailureSteer(job, job.error ?? "Background job recovery or delivery failed")
-			: job.result ? buildSubagentSteer(job, job.result as never) : undefined;
-		if (!steer) continue;
-		if (steerDelivered(record.messages, steer.id)) finalizeSteer(steer);
-		else queueSteer(chatId, steer);
+		if (pluginStillPreparing(chatId, stored, live)) continue;
+		restoreJobSteer(chatId, record, live ? stored : await normalizeLegacyResult(stored));
 	}
+	void pump(chatId);
 }
 
 /**
@@ -755,12 +882,12 @@ function restorePendingDeliveries(chatId: string): void {
  */
 async function waitForIdle(chatId: string): Promise<void> {
 	for (;;) {
-		const record = stores.chatStore.getChat(chatId);
+		const record = await stores.chatStore.getChat(chatId);
 		if (!record || !(state().queues.get(key(chatId)) ?? []).some((entry) => !entry.waking && !entry.deferred && !entry.handedTo)) return;
 		const blocked = isTurnRunning(chatId) || hasUnresolvedQuestion(record.messages);
 		if (!blocked) {
 			await delay(GRACE_MS);
-			const recheck = stores.chatStore.getChat(chatId);
+			const recheck = await stores.chatStore.getChat(chatId);
 			if (
 				!isTurnRunning(chatId) &&
 				recheck &&
@@ -792,7 +919,7 @@ const SWEEP_THROTTLE_MS = 30_000;
  */
 /** Re-run a job's sub-agent loop — exposed for the sweep's tests (the
  *  /api/jobs poll is its only production caller, disabled under NODE_ENV=test). */
-export function recoverStaleJobs(): void {
+export async function recoverStaleJobs(): Promise<void> {
 	const s = state();
 	const now = Date.now();
 	// TENANCY: the sweep only sees the ACTIVE owner's chats, so the throttle
@@ -805,29 +932,30 @@ export function recoverStaleJobs(): void {
 	if (typeof s.lastSweepAt === "number") s.lastSweepAt = new Map();
 	s.lastSweepAt.set(owner, now);
 	try {
-		for (const chat of stores.chatStore.listChats()) {
-			for (const job of stores.jobStore.listJobs(chat.id)) {
+		for (const chat of await stores.chatStore.listChats()) {
+			for (const job of await stores.jobStore.listJobs(chat.id)) {
 				if (isJobLive(job.id)) continue; // never re-run beside live computation
-				if (!stores.chatStore.getChat(job.chatId)) continue;
+				// Nor beside a loop the job worker is executing (or will claim).
+				if (job.kind !== "plugin" && s.remoteLiveness && await s.remoteLiveness(job.id)) continue;
+				if (!(await stores.chatStore.getChat(job.chatId))) continue;
 				if (isTurnRunning(job.chatId)) continue;
-				const recovered = normalizeLegacyResult(job);
+				const recovered = await normalizeLegacyResult(job);
 				if (recovered.delivery?.status === "pending") {
-					restorePendingDeliveries(job.chatId);
-					void pump(job.chatId);
+					await resumeChatDelivery(job.chatId);
 				} else if (job.status === "running" && !job.result) {
 					if (job.kind === "plugin") {
 						// Canonical task reads only; never respawn plugin tools/code.
-						if (s.recoverPlugin) void s.recoverPlugin(job).catch((error: unknown) => {
-							if (stores.jobStore.getJob(job.id)?.status !== "running") return;
+						if (s.recoverPlugin) void s.recoverPlugin(job).catch(async (error: unknown) => {
+							if ((await stores.jobStore.getJob(job.id))?.status !== "running") return;
 							const failure = `Plugin job recovery failed: ${String(error)}`;
-							stores.jobStore.updateJob(job.id, { status: "error", error: failure, activity: "recovery failed", delivery: { kind: "failure", status: "pending" } });
+							await stores.jobStore.updateJob(job.id, { status: "error", error: failure, activity: "recovery failed", delivery: { kind: "failure", status: "pending" } });
 							void deliverJobResult(buildJobFailureSteer(job, failure));
 						});
 						continue;
 					}
 					// The sub-agent loop itself died with the process: re-spawn.
 					if (!s.respawn) continue;
-					stores.jobStore.updateJob(job.id, { activity: "recovering: re-running" });
+					await stores.jobStore.updateJob(job.id, { activity: "recovering: re-running" });
 					s.respawn(job.id);
 				}
 			}
@@ -838,7 +966,7 @@ export function recoverStaleJobs(): void {
 }
 
 /** The /api/jobs entry: job list for the client poll (+ lazy recovery). */
-export function listJobs(chatId: string): JobRecord[] {
-	if (process.env.NODE_ENV !== "test") recoverStaleJobs();
-	return stores.jobStore.listJobs(chatId);
+export async function listJobs(chatId: string): Promise<JobRecord[]> {
+	if (process.env.NODE_ENV !== "test") await recoverStaleJobs();
+	return await stores.jobStore.listJobs(chatId);
 }

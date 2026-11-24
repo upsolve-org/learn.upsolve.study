@@ -49,9 +49,9 @@ describe("session CLI window × raw side delivery", () => {
 	for (const scenario of ["initial", "internal", "first-steer", "internal-steer", "first-steer-overflow", "internal-steer-overflow", "retry-local", "retry-real-error", "fresh-missing", "internal-fresh-missing", "wrong-model", "reserve-overflow"] as const) {
 		it(scenario, async () => {
 			writeSettings({ claudeCode: { enabled: true }, compaction: { thresholdTokens: 45_000 }, graph: { enabled: false } });
-			assert.equal(catalogContextLimits().has("claude-code:opus"), false, "the CLI catalog placeholder must remain excluded");
-			const chat = chatStore.createChat("Synthetic CLI side budget");
-			chatStore.saveSettings(chat.id, { model: { provider: "claude-code", id: "opus" } });
+			assert.equal((await catalogContextLimits()).has("claude-code:opus"), false, "the CLI catalog placeholder must remain excluded");
+			const chat = (await chatStore.createChat("Synthetic CLI side budget"));
+			(await chatStore.saveSettings(chat.id, { model: { provider: "claude-code", id: "opus" } }));
 			const internal = scenario.startsWith("internal"), steered = scenario.includes("steer"), retry = scenario.startsWith("retry");
 			const overflow = scenario.endsWith("overflow");
 			const report = steered && overflow ? 80_000 : scenario === "reserve-overflow" ? 73_000 : 1_000_000;
@@ -69,8 +69,8 @@ describe("session CLI window × raw side delivery", () => {
 				original.push({ id: "answered", role: "toolResult", toolCallId: "check", toolName: "quiz", content: [{ type: "text", text: "Answered correctly" }], details: JSON.parse(JSON.stringify(answer())), isError: false, timestamp: Date.now() });
 				original.push(failure("local-first"), failure("local-second", scenario === "retry-real-error" ? "Real provider response failed" : undefined));
 			}
-			chatStore.saveMessages(chat.id, original);
-			chatStore.updateSideChats(chat.id, () => internal ? [] : threads);
+			(await chatStore.saveMessages(chat.id, original));
+			(await chatStore.updateSideChats(chat.id, () => internal ? [] : threads));
 			assert.equal(compactionCutIndex(original), 0, "normal compaction cannot shrink a heuristic tail already under 20k");
 			assert.ok(estimateContextTokens(original).tokens > 45_000);
 			const learner = { ...newUserMessage("L".repeat(10_000)), id: "queued-learner" };
@@ -80,7 +80,7 @@ describe("session CLI window × raw side delivery", () => {
 				body: JSON.stringify({ chatId: chat.id, input: retry ? { type: "retry" } : { type: "answer", toolCallId: "check", answer: answer() } }) }), (opts) => {
 				assert.equal(opts.engine!.model.id, "opus");
 				agent = createTeacherAgent(undefined, { ...opts, tools: { offline_read: { name: "offline_read", label: "Synthetic read", description: "Synthetic tool", parameters: Type.Object({}), execute: async () => {
-					reads++; chatStore.updateSideChats(chat.id, () => threads); if (steered) agent.steer(learner);
+					reads++; (await chatStore.updateSideChats(chat.id, () => threads)); if (steered) agent.steer(learner);
 					return { content: [{ type: "text", text: "Completed tool work" }], details: {} };
 				} } }, engine: { ...opts.engine!, streamFn: (_model, context) => {
 					contexts.push(structuredClone(context)); const stream = createAssistantMessageEventStream();
@@ -88,18 +88,18 @@ describe("session CLI window × raw side delivery", () => {
 					const message = { ...(first ? fauxAssistantMessage([fauxToolCall("offline_read", {}, { id: "read" })], { stopReason: "toolUse" }) : fauxAssistantMessage("Synthetic continuation")),
 						...model, usage: zero, cliContextWindow: scenario === "internal-fresh-missing" ? undefined : report };
 					queueMicrotask(() => { stream.push({ type: "done", reason: first ? "toolUse" : "stop", message }); stream.end(message); }); return stream;
-				} }, validateContext: (messages) => {
+				} }, validateContext: async (messages) => {
 					validations.push({ sideEntries: messages.filter(m => m.role === "custom" && m.customType === "side-question").length, hasSteer: messages.some(m => (m as LhMessage).id === learner.id) });
-					opts.validateContext!(messages);
+					await opts.validateContext!(messages);
 				} });
 				if (steered && !internal) agent.steer(learner);
 				return agent;
-			}, { snapshot: () => chatStore.getChat(chat.id)?.sideChats ?? [] } as Parameters<typeof handleChatRequest>[2]);
+			}, { snapshot: async () => (await chatStore.getChat(chat.id))?.sideChats ?? [] } as Parameters<typeof handleChatRequest>[2]);
 			assert.equal(response.status, 200); const turn = runningTurn(chat.id); if (turn) await new Response(turn.subscribe()).text();
 			const rejected = overflow || ["retry-real-error", "fresh-missing", "internal-fresh-missing", "wrong-model"].includes(scenario);
 			assert.equal(contexts.length, internal ? rejected ? 1 : 2 : rejected ? 0 : 1);
 			assert.equal(reads, internal ? 1 : 0);
-			const saved = chatStore.getChat(chat.id)!;
+			const saved = (await chatStore.getChat(chat.id))!;
 			assert.deepEqual(saved.messages.slice(0, original.length), JSON.parse(JSON.stringify(original)), "never rewrite native input/history or saved failures");
 			assert.deepEqual(saved.sideChats, threads);
 			assert.equal(saved.messages.filter(m => m.role === "toolResult" && m.toolCallId === "check").length, 1, "answer remains durable exactly once");

@@ -8,22 +8,20 @@
  *
  * A signup only QUEUES an address. Nothing is admitted until the operator
  * approves it on /admin, so a stranger who reaches the form cannot consume a
- * workspace unreviewed. Signups stay closed in GoTrue itself; the operator
- * still creates the account and mails the credentials by hand.
+ * workspace unreviewed. The operator creates the account (Better Auth) and
+ * mails the generated credentials.
  *
  * Admission is by verified EMAIL, not by id: the operator knows addresses, and
- * the id only exists once the account does. The email is read from the
- * GoTrue-verified user object, never from a request body.
+ * the id only exists once the account does. The email comes from the verified
+ * session user, never from a request body. This file is pure core: request
+ * identity verification lives in src/server/auth.ts.
  *
  * `HOSTED_PILOT_EMAIL` stays honoured as an implicit extra entry so an
  * existing deployment keeps working through the upgrade.
  */
-import { createServerClient, parseCookieHeader } from "@supabase/ssr";
 import path from "node:path";
 import fs from "node:fs";
 import { baseDataRoot } from "../../config.ts";
-import { hostedConfig } from "./hosted.ts";
-import { hostedFetch } from "./hosted-fetch.ts";
 import { isOwnerId } from "./owner.ts";
 import { normalizeEmail, type SignupOutcome, type SignupRequest } from "./admission.ts";
 
@@ -138,40 +136,4 @@ export function denySignup(rawEmail: unknown): boolean {
 	const requests = pendingSignups().filter((r) => r.email !== email);
 	writeJson(signupsFile(), { version: 1, requests } satisfies SignupsFile);
 	return true;
-}
-
-
-/**
- * Verify the request's session and admit it. Returns the canonical owner id on
- * success, or the refusal Response.
- *
- * The id is returned (not just a verdict) because the caller has to FORWARD it
- * to the route: the Proxy's API gate is the only gate most routes see, and a
- * route that never learns the owner would read the shared root.
- */
-export async function hostedIdentity(
-	request: Request,
-): Promise<{ owner: string } | { refusal: Response }> {
-	const config = hostedConfig();
-	// Hosted mode off (desktop, plain dev): no owner, and NOT a refusal — the
-	// caller's own desktop/browser gate already decided.
-	if (!config) return { owner: "" };
-	const cookies = parseCookieHeader(request.headers.get("cookie") ?? "");
-	const client = createServerClient(config.url, config.publishableKey, {
-		global: { fetch: hostedFetch(config.url) },
-		cookies: { getAll: () => cookies, setAll: () => {} },
-	});
-	try {
-		const { data, error } = await client.auth.getUser();
-		if (!error && data.user && admittedUser(data.user)) return { owner: data.user.id.toLowerCase() };
-		return { refusal: Response.json({ error: "Sign in with an admitted account." }, { status: data.user ? 403 : 401, headers: { "Cache-Control": "no-store" } }) };
-	} catch {
-		return { refusal: Response.json({ error: "Authentication is temporarily unavailable." }, { status: 503, headers: { "Cache-Control": "no-store" } }) };
-	}
-}
-
-/** The upload exemption must enforce the same verified identity as Proxy. */
-export async function hostedRequestRefusal(request: Request): Promise<Response | undefined> {
-	const result = await hostedIdentity(request);
-	return "refusal" in result ? result.refusal : undefined;
 }

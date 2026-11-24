@@ -19,7 +19,7 @@ import { deleteGraphNode, ownerScoped } from "@/src/server";
  */
 async function DELETEHandler(_req: Request, { params }: { params: Promise<{ id: string }> }) {
 	const { id } = await params;
-	const outcome = deleteGraphNode(id);
+	const outcome = await deleteGraphNode(id);
 	if (!outcome.ok) {
 		return Response.json({ error: outcome.error, code: outcome.code }, { status: outcome.status });
 	}

@@ -21,9 +21,9 @@ it("GET is a non-writing read and inventories all sessions, imported records and
 	const before = await GET(); assert.equal(before.status, 200);
 	assert.deepEqual((await before.json()).sources, []);
 	assert.equal(fs.existsSync(SOURCE_ORGANIZATION_FILE), false);
-	const chat = stores.chatStore.createChat("Unextracted session");
-	stores.graphStore.upsertSource({ id: sourceId("Root/empty.md"), filePath: "Root/empty.md", importedAt: "2026-10-30T00:00:00Z" });
-	stores.graphStore.appendNode({ id: "n_orphan", name: "Orphan", statement: "A record is missing.", aliases: [], createdAt: "2026-10-30T00:00:00Z", provenance: [{ chatId: "gone", messageId: "m1" }] });
+	const chat = (await stores.chatStore.createChat("Unextracted session"));
+	(await stores.graphStore.upsertSource({ id: sourceId("Root/empty.md"), filePath: "Root/empty.md", importedAt: "2026-10-30T00:00:00Z" }));
+	(await stores.graphStore.appendNode({ id: "n_orphan", name: "Orphan", statement: "A record is missing.", aliases: [], createdAt: "2026-10-30T00:00:00Z", provenance: [{ chatId: "gone", messageId: "m1" }] }));
 	const { sources } = await (await GET()).json();
 	assert.equal(sources.find((s: { id: string }) => s.id === chat.id).label, "Unextracted session");
 	assert.equal(sources.find((s: { id: string }) => s.id === chat.id).chatKind, "teach", "absent persisted kind still means teaching");
@@ -32,8 +32,8 @@ it("GET is a non-writing read and inventories all sessions, imported records and
 });
 
 it("GET projects practice kind without removing or rewriting sessions, historical graph contributions or folder placements", async () => {
-	const practice = stores.chatStore.createChat("Practice source", "practice");
-	stores.graphStore.appendNode({ id: "n_practice", name: "Historical", statement: "Historical practice contribution.", aliases: [], createdAt: "2026-10-30", provenance: [{ chatId: practice.id, messageId: "m" }] });
+	const practice = (await stores.chatStore.createChat("Practice source", "practice"));
+	(await stores.graphStore.appendNode({ id: "n_practice", name: "Historical", statement: "Historical practice contribution.", aliases: [], createdAt: "2026-10-30", provenance: [{ chatId: practice.id, messageId: "m" }] }));
 	const created = await (await change({ action: "create-folder", name: "Practice folder", parentId: null })).json();
 	assert.equal((await change({ action: "move", kind: "source", id: practice.id, parentId: created.createdFolderId })).status, 200);
 	const bytes = () => Object.fromEntries(fs.readdirSync(root, { recursive: true, withFileTypes: true }).filter((entry) => entry.isFile()).map((entry) => {
@@ -48,32 +48,32 @@ it("GET projects practice kind without removing or rewriting sessions, historica
 
 it("rename/move operations persist independently without changing source IDs, paths, graph ledgers or usage", async () => {
 	const filePath = "Course/Sub/My_Notes.v2.pdf", id = sourceId(filePath);
-	sourceDirectory.registerImport(filePath);
-	stores.graphStore.upsertSource({ id, filePath, importedAt: "2026-10-30T00:00:00Z", extractions: [] });
-	const before = { nodes: stores.graphStore.readNodes(), chains: stores.graphStore.readChains(), source: stores.graphStore.readSources().find((s) => s.id === id) };
+	await sourceDirectory.registerImport(filePath);
+	(await stores.graphStore.upsertSource({ id, filePath, importedAt: "2026-10-30T00:00:00Z", extractions: [] }));
+	const before = { nodes: (await stores.graphStore.readNodes()), chains: (await stores.graphStore.readChains()), source: (await stores.graphStore.readSources()).find((s) => s.id === id) };
 	let directory = await (await GET()).json();
 	const sub = directory.organization.folders.find((f: { importPath?: string }) => f.importPath === "Course/Sub");
 	for (const action of [{ action: "rename-folder", id: sub.id, name: "Renamed directory" }, { action: "move", kind: "folder", id: sub.id, parentId: null }, { action: "rename-source", id, name: "Renamed book" }]) assert.equal((await change(action)).status, 200);
-	sourceDirectory.registerImport(filePath);
-	sourceDirectory.registerImport("Course/Sub/new.txt");
+	await sourceDirectory.registerImport(filePath);
+	await sourceDirectory.registerImport("Course/Sub/new.txt");
 	directory = await (await GET()).json();
 	assert.equal(directory.sources.find((s: { id: string }) => s.id === id).label, "Renamed book");
 	assert.equal(directory.organization.placements[sourceId("Course/Sub/new.txt")].folderId, sub.id);
 	assert.equal(directory.organization.folders.find((f: { id: string }) => f.id === sub.id).parentId, null);
-	assert.deepEqual(stores.graphStore.readNodes(), before.nodes); assert.deepEqual(stores.graphStore.readChains(), before.chains);
-	assert.deepEqual(stores.graphStore.readSources().find((s) => s.id === id), before.source);
+	assert.deepEqual((await stores.graphStore.readNodes()), before.nodes); assert.deepEqual((await stores.graphStore.readChains()), before.chains);
+	assert.deepEqual((await stores.graphStore.readSources()).find((s) => s.id === id), before.source);
 	assert.ok(fs.existsSync(SOURCE_ORGANIZATION_FILE));
 });
 
 it("session rename uses its existing title without activity churn; existing root source placement survives reimport", async () => {
-	const chat = stores.chatStore.createChat("Original session");
+	const chat = (await stores.chatStore.createChat("Original session"));
 	const response = await change({ action: "rename-source", id: chat.id, name: "Edited session" }); assert.equal(response.status, 200);
-	assert.equal(stores.chatStore.getChat(chat.id)?.title, "Edited session");
-	assert.equal(stores.chatStore.getChat(chat.id)?.updatedAt, chat.updatedAt);
+	assert.equal((await stores.chatStore.getChat(chat.id))?.title, "Edited session");
+	assert.equal((await stores.chatStore.getChat(chat.id))?.updatedAt, chat.updatedAt);
 	const id = sourceId("Root/empty.md");
-	sourceDirectory.registerImport("Root/empty.md");
-	assert.equal(stores.sourceOrganizationStore.read().placements[id]?.folderId, null);
-	assert.ok(!stores.sourceOrganizationStore.read().folders.some((f) => f.importPath === "Root"));
+	await sourceDirectory.registerImport("Root/empty.md");
+	assert.equal((await stores.sourceOrganizationStore.read()).placements[id]?.folderId, null);
+	assert.ok(!(await stores.sourceOrganizationStore.read()).folders.some((f) => f.importPath === "Root"));
 });
 
 it("server validates cycles, stale sources/parents and nonempty folders, including zero-node files", async () => {

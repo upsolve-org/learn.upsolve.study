@@ -1,4 +1,5 @@
 'use strict';
+const { AsyncLocalStorage } = require('node:async_hooks');
 const { randomUUID, createHash } = require('node:crypto');
 const path = require('node:path');
 const { openStore } = require('./store.cjs');
@@ -97,7 +98,23 @@ function pack(graph, ids, state) {
 
 function activate(ctx) {
   if (!ctx.workers?.register || !ctx.learning?.graph) fail('This app build does not provide the plugin capabilities required by Flashcards.');
-  const store = openStore(ctx.dataDirectory);
+  const ownerDir = () => ctx.ownerDirectory?.(ctx.manifest?.id ?? 'flashcards') ?? ctx.dataDirectory;
+  const stores = new Map(), cleaned = new Set(), callStore = new AsyncLocalStorage();
+  function storeFor(directory) {
+    let opened = stores.get(directory);
+    if (!opened) { opened = openStore(directory); stores.set(directory, opened); }
+    return opened;
+  }
+  function libraryOf() {
+    return callStore.getStore() ?? storeFor(ownerDir());
+  }
+  const store = {
+    get: () => libraryOf().get(),
+    change: (fn) => libraryOf().change(fn),
+    writeSource: (id, md) => libraryOf().writeSource(id, md),
+    readSource: (id) => libraryOf().readSource(id),
+    removeSource: (id) => libraryOf().removeSource(id),
+  };
   const preflights = new Map(), tickets = new Map(), observers = new Map(), applicationErrors = new Map();
   let disposed = false, sourceCleanupError = null;
   const alive = () => { if (disposed || ctx.signal.aborted) fail('Flashcards is disabled.'); };
@@ -106,11 +123,14 @@ function activate(ctx) {
   // Commit metadata removal first; a durable queue makes file cleanup retryable
   // after unlink/save failures without resurrecting decks or source records.
   function finishSourceCleanup() {
-    const pending = store.get().pendingSourceRemovals ?? [];
-    if (!pending.length) { sourceCleanupError = null; return; }
+    const current = libraryOf();
+    const pending = current.get().pendingSourceRemovals ?? [];
+    if (!pending.length) { cleaned.add(current); sourceCleanupError = null; return; }
     try {
-      for (const id of pending) store.removeSource(id);
-      change(s => { delete s.pendingSourceRemovals; });
+      for (const id of pending) current.removeSource(id);
+      current.change(s => { delete s.pendingSourceRemovals; });
+      cleaned.add(current);
+      notify('changed');
       sourceCleanupError = null;
     } catch (error) {
       sourceCleanupError = `Content was deleted, but saved-file cleanup is pending: ${error.message}. Retry deletion or reload Flashcards to finish cleanup.`;
@@ -118,19 +138,19 @@ function activate(ctx) {
     }
   }
   try { finishSourceCleanup(); } catch { /* expose pending cleanup in the view; retry on deletion or next activation */ }
-  function graphNow() { const g = ctx.learning.graph(); if (!Array.isArray(g.propositions) || !Array.isArray(g.chains)) fail('Could not read the knowledge graph.'); return g; }
+  async function graphNow() { const g = await ctx.learning.graph(); if (!Array.isArray(g.propositions) || !Array.isArray(g.chains)) fail('Could not read the knowledge graph.'); return g; }
   const prop = (s, id) => Object.hasOwn(s.propositions, id) ? s.propositions[id] : fail('Proposition not found.');
   const deck = (s, id) => s.decks.find(d => d.id === id) ?? fail('Deck not found.');
   const fileSource = (s, id) => Object.hasOwn(s.fileSources ?? {}, id) ? s.fileSources[id] : fail('File source not found.');
-  function liveIds(s) { return new Set([...graphNow().propositions.map(p => p.id), ...Object.values(s.propositions).filter(isLocal).map(p => p.id)]); }
+  async function liveIds(s) { return new Set([...(await graphNow()).propositions.map(p => p.id), ...Object.values(s.propositions).filter(isLocal).map(p => p.id)]); }
   function counts(s, now) {
     const { start, end } = scheduler.dayBounds(now, s.settings.dayStart);
     const result = Object.fromEntries(s.decks.map(d => [d.id, 0]));
     for (const review of s.reviews) if (review.introduced && review.at >= start && review.at < end) for (const id of review.deckIds) if (id in result) result[id]++;
     return result;
   }
-  function view() {
-    alive(); const s = store.get(), live = liveIds(s), now = Date.now();
+  async function view() {
+    alive(); const s = store.get(), live = await liveIds(s), now = Date.now();
     const newCounts = counts(s, now);
     const propositions = Object.values(s.propositions).map(p => ({ ...p, memberships: memberships(s, p.id), archived: !live.has(p.id) }));
     const decks = s.decks.map(d => ({ ...d, newToday: newCounts[d.id], due: propositions.filter(p => !p.archived && d.propositionIds.includes(p.id) && p.cues.some(c => !c.deleted) && p.schedule.state !== 0 && scheduler.isDue(p.schedule, now, s.settings.dayStart)).length }));
@@ -192,6 +212,7 @@ function activate(ctx) {
   }
   function watch(batchId, chunkId, taskId) {
     if (observers.has(taskId)) return;
+    const bound = libraryOf();
     let last = '';
     const unsubscribe = ctx.workers.subscribe(taskId, task => {
       const current = `${task.status}:${task.turns}:${task.activity}`;
@@ -200,7 +221,7 @@ function activate(ctx) {
     observers.set(taskId, unsubscribe);
     ctx.workers.wait(taskId, ctx.signal).then(() => {
       if (disposed || ctx.signal.aborted) return;
-      applyOutcome(batchId, chunkId, ctx.workers.get(taskId));
+      callStore.run(bound, () => applyOutcome(batchId, chunkId, ctx.workers.get(taskId)));
       observers.get(taskId)?.(); observers.delete(taskId);
     }).catch(error => { if (!disposed && !ctx.signal.aborted) { applicationErrors.set(chunkId, error.message); notify('batch-changed'); } });
   }
@@ -234,12 +255,24 @@ function activate(ctx) {
     if (thinkingLevel && !entry.supportedLevels.includes(thinkingLevel)) fail('The selected thinking level is not supported by this model.');
     return { spec: { ...pin.model, ...(thinkingLevel ? { thinkingLevel } : {}) }, entry };
   }
-  function register(name, handler) { ctx.handle(name, (input = {}) => { alive(); if (!input || typeof input !== 'object' || Array.isArray(input)) fail('Invalid operation input.'); return handler(input); }); }
+  function register(name, handler) {
+    ctx.handle(name, (input = {}) => {
+      alive();
+      if (!input || typeof input !== 'object' || Array.isArray(input)) fail('Invalid operation input.');
+      const bound = libraryOf();
+      return callStore.run(bound, () => {
+        if (!cleaned.has(bound)) {
+          try { finishSourceCleanup(); } catch { /* expose pending cleanup in view */ }
+        }
+        return handler(input);
+      });
+    });
+  }
   register('get-state', view);
   register('get-catalog', () => ctx.inference.catalog());
-  register('save-settings', patch => { change(s => { s.settings = validateSettings(patch, s.settings); }); return view(); });
-  register('create-deck', ({ name }) => { change(s => s.decks.push({ id: randomUUID(), name: requiredText(name, 'Deck name').trim(), newLimit: 20, propositionIds: [] })); return view(); });
-  function createManualCard(input, newTarget) {
+  register('save-settings', async patch => { change(s => { s.settings = validateSettings(patch, s.settings); }); return await view(); });
+  register('create-deck', async ({ name }) => { change(s => s.decks.push({ id: randomUUID(), name: requiredText(name, 'Deck name').trim(), newLimit: 20, propositionIds: [] })); return await view(); });
+  async function createManualCard(input, newTarget) {
     const requestId = requiredText(input.requestId, 'Request ID');
     const question = requiredText(input.question, 'Question'), answer = requiredText(input.answer, 'Answer');
     const destination = newTarget
@@ -249,8 +282,9 @@ function activate(ctx) {
     const prior = store.get().creationReceipts?.find(r => r.requestId === requestId);
     if (prior) {
       if (prior.hash !== hash) fail('This request ID was already used for different work.');
-      return { state: view(), propositionId: prior.propositionId, cueId: prior.cueId };
+      return { state: await view(), propositionId: prior.propositionId, cueId: prior.cueId };
     }
+    const graph = newTarget ? null : await graphNow();
     const created = change(s => {
       let p;
       if (newTarget) {
@@ -259,7 +293,7 @@ function activate(ctx) {
         s.propositions[p.id] = p; d.propositionIds.push(p.id);
       } else {
         p = prop(s, destination.propositionId);
-        if (!isLocal(p) && !graphNow().propositions.some(node => node.id === p.id)) fail('The target is no longer in the graph.');
+        if (!isLocal(p) && !graph.propositions.some(node => node.id === p.id)) fail('The target is no longer in the graph.');
       }
       const cue = { id: randomUUID(), question, answer, latestRating: null };
       p.cues.push(cue); p.version++;
@@ -267,19 +301,19 @@ function activate(ctx) {
       s.creationReceipts.push({ requestId, hash, propositionId: p.id, cueId: cue.id });
       return { propositionId: p.id, cueId: cue.id };
     });
-    return { state: view(), ...created };
+    return { state: await view(), ...created };
   }
-  register('create-card', input => createManualCard(input, true));
-  register('create-cue', input => createManualCard(input, false));
-  register('save-deck', patch => {
+  register('create-card', async input => await createManualCard(input, true));
+  register('create-cue', async input => await createManualCard(input, false));
+  register('save-deck', async patch => {
     change(s => {
       const d = deck(s, patch.id);
       if (Object.hasOwn(patch, 'name')) d.name = requiredText(patch.name, 'Deck name').trim();
       if (Object.hasOwn(patch, 'newLimit')) { if (!Number.isSafeInteger(patch.newLimit) || patch.newLimit < 0) fail('Daily limit must be a nonnegative safe whole number.'); d.newLimit = patch.newLimit; }
       for (const source of Object.values(s.fileSources ?? {})) if (source.deckId === d.id) { source.deckName = d.name; source.newLimit = d.newLimit; }
-    }); return view();
+    }); return await view();
   });
-  function deleteContent(input) {
+  async function deleteContent(input) {
     const requestId = requiredText(input.requestId, 'Request ID');
     const ids = key => {
       const values = input[key] === undefined ? [] : input[key];
@@ -292,7 +326,7 @@ function activate(ctx) {
     const hash = fingerprint(scope), prior = store.get().deletionReceipts?.find(r => r.requestId === requestId);
     if (prior) {
       if (prior.hash !== hash) fail('This request ID was already used for different work.');
-      finishSourceCleanup(); return view();
+      finishSourceCleanup(); return await view();
     }
     change(s => {
       if (activeBatch(s)) fail('Wait for generation to finish or cancel it before deleting content.');
@@ -325,35 +359,35 @@ function activate(ctx) {
       }
       s.deletionReceipts ??= []; s.deletionReceipts.push({ requestId, hash });
     });
-    finishSourceCleanup(); return view();
+    finishSourceCleanup(); return await view();
   }
   register('delete-content', deleteContent);
-  register('delete-deck', ({ id, replacementDeckId }) => {
+  register('delete-deck', async ({ id, replacementDeckId }) => {
     if (replacementDeckId !== undefined) fail('Replacement decks are no longer used. Reload Flashcards.');
-    return deleteContent({ deckIds: [id], deleteEmptyDecks: true, revision: store.get().revision, requestId: randomUUID() });
+    return await deleteContent({ deckIds: [id], deleteEmptyDecks: true, revision: store.get().revision, requestId: randomUUID() });
   });
-  register('set-memberships', ({ propositionId, deckIds }) => {
+  register('set-memberships', async ({ propositionId, deckIds }) => {
     change(s => {
       if (!Array.isArray(deckIds) || !deckIds.length || deckIds.some(id => typeof id !== 'string')) fail('Keep at least one deck membership.');
       const selected = new Set(deckIds); for (const id of selected) deck(s, id);
       const p = prop(s, propositionId);
       for (const d of s.decks) { d.propositionIds = d.propositionIds.filter(id => id !== p.id || selected.has(d.id)); if (selected.has(d.id) && !d.propositionIds.includes(p.id)) d.propositionIds.push(p.id); }
       p.version++;
-    }); return view();
+    }); return await view();
   });
-  register('save-cue', ({ propositionId, cueId, question, answer, version }) => {
+  register('save-cue', async ({ propositionId, cueId, question, answer, version }) => {
     requiredText(question, 'Question'); requiredText(answer, 'Answer');
-    change(s => { const p = prop(s, propositionId); if (p.version !== version) fail('This card changed elsewhere. Reload before saving.'); const c = p.cues.find(c => c.id === cueId && !c.deleted) ?? fail('Card not found.'); c.question = question; c.answer = answer; p.version++; }); return view();
+    change(s => { const p = prop(s, propositionId); if (p.version !== version) fail('This card changed elsewhere. Reload before saving.'); const c = p.cues.find(c => c.id === cueId && !c.deleted) ?? fail('Card not found.'); c.question = question; c.answer = answer; p.version++; }); return await view();
   });
-  register('delete-cue', ({ propositionId, cueId, version }) => {
+  register('delete-cue', async ({ propositionId, cueId, version }) => {
     const p = prop(store.get(), propositionId);
     if (p.version !== version) fail('This card changed elsewhere. Reload before deleting.');
     if (!p.cues.some(c => c.id === cueId)) fail('Card not found.');
-    return deleteContent({ cueIds: [cueId], deleteEmptyDecks: true, revision: store.get().revision, requestId: randomUUID() });
+    return await deleteContent({ cueIds: [cueId], deleteEmptyDecks: true, revision: store.get().revision, requestId: randomUUID() });
   });
-  register('reorder', ({ kind, id, deckId, propositionId, direction }) => {
+  register('reorder', async ({ kind, id, deckId, propositionId, direction }) => {
     if (![-1, 1].includes(direction)) fail('Invalid order direction.');
-    const live = kind === 'proposition' ? liveIds(store.get()) : null;
+    const live = kind === 'proposition' ? await liveIds(store.get()) : null;
     change(s => {
       const list = kind === 'deck' ? s.decks : kind === 'proposition' ? deck(s, deckId).propositionIds : kind === 'cue' ? prop(s, propositionId).cues : fail('Invalid order kind.');
       const positions = list.flatMap((x, i) => (kind === 'cue' ? !x.deleted : kind === 'proposition' ? live.has(x) : true) ? [i] : []);
@@ -361,13 +395,13 @@ function activate(ctx) {
       if (index < 0) fail('Item not found.');
       const other = index + direction;
       if (other >= 0 && other < positions.length) { const a = positions[index], b = positions[other]; [list[a], list[b]] = [list[b], list[a]]; }
-    }); return view();
+    }); return await view();
   });
   register('preflight', async ({ propositionIds }) => {
     if (!Array.isArray(propositionIds) || propositionIds.some(id => typeof id !== 'string')) fail('Select proposition IDs.');
     if (activeBatch(store.get())) fail('A generation batch is already active.');
     const resolved = await resolveModel(store.get().settings);
-    const state = store.get(), chunks = pack(graphNow(), propositionIds, state);
+    const state = store.get(), chunks = pack(await graphNow(), propositionIds, state);
     const plans = chunks.map(input => {
       const tokens = estimate(input);
       const maxTokens = Math.min(8192, resolved.entry.maxTokens ?? 8192, (resolved.entry.contextWindow ?? Infinity) - tokens - 256);
@@ -397,10 +431,10 @@ function activate(ctx) {
     if (activeBatch(latest)) fail('A generation batch is already active.');
     return rememberFilePlan(file, resolved, latest);
   });
-  register('open-file-deck', ({ sourceId }) => {
+  register('open-file-deck', async ({ sourceId }) => {
     const source = fileSource(store.get(), sourceId);
     deck(store.get(), source.deckId);
-    return { state: view(), deckId: source.deckId };
+    return { state: await view(), deckId: source.deckId };
   });
   register('preflight-file-retry', async ({ batchId }) => {
     const state = store.get(), batch = state.batches.find(b => b.id === batchId);
@@ -420,18 +454,18 @@ function activate(ctx) {
   register('start-generation', async ({ preflightId, requestId }) => {
     requiredText(requestId, 'Request ID');
     const previous = store.get().batches.find(b => b.requestId === requestId);
-    if (previous) { if (previous.preflightId !== preflightId) fail('This request ID was already used for different work.'); return view(); }
+    if (previous) { if (previous.preflightId !== preflightId) fail('This request ID was already used for different work.'); return await view(); }
     const plan = preflights.get(preflightId) ?? fail('The generation plan expired. Run preflight again.');
     const resolved = await resolveModel(store.get().settings);
     const accepted = store.get().batches.find(b => b.requestId === requestId);
-    if (accepted) { if (accepted.preflightId !== preflightId) fail('This request ID was already used for different work.'); return view(); }
+    if (accepted) { if (accepted.preflightId !== preflightId) fail('This request ID was already used for different work.'); return await view(); }
     if (plan.revision !== store.get().revision || plan.settingsHash !== fingerprint(store.get().settings) || fingerprint(plan.model) !== fingerprint(resolved.spec)) fail('The library or model changed. Run preflight again.');
     if (plan.kind === 'file') {
       const checked = fileGeneration.validateFileInput(plan.file);
       if (checked.fingerprint !== plan.file.fingerprint) fail('The file changed. Run preflight again.');
       if (plan.retryOf) fileSource(store.get(), plan.sourceId);
     } else {
-      const live = new Set(graphNow().propositions.map(n => n.id));
+      const live = new Set((await graphNow()).propositions.map(n => n.id));
       if (plan.plans.some(p => p.input.targets.some(id => !live.has(id)))) fail('Selected knowledge changed. Run preflight again.');
     }
     const batchId = randomUUID();
@@ -472,15 +506,15 @@ function activate(ctx) {
         }
       });
     });
-    return view();
+    return await view();
   });
-  register('cancel-generation', ({ batchId }) => {
+  register('cancel-generation', async ({ batchId }) => {
     const b = store.get().batches.find(b => b.id === batchId) ?? fail('Batch not found.');
     change(s => { const current = s.batches.find(x => x.id === b.id); current.cancelRequested = true; current.status = 'cancelling'; for (const c of current.chunks) if (c.status === 'pending') c.status = 'cancelled'; finishBatch(s, current); }, 'batch-changed');
     for (const c of b.chunks) { const t = ctx.workers.list().find(t => t.requestId === c.requestId); if (t && !['succeeded', 'failed', 'cancelled', 'interrupted'].includes(t.status)) ctx.workers.cancel(t.id); }
-    reconcile(); return view();
+    reconcile(); return await view();
   });
-  register('resume-results', () => { reconcile(); return view(); });
+  register('resume-results', async () => { reconcile(); return await view(); });
 
   function scopeIds(s, scope) {
     if (scope.deckIds !== undefined && (!Array.isArray(scope.deckIds) || scope.deckIds.some(id => !s.decks.some(d => d.id === id)))) fail('Selected deck no longer exists.');
@@ -499,11 +533,11 @@ function activate(ctx) {
     if (pinned && !scope.cueIds.includes(pinned.id)) return [];
     return active.filter(c => scope.cueIds.includes(c.id));
   }
-  function validTicket(id, mustReveal = false, now = Date.now()) {
+  async function validTicket(id, mustReveal = false, now = Date.now()) {
     const t = tickets.get(id) ?? fail('This review expired. Load the next card.');
     const s = store.get(), p = prop(s, t.propositionId);
     if (p.version !== t.version || reviewConfiguration(s.settings) !== t.settingsHash || scheduler.studyDay(now, s.settings.dayStart) !== t.day) fail('This review changed elsewhere. Load the next card.');
-    if (!isLocal(p) && !graphNow().propositions.some(n => n.id === p.id)) fail('The proposition is no longer in the graph.');
+    if (!isLocal(p) && !(await graphNow()).propositions.some(n => n.id === p.id)) fail('The proposition is no longer in the graph.');
     const { ids } = scopeIds(s, t.scope);
     if (!ids.includes(p.id)) fail('The review selection changed. Load the next card.');
     const c = reviewCues(p, t.scope).find(c => c.id === t.cueId) ?? fail('This card is no longer available in the review selection.');
@@ -512,8 +546,8 @@ function activate(ctx) {
     else if (!scheduler.isDue(p.schedule, now, s.settings.dayStart)) fail('This proposition is not due.');
     return { t, p, c, s };
   }
-  register('next-review', scope => {
-    const s = store.get(), live = liveIds(s), now = Date.now();
+  register('next-review', async scope => {
+    const s = store.get(), live = await liveIds(s), now = Date.now();
     const selection = scopeIds(s, scope), used = counts(s, now);
     const candidates = selection.ids.map(id => s.propositions[id]).filter(p => p && live.has(p.id) && reviewCues(p, scope).length);
     const ready = candidates.filter(p => p.schedule.state !== 0 && scheduler.isDue(p.schedule, now, s.settings.dayStart));
@@ -546,18 +580,18 @@ function activate(ctx) {
     tickets.set(id, { id, propositionId: p.id, cueId: chosen.id, version: p.version, settingsHash: reviewConfiguration(s.settings), day: scheduler.studyDay(now, s.settings.dayStart), scope: structuredClone(scope), admittingDeckId, revealed: false });
     return { ticket: { id, propositionId: p.id, cueId: chosen.id, question: chosen.question, propositionName: p.name }, remaining };
   });
-  register('reveal-review', ({ ticketId }) => {
+  register('reveal-review', async ({ ticketId }) => {
     const now = Date.now();
-    const { t, p, c, s } = validTicket(ticketId, false, now); t.revealed = true;
+    const { t, p, c, s } = await validTicket(ticketId, false, now); t.revealed = true;
     const previews = scheduler.preview(p.schedule, now, s.settings);
     return { answer: c.answer, intervals: Object.fromEntries([1, 2, 3, 4].map(r => [r, previews[r].state === 2 ? previews[r].scheduled_days * 86400000 : previews[r].due - now])) };
   });
-  register('rate-review', ({ ticketId, rating, requestId }) => {
+  register('rate-review', async ({ ticketId, rating, requestId }) => {
     requiredText(requestId, 'Request ID');
     const previous = store.get().reviews.find(r => r.requestId === requestId);
     if (previous) { if (previous.ticketId !== ticketId || previous.rating !== rating) fail('This request ID was already used for different work.'); return { ok: true }; }
     if (![1, 2, 3, 4].includes(rating)) fail('Invalid rating.');
-    const now = Date.now(), { t } = validTicket(ticketId, true, now);
+    const now = Date.now(), { t } = await validTicket(ticketId, true, now);
     change(s => {
       const p = prop(s, t.propositionId), c = p.cues.find(c => c.id === t.cueId);
       const before = p.schedule, introduced = p.firstReviewedAt == null;
@@ -568,7 +602,7 @@ function activate(ctx) {
     });
     tickets.delete(ticketId); return { ok: true };
   });
-  const cleanup = () => { disposed = true; for (const stop of observers.values()) stop(); observers.clear(); preflights.clear(); tickets.clear(); };
+  const cleanup = () => { disposed = true; for (const stop of observers.values()) stop(); observers.clear(); preflights.clear(); tickets.clear(); stores.clear(); cleaned.clear(); };
   ctx.cleanup(cleanup);
 }
 module.exports = { activate, pack, validateResult, estimate, instructions, resultSchema, validateSettings };

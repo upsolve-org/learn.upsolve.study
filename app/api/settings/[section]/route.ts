@@ -37,6 +37,7 @@ import {
 	clampChatLevel,
 	clampModelsLevels,
 	effectiveSettings,
+	invalidateCachedSettings,
 	fileAccessConfigurationError,
 	promptOverrides,
 	readSettingsRecord,
@@ -95,7 +96,7 @@ async function PUTHandler(request: Request, ctx: { params: Promise<{ section: st
 	if (section === "appearance") {
 		const appearance = parsed.settings as AppearanceSettings;
 		const theme = appearance.theme;
-		if (theme !== undefined && !isBuiltinThemeId(theme) && themeStore.readTheme(theme) === null) {
+		if (theme !== undefined && !isBuiltinThemeId(theme) && (await themeStore.readTheme(theme)) === null) {
 			if (theme !== record.appearance?.theme) {
 				return Response.json({ error: `unknown theme "${theme}"` }, { status: 400 });
 			}
@@ -135,7 +136,7 @@ async function PUTHandler(request: Request, ctx: { params: Promise<{ section: st
 	// file reality agree.
 	const sectionOut =
 		section === "chat"
-			? clampChatLevel(parsed.settings as ChatSettings, effectiveSettings().models.strong)
+			? clampChatLevel(parsed.settings as ChatSettings, (await effectiveSettings()).models.strong)
 			: section === "models"
 				? clampModelsLevels(parsed.settings as ModelsSettings)
 				: section === "agent" && agentHealed
@@ -146,8 +147,14 @@ async function PUTHandler(request: Request, ctx: { params: Promise<{ section: st
 	// along untouched (other sections, unknown keys — sanitize preserves).
 	const next = { ...record, [section]: sectionOut };
 	const stored = writeSettingsRecord(next);
-	// Only a successful durable write changes admission. Increasing the
-	// limit immediately drains queued requests; decreasing never cancels active work.
+	// Drop the per-owner cache first, then re-read through effectiveSettings so
+	// every synchronous seam (cache retention, search, Claude Code, consent)
+	// sees the new record on its very next call.
+	invalidateCachedSettings();
+	await effectiveSettings();
+	// Refresh the cached policy seen by the synchronous admission getter, then
+	// apply it. Increasing the limit drains queued requests immediately;
+	// decreasing never cancels active work.
 	refreshWorkerRequestAdmission();
 	const fileAccessError = fileAccessConfigurationError();
 	return Response.json({ settings: stored, ...(fileAccessError ? { fileAccessError } : {}) });

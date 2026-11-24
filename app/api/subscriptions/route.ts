@@ -1,8 +1,9 @@
-import { subscriptionControlsResponse, ownerScoped } from "@/src/server";
+import { subscriptionControlsResponse, operatorOnly } from "@/src/server";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// Tenancy: the body runs inside the caller's owner scope.
-export const GET = ownerScoped(subscriptionControlsResponse);
-export const POST = ownerScoped(subscriptionControlsResponse);
+// Tenancy + operator gate: web subscription controls are operator-only in
+// hosted mode; the body otherwise runs in the caller's owner scope.
+export const GET = operatorOnly(subscriptionControlsResponse);
+export const POST = operatorOnly(subscriptionControlsResponse);
