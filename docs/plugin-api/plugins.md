@@ -253,6 +253,7 @@ export interface PluginBackendContext {
     readonly manifest: PluginManifest;
     readonly directory: string;
     readonly dataDirectory: string;
+    ownerDirectory(pluginId: string): string;
     readonly signal: AbortSignal;
     cleanup(dispose: PluginCleanup): void;
     learning: PluginLearningData;
@@ -279,6 +280,7 @@ export interface PluginBackendContext {
 - [manifest](#pluginbackendcontext-manifest)
 - [directory](#pluginbackendcontext-directory)
 - [dataDirectory](#pluginbackendcontext-datadirectory)
+- [ownerDirectory](#pluginbackendcontext-ownerdirectory)
 - [signal](#pluginbackendcontext-signal)
 - [cleanup](#pluginbackendcontext-cleanup)
 - [learning](#pluginbackendcontext-learning)
@@ -312,10 +314,30 @@ readonly directory: string;
 ### PluginBackendContext dataDirectory
 
 Writable records: core-plugin-data/<id> or community plugins/<id>/data.
+Resolved ONCE at activation, so it is the UNSCOPED root and is shared by
+every learner. Anything per-learner must go through `ownerDirectory`.
+Kept for host-owned records that are naturally per-activation (tasks).
 
 ```ts
 readonly dataDirectory: string;
 ```
+
+### PluginBackendContext ownerDirectory
+
+The same directory for the CALLER's owner (tenant), resolved at call
+time. Falls back to the unscoped `dataDirectory` outside any owner
+scope (desktop, plain dev). Any per-learner plugin record (card decks,
+notes, saved files) belongs under this one.
+
+```ts
+ownerDirectory(pluginId: string): string;
+```
+
+| Parameter | Type |
+| --- | --- |
+| `pluginId` | `string` |
+
+**Returns:** `string`.
 
 ### PluginBackendContext signal
 
