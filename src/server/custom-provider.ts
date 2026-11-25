@@ -52,7 +52,7 @@ export function installCustomProviderSource(readAuth = customAuthState): void {
 						// compiled 8192/4096 custom-endpoint defaults apply, and a 16k
 						// compaction reserve leaves almost no output — replies get
 						// clamped to a token or two.
-						models: [{ id: fallback.model, context: fallback.contextWindow, maxTokens: fallback.maxTokens }],
+						models: [{ id: fallback.model, context: fallback.contextWindow, maxTokens: fallback.maxTokens, reasoning: fallback.reasoning }],
 						authMode: "apiKey" as const,
 					}
 				: cp;

@@ -54,6 +54,8 @@ describe("the picker catalog carries the default", () => {
 		env(complete);
 		const catalog = await modelCatalog();
 		assert.deepEqual(catalog.models.map((m) => m.id), ["auto"]);
+		assert.equal(catalog.models[0]?.reasoning, true, "hosted default supports reasoning effort");
+		assert.ok((catalog.models[0]?.supportedLevels ?? []).includes("medium"));
 		assert.equal(catalog.slots.strong?.model?.provider, "custom");
 	});
 

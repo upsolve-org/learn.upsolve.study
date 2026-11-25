@@ -147,8 +147,11 @@ function registerController(id: symbol, controller: { primary: boolean; toggle: 
 }
 
 /** Encode captured linear16 PCM frames as a standard 44-byte RIFF/WAVE file
- *  (16-bit signed mono). Pure so the wire format can be asserted in tests. */
-export function encodePcm16Wav(chunks: readonly ArrayBuffer[], sampleRate = 16000): Blob {
+ *  (16-bit signed mono). Pure so the wire format can be asserted in tests.
+ *  Accepts both raw ArrayBuffers and TypedArray views (pcm-capture.js posts
+ *  Int16Array frames — `new Uint8Array(int16Array)` would truncate samples to
+ *  8-bit and zero-pad the second half of every chunk). */
+export function encodePcm16Wav(chunks: readonly (ArrayBuffer | ArrayBufferView)[], sampleRate = 16000): Blob {
 	const dataLength = chunks.reduce((total, chunk) => total + chunk.byteLength, 0);
 	const buffer = new ArrayBuffer(44 + dataLength);
 	const view = new DataView(buffer);
@@ -170,8 +173,11 @@ export function encodePcm16Wav(chunks: readonly ArrayBuffer[], sampleRate = 1600
 	view.setUint32(40, dataLength, true);
 	let offset = 44;
 	for (const chunk of chunks) {
-		new Uint8Array(buffer, offset, chunk.byteLength).set(new Uint8Array(chunk));
-		offset += chunk.byteLength;
+		const bytes = ArrayBuffer.isView(chunk)
+			? new Uint8Array(chunk.buffer, chunk.byteOffset, chunk.byteLength)
+			: new Uint8Array(chunk);
+		new Uint8Array(buffer, offset, bytes.byteLength).set(bytes);
+		offset += bytes.byteLength;
 	}
 	return new Blob([buffer], { type: "audio/wav" });
 }
@@ -435,7 +441,7 @@ export function useDictation({ append, destination = "primary", disabled = false
 	 *  audio frames captured in the meantime go to BOTH buffers so switching
 	 *  modes never drops the first spoken words. */
 	const localModeRef = useRef<boolean | null>(null);
-	const localPcmRef = useRef<ArrayBuffer[]>([]);
+	const localPcmRef = useRef<(ArrayBuffer | ArrayBufferView)[]>([]);
 	const localPcmBytesRef = useRef(0);
 	const localAbortRef = useRef<AbortController | null>(null);
 	const languageRef = useRef<DictationLanguage | null>(null);
@@ -733,7 +739,7 @@ export function useDictation({ append, destination = "primary", disabled = false
 		if (localModeRef.current === true) {
 			// Local batch: one WAV upload, then the single deferred append via
 			// cleanup() (same buffer/flush/finish semantics as Deepgram).
-			const wav = encodePcm16Wav(localPcmRef.current);
+			const wav = encodePcm16Wav(localPcmRef.current, sharedCtx?.sampleRate ?? 16000);
 			localPcmRef.current = [];
 			localPcmBytesRef.current = 0;
 			const controller = new AbortController();
