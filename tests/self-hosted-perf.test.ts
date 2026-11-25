@@ -154,6 +154,15 @@ describe("encodePcm16Wav", () => {
 		assert.equal(bytes.readUInt32LE(40), 6);
 		assert.deepEqual(Array.from(bytes.subarray(44)), [0x01, 0xff, 0x80, 0x7f, 0x00, 0x10]);
 	});
+
+	it("preserves Int16Array frames posted by pcm-capture.js without 8-bit truncation", async () => {
+		const frame = new Int16Array([0x1234, -0x0102, 0x7fff, -0x8000]);
+		const blob = encodePcm16Wav([frame], 16000);
+		const bytes = Buffer.from(await blob.arrayBuffer());
+		assert.equal(bytes.length, 44 + frame.byteLength);
+		const expected = new Uint8Array(frame.buffer, frame.byteOffset, frame.byteLength);
+		assert.deepEqual(Array.from(bytes.subarray(44)), Array.from(expected));
+	});
 });
 
 describe("local dictation batch mode", () => {

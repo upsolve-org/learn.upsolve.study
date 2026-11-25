@@ -26,6 +26,9 @@ export interface HostedDefault {
 	 *  get clamped to a token or two. */
 	contextWindow: number;
 	maxTokens: number;
+	/** Whether the default model advertises reasoning-effort support. Defaults
+	 *  to true so learners can choose thinking effort levels on the hosted router. */
+	reasoning: boolean;
 }
 
 type Env = Record<string, string | undefined>;
@@ -41,7 +44,13 @@ function positiveInt(raw: string | undefined, fallback: number): number {
 	return Number.isSafeInteger(value) && value > 0 ? value : fallback;
 }
 
-/** The configured default, or undefined when incomplete or not hosted.<|place_holder_mm_span_0442|> */
+function defaultReasoning(raw: string | undefined): boolean {
+	const value = (raw ?? "").trim().toLowerCase();
+	if (value === "false" || value === "off" || value === "0" || value === "no") return false;
+	return true;
+}
+
+/** The configured default, or undefined when incomplete or not hosted. */
 export function hostedDefault(env: Env = process.env): HostedDefault | undefined {
 	if (!hostedMode(env)) return undefined;
 	const baseUrl = normalizeBaseUrl((env.HOSTED_DEFAULT_BASE_URL ?? "").trim());
@@ -52,6 +61,7 @@ export function hostedDefault(env: Env = process.env): HostedDefault | undefined
 		baseUrl, model, apiKey,
 		contextWindow: positiveInt(env.HOSTED_DEFAULT_CONTEXT_WINDOW, HOSTED_DEFAULT_CONTEXT_WINDOW),
 		maxTokens: positiveInt(env.HOSTED_DEFAULT_MAX_TOKENS, HOSTED_DEFAULT_MAX_TOKENS),
+		reasoning: defaultReasoning(env.HOSTED_DEFAULT_REASONING),
 	};
 }
 

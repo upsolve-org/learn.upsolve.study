@@ -5,7 +5,7 @@ const { hostedDefault, isHostedDefaultUrl } = await import("../src/core/hosted-d
 const { resolveSettings, resolveSlot, resolveRoleSpec, resolveConversationSpec } = await import("../src/core/settings-resolution.ts");
 const { slotsConfigured } = await import("../src/core/settings.ts");
 
-const KEYS = ["HOSTED_MODE", "HOSTED_DEFAULT_BASE_URL", "HOSTED_DEFAULT_MODEL", "HOSTED_DEFAULT_API_KEY", "HOSTED_DEFAULT_CONTEXT_WINDOW", "HOSTED_DEFAULT_MAX_TOKENS"] as const;
+const KEYS = ["HOSTED_MODE", "HOSTED_DEFAULT_BASE_URL", "HOSTED_DEFAULT_MODEL", "HOSTED_DEFAULT_API_KEY", "HOSTED_DEFAULT_CONTEXT_WINDOW", "HOSTED_DEFAULT_MAX_TOKENS", "HOSTED_DEFAULT_REASONING"] as const;
 const saved: Record<string, string | undefined> = {};
 const complete = {
 	HOSTED_MODE: "on",
@@ -50,7 +50,7 @@ describe("hosted default", () => {
 		env(complete);
 		assert.deepEqual(hostedDefault(), {
 			baseUrl: "https://gateway.example/v1", model: "auto", apiKey: "sk-secret",
-			contextWindow: 1_000_000, maxTokens: 1_000_000,
+			contextWindow: 1_000_000, maxTokens: 1_000_000, reasoning: true,
 		});
 		assert.equal(isHostedDefaultUrl("https://gateway.example/v1"), true);
 		assert.equal(isHostedDefaultUrl("https://other.example/v1"), false);
