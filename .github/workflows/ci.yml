@@ -67,7 +67,7 @@ jobs:
       - run: npm run plugins:setup
         if: steps.plugins-cache.outputs.cache-hit != 'true'
       - run: npm run plugins:build-core
-      - run: node --env-file-if-exists=tests/test.env node_modules/tsx/dist/cli.mjs --import tsx --test --test-shard=${{ matrix.shard }}/4 tests/*.test.ts tests/*.test.tsx
+      - run: npm exec --call 'node --env-file-if-exists=tests/test.env node_modules/tsx/dist/cli.mjs --import tsx --test --test-shard=${{ matrix.shard }}/4 tests/*.test.ts tests/*.test.tsx'
 
   integration:
     name: Integration (Postgres 17 + RustFS)
