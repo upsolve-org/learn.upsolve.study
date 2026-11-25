@@ -36,12 +36,12 @@ async function readContentType(metaPath: string): Promise<string> {
  * is already the first key segment, so one adapter serves every tenant.
  */
 export function createFsBlobStore(rootDir?: string): BlobStore {
-	const root = path.resolve(rootDir ?? path.join(baseDataRoot(), "blobs"));
+	const root = path.resolve(/* turbopackIgnore: true */ rootDir ?? path.join(/* turbopackIgnore: true */ baseDataRoot(), "blobs"));
 
 	/** Validate + jail-check a key and return its two absolute paths. */
 	function locate(key: string): { file: string; meta: string } {
 		const segments = validateBlobKey(key).split("/");
-		const file = path.resolve(root, ...segments);
+		const file = path.resolve(/* turbopackIgnore: true */ root, ...segments);
 		if (!file.startsWith(root + path.sep)) throw new Error("Blob key escapes the store root");
 		return { file, meta: `${file}.meta.json` };
 	}

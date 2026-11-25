@@ -63,7 +63,7 @@ const MIGRATION_LOCK_KEY = 0x6c686d696772;
  * CREATE TABLE IF NOT EXISTS (which can still collide on pg_type).
  */
 export async function runMigrations(pool: Pool = getPgPool(), migrationsDir?: string): Promise<string[]> {
-	const dir = migrationsDir ?? path.join(process.cwd(), "db", "migrations");
+	const dir = migrationsDir ?? path.join(/* turbopackIgnore: true */ process.cwd(), "db", "migrations");
 	const files = (await readdir(dir)).filter((name) => name.endsWith(".sql")).sort();
 	const client = await pool.connect();
 	try {
@@ -80,7 +80,7 @@ export async function runMigrations(pool: Pool = getPgPool(), migrationsDir?: st
 			const ran: string[] = [];
 			for (const version of files) {
 				if (applied.has(version)) continue;
-				const sql = await readFile(path.join(dir, version), "utf8");
+				const sql = await readFile(path.join(/* turbopackIgnore: true */ dir, version), "utf8");
 				try {
 					await client.query("BEGIN");
 					await client.query(sql);
