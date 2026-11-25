@@ -29,14 +29,14 @@ jobs:
           cache: npm
       - run: npm ci
       - id: plugins-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             plugins/*/node_modules
             plugins/*/.sdk
           key: plugins-${{ runner.os }}-${{ hashFiles('plugins/*/package-lock.json', 'scripts/build-plugin-types.mjs', 'src/core/plugin-*.ts') }}
-      - if: steps.plugins-cache.outputs.cache-hit != 'true'
-        run: npm run plugins:setup
+      - run: npm run plugins:setup
+        if: steps.plugins-cache.outputs.cache-hit != 'true'
       - run: npm run plugins:build-core
       - run: npm run typecheck
       - run: npm run lint:ox
@@ -58,16 +58,16 @@ jobs:
           cache: npm
       - run: npm ci
       - id: plugins-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             plugins/*/node_modules
             plugins/*/.sdk
           key: plugins-${{ runner.os }}-${{ hashFiles('plugins/*/package-lock.json', 'scripts/build-plugin-types.mjs', 'src/core/plugin-*.ts') }}
-      - if: steps.plugins-cache.outputs.cache-hit != 'true'
-        run: npm run plugins:setup
+      - run: npm run plugins:setup
+        if: steps.plugins-cache.outputs.cache-hit != 'true'
       - run: npm run plugins:build-core
-      - run: npm test -- --test-shard=${{ matrix.shard }}/4
+      - run: node --env-file-if-exists=tests/test.env node_modules/tsx/dist/cli.mjs --import tsx --test --test-shard=${{ matrix.shard }}/4 tests/*.test.ts tests/*.test.tsx
 
   integration:
     name: Integration (Postgres 17 + RustFS)
@@ -126,14 +126,14 @@ jobs:
           exit 1
       - run: npm ci
       - id: plugins-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             plugins/*/node_modules
             plugins/*/.sdk
           key: plugins-${{ runner.os }}-${{ hashFiles('plugins/*/package-lock.json', 'scripts/build-plugin-types.mjs', 'src/core/plugin-*.ts') }}
-      - if: steps.plugins-cache.outputs.cache-hit != 'true'
-        run: npm run plugins:setup
+      - run: npm run plugins:setup
+        if: steps.plugins-cache.outputs.cache-hit != 'true'
       - run: npm run plugins:build-core
       - run: npm run test:integration
 
@@ -151,14 +151,14 @@ jobs:
           cache: npm
       - run: npm ci
       - id: plugins-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             plugins/*/node_modules
             plugins/*/.sdk
           key: plugins-${{ runner.os }}-${{ hashFiles('plugins/*/package-lock.json', 'scripts/build-plugin-types.mjs', 'src/core/plugin-*.ts') }}
-      - if: steps.plugins-cache.outputs.cache-hit != 'true'
-        run: npm run plugins:setup
+      - run: npm run plugins:setup
+        if: steps.plugins-cache.outputs.cache-hit != 'true'
       - run: npm run build
       # Verify the fresh standalone trace confines native Pi SDK modules offline.
       - run: node scripts/smoke-provider-runtime.mjs
