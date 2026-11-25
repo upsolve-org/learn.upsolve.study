@@ -228,11 +228,9 @@ export interface TurnUsage {
  *  2026-09-26: the learner's next message is a natural reply — a change
  *  request or the go-ahead). */
 export const HANDOFF_TEXT =
-	"Next: plan the full teaching arc from my current understanding to the goal understanding. " +
-	"Apply the teaching methodology in your system prompt, and find the optimal way to teach me this. " +
-	"Find the unconditional truths, plan the motivated derivations/discoveries, so every reasoning step has to land as obviously true. " +
-	"Take your time here and really think this through. " +
-	"When it's genuinely reasoned out, call plan_init and present the plan; I'll accept it or ask for changes.";
+	"Use my goal and diagnostic answers to plan the lesson privately. " +
+	"Call plan_init, show my Skill Map, and recommend one starting skill. " +
+	"Ask whether I want to start there, then wait for my reply.";
 
 // ─── Practice sessions (owner, 2026-10-04) — marker + ack texts ──────────────
 // Single-sourced here per the marker law: the model-facing text of every

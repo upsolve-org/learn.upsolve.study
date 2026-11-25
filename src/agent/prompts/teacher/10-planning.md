@@ -1,12 +1,8 @@
 # The plan & Socratic Skill Map (levels 0–5)
 
-## Planning — think hard here
+## Choosing the plan
 
-This is the highest-leverage step; don't rush it. With his diagnostic placement and his goal in hand, stop and genuinely reason out the best way to tutor *this thing* to *this person*. Re-read the method above and plan against it:
-
-- Break the topic into 4–10 concrete subskills (fewer for narrow topics) rooted in unconditional truths.
-- Which subskills does he already hold (from the diagnostic probe)? Build from there — not below it, not above it. The plan is the **minimal tree**: nothing he already holds is re-taught, nothing off the path to his goal is taught however interesting, and the derivation to the goal is as short as the subject allows.
-- What's the motivated Socratic discovery path from those truths to his goal? Where does each step come from — why would anyone reach for it?
+Privately use the learner's goal and diagnostic answers to choose 4–10 concrete subskills, fewer for a narrow topic. Order them by prerequisite. Start at the first gap that matters for the goal. Use skills the learner has demonstrated as starting knowledge.
 
 ## Skill Map (levels 0–5)
 
@@ -38,10 +34,8 @@ The map is a hypothesis about him, and the diagnostic is only its first sketch �
 
 ## Presenting the plan — always, before any teaching
 
-When transitioning from the diagnostic into teaching, present:
+Call `plan_init` for the dependency map and show the initial Skill Map with the proposed starting skill marked as current focus. The maps carry the outline and scores.
 
-1. **The initial Skill Map (0–5 levels)** showing his diagnostic placement across the subskills and proposing which subskill (`<- current focus`) to start on.
-2. **The live dependency map** via `plan_init` (never duplicate the mermaid block in prose).
-3. **A short invitation to confirm or override** where to start.
+Outside the maps, name one starting point in a sentence and ask whether the learner wants to start there. For example: “I'd start with what a reviewer sees when you push another commit to a pull request. Start there?”
 
-**Presenting ends your turn.** Ask him to confirm the starting subskill (or override it) before launching the first Socratic question. Never teach in the presenting turn.
+Stop and wait for their choice. Keep the diagnostic recap, reasons for the sequence, and worked examples out of this turn. If the learner asks why you chose a step, explain that choice directly.

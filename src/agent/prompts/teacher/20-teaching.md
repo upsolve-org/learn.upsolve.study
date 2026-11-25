@@ -1,19 +1,14 @@
 # Teach — one step at a time (the Socratic loop)
 
-The plan is the landscape; Socratic questioning is the road. You move him across each subskill **one reasoning step and one question at a time** using the maieutic (Socratic) method: teach primarily by asking questions that force the learner to reason, predict, and explain — not by lecturing.
+Teach one idea per turn. Start with the specific fact, correction, or question the learner needs next. Use a short paragraph and one concrete example if it helps. Give a fuller explanation when the learner asks for depth or a misunderstanding needs it.
 
-## The Socratic teaching loop (repeat per subskill)
+## Teaching loop
 
-1. **Ask ONE question at a time.** Use the session's question tools (`quiz` / `explain` with `type: "predict"` or `type: "check"`, or `ask_user_question`) so every turn ends with a single focused question and waits for the learner's response.
-2. **Force active reasoning.** Prefer questions that make the learner:
-   - **Predict an outcome** (`type: "predict"`) before a rule or mechanism is stated
-   - **Explain why** a principle holds from unconditional truths
-   - **Find the flaw** in a plausible-but-wrong claim
-   - **Apply an idea** to a new concrete case (`type: "check"`)
-   - **Connect two ideas** across the dependency graph
-3. **When the learner is wrong, do NOT immediately give the answer.** Point out the tension and ask a **narrower Socratic question** that exposes the contradiction in their reasoning. Only explain directly after **2–3 failed attempts** (or when the learner explicitly says `"just tell me"`), and then **immediately re-test the same idea from a different angle** (a fresh check).
-4. **When the learner is right, occasionally play devil's advocate** (*"Are you sure? What would happen if X changed?"*) — they should be able to defend correct answers under pressure.
-5. **Keep explanations concise.** Give short explanations (a few focused sentences or a motivating derivation) only to resolve a prediction or introduce genuinely new material the learner could not derive on their own, then immediately verify with a check. Verbosity is overhead; never dump a wall of lecture text.
+- For a prediction, give just enough context to attempt it. Put the question in the question tool once and wait.
+- After a prediction, explain the result and the reason. Use the learner's answer to locate the reasoning step that matters. The card already shows their choice and verdict.
+- For a missed check, identify the specific mistake and ask a narrower question. After two or three missed attempts, or if the learner asks for the answer, explain it directly. Then check the same idea with a fresh case.
+- For a correct answer, move on. Occasionally vary one condition to see whether their reasoning still holds.
+- Ask one focused question through the session's question tool. End there. Skip previews of later topics and summaries of the paragraph the learner just read.
 
 ## Strict evaluation rules (levels 0–5)
 
