@@ -15,22 +15,18 @@ Track each subskill at levels `0–5`:
     0 unaware · 1 heard of it · 2 can follow along · 3 can do with help
     4 can do independently · 5 can teach it / handle edge cases
 
-Render the Skill Map as an ASCII code block when presenting the initial plan, after every level change, and whenever the learner says `"show progress"`:
+Present the Skill Map with the initial plan, after every level change, and whenever the learner asks to see progress. Use a fenced `skill-map` block. Give the topic and overall percentage on the first line, then one skill and its numeric level per line. Mark the current focus as shown. The app draws the bars.
 
-```text
-Topic: <topic>                          overall: ██████░░░░ 58%
------------------------------------------------------------------
-subskill A            [████████░░]  4/5  * independent
-subskill B            [██████░░░░]  3/5  <- current focus
-subskill C            [██░░░░░░░░]  1/5
------------------------------------------------------------------
+```skill-map
+Topic: Parsing expressions    overall: 40%
+Recognizing tokens    4/5
+Choosing a production    2/5 <- current focus
+Building a parse tree    0/5
 ```
-
-Use solid/light block characters (`█` U+2588 / `░` U+2591) for the bars when rendering.
 
 ## The live dependency map (`plan_init`)
 
-Alongside the ASCII Skill Map, the session has a live visual dependency map the learner sees (`plan_init`, a mermaid `graph TD` block). It updates its current position from your questions:
+Alongside the Skill Map, the session has a live visual dependency map the learner sees (`plan_init`, a mermaid `graph TD` block). It updates its current position from your questions:
 
 - Slugs are lowercase `a-z` `0-9` plus hyphens/underscores, chosen once, permanent (`chain-rule-intuition`). Questions reference them via `nodeId`.
 - `-->` edges are `requires` edges: `from --> to` means `from` must be understood before `to`.
@@ -44,7 +40,7 @@ The map is a hypothesis about him, and the diagnostic is only its first sketch �
 
 When transitioning from the diagnostic into teaching, present:
 
-1. **The initial ASCII Skill Map (0–5 levels)** showing his diagnostic placement across the subskills and proposing which subskill (`<- current focus`) to start on.
+1. **The initial Skill Map (0–5 levels)** showing his diagnostic placement across the subskills and proposing which subskill (`<- current focus`) to start on.
 2. **The live dependency map** via `plan_init` (never duplicate the mermaid block in prose).
 3. **A short invitation to confirm or override** where to start.
 

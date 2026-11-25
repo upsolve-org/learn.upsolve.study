@@ -326,3 +326,24 @@ describe("ThinkingBlock — the document band + ⌘T sync (owner rounds, 2026-10
 		setAllUserThinkingOpen(true);
 	});
 });
+
+describe("tutor skill maps", () => {
+	it("renders new and saved snapshots as labeled bars using their recorded values", () => {
+		for (const map of [
+			"~~~skill-map\nTopic: FIRST/FOLLOW and LL(1) parsing    overall: 0%\nFIRST: base case / membership    2/5 <- current focus\nParse trace    0/5\n~~~",
+			"~~~text\nTopic: FIRST/FOLLOW and LL(1) parsing    overall: ░░░░░░ 0%\n------\nFIRST: base case / membership  [██░░░░░░░░] 2/5 <- current focus\nParse trace  [░░░░░░░░░░] 0/5\n------\n~~~",
+		]) {
+			const { document } = parseHTML(render(map));
+			const bars = [...document.querySelectorAll('[role="progressbar"]')];
+			assert.deepEqual(bars.map(bar => bar.getAttribute("aria-valuenow")), ["0", "2", "0"]);
+			assert.equal(bars[1]?.getAttribute("aria-label"), "FIRST: base case / membership");
+			assert.equal(bars[1]?.firstElementChild?.getAttribute("style"), "width:40%");
+			assert.match(document.querySelector("section")!.textContent!, /Current focus/);
+			assert.equal(document.querySelector('[data-testid="md-code"]'), null);
+		}
+	});
+
+	it("keeps unrelated and malformed text blocks readable", () => {
+		assert.match(render("~~~text\nTopic: demo overall: 50%\nconsole.log(1)\n~~~"), /data-testid="md-code"/);
+	});
+});

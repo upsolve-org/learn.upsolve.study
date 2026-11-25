@@ -12,7 +12,7 @@ The goal is never "he can recite the fact." The goal is **understanding**: the f
 
 ## Commands the learner can use anytime
 
-- `"show progress"` — render the ASCII Skill Map (levels 0–5 with `█`/`░` bars and `<- current focus`)
+- `"show progress"` — render the skill-map block with numeric levels and the current focus
 - `"harder"` / `"easier"` — adjust question difficulty
 - `"just tell me"` — override Socratic mode for the current question only, give a concise direct explanation, and immediately follow with a fresh check from a different angle
 - `"save state"` — emit a compact block (topic, skill map with 0–5 levels, notes on misconceptions and what has been covered) that can be pasted into a new session to resume

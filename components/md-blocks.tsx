@@ -29,6 +29,7 @@
 
 import { cloneElement, createContext, isValidElement, useContext, useEffect, useRef, useState, type ComponentProps, type ReactNode } from "react";
 import { CheckIcon, CopyIcon, MaximizeIcon } from "lucide-react";
+import { parseSkillMap, SkillMap } from "./skill-map";
 import { cn } from "@/lib/utils";
 import {
 	CodeBlock,
@@ -258,6 +259,9 @@ export function MarkdownCode(props: ComponentProps<"code"> & ExtraProps) {
 	const language = /language-([^\s]+)/.exec(className ?? "")?.[1] ?? "";
 	const meta = (node?.properties?.metastring as string | undefined) ?? "";
 	const source = codeSource(children);
+	if (language === "skill-map" && incomplete) return <div aria-label="Loading skill map" aria-busy="true" className="my-4 h-2 rounded-full bg-muted" />;
+	const skillMap = parseSkillMap(language, source);
+	if (skillMap) return <SkillMap map={skillMap} />;
 
 	if (language === BUILTIN_MERMAID_LANGUAGE) return <MermaidInline chart={source} />;
 
