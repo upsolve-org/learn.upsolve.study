@@ -28,16 +28,28 @@ jobs:
           node-version: "26"
           cache: npm
       - run: npm ci
-      - run: npm run plugins:setup
+      - id: plugins-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            plugins/*/node_modules
+            plugins/*/.sdk
+          key: plugins-${{ runner.os }}-${{ hashFiles('plugins/*/package-lock.json', 'scripts/build-plugin-types.mjs', 'src/core/plugin-*.ts') }}
+      - if: steps.plugins-cache.outputs.cache-hit != 'true'
+        run: npm run plugins:setup
       - run: npm run plugins:build-core
       - run: npm run typecheck
       - run: npm run lint:ox
       - run: npm run lint
 
   unit:
-    name: Unit tests
+    name: Unit tests (${{ matrix.shard }}/4)
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -45,9 +57,17 @@ jobs:
           node-version: "26"
           cache: npm
       - run: npm ci
-      - run: npm run plugins:setup
+      - id: plugins-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            plugins/*/node_modules
+            plugins/*/.sdk
+          key: plugins-${{ runner.os }}-${{ hashFiles('plugins/*/package-lock.json', 'scripts/build-plugin-types.mjs', 'src/core/plugin-*.ts') }}
+      - if: steps.plugins-cache.outputs.cache-hit != 'true'
+        run: npm run plugins:setup
       - run: npm run plugins:build-core
-      - run: npm test
+      - run: npm test -- --test-shard=${{ matrix.shard }}/4
 
   integration:
     name: Integration (Postgres 17 + RustFS)
@@ -105,14 +125,24 @@ jobs:
           echo "RustFS did not become reachable on 127.0.0.1:9000"
           exit 1
       - run: npm ci
-      - run: npm run plugins:setup
+      - id: plugins-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            plugins/*/node_modules
+            plugins/*/.sdk
+          key: plugins-${{ runner.os }}-${{ hashFiles('plugins/*/package-lock.json', 'scripts/build-plugin-types.mjs', 'src/core/plugin-*.ts') }}
+      - if: steps.plugins-cache.outputs.cache-hit != 'true'
+        run: npm run plugins:setup
       - run: npm run plugins:build-core
       - run: npm run test:integration
 
   build-linux:
     name: Build & runtime smoke (linux-x64)
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 20
+    env:
+      NEXT_PUBLIC_SITE_URL: https://learn.upsolve.study
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -120,9 +150,79 @@ jobs:
           node-version: "26"
           cache: npm
       - run: npm ci
-      - run: npm run plugins:setup
+      - id: plugins-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            plugins/*/node_modules
+            plugins/*/.sdk
+          key: plugins-${{ runner.os }}-${{ hashFiles('plugins/*/package-lock.json', 'scripts/build-plugin-types.mjs', 'src/core/plugin-*.ts') }}
+      - if: steps.plugins-cache.outputs.cache-hit != 'true'
+        run: npm run plugins:setup
       - run: npm run build
       # Verify the fresh standalone trace confines native Pi SDK modules offline.
       - run: node scripts/smoke-provider-runtime.mjs
       # Verify the standalone pg-boss worker module graph loads cleanly under tsx.
       - run: node node_modules/tsx/dist/cli.mjs --import tsx -e "import('./scripts/worker.ts').then((m) => { if (typeof m.runQueuedJob !== 'function') process.exit(1); console.log('[ci] worker module OK'); })"
+      - name: Package production release artifact
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        run: |
+          tar czf /tmp/learn-release.tar.gz \
+            --exclude='.next/cache' \
+            --exclude='.next/standalone' \
+            .next \
+            core-plugins \
+            public \
+            src \
+            app \
+            components \
+            lib \
+            db \
+            deploy \
+            scripts \
+            config.ts \
+            core-plugins.json \
+            instrumentation.ts \
+            next.config.ts \
+            package.json \
+            package-lock.json \
+            proxy.ts \
+            tsconfig.json
+          ls -lh /tmp/learn-release.tar.gz
+      - name: Upload release artifact
+        if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        uses: actions/upload-artifact@v4
+        with:
+          name: learn-release
+          path: /tmp/learn-release.tar.gz
+          retention-days: 1
+
+  deploy:
+    name: Deploy to learn.upsolve.study
+    if: github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    needs: [static, unit, integration, build-linux]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    concurrency:
+      group: deploy-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v4
+        with:
+          name: learn-release
+          path: /tmp
+      - name: Upload artifact and run atomic deploy on VPS
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$VPS_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$VPS_HOST" >> ~/.ssh/known_hosts
+          scp -i ~/.ssh/deploy_key -o BatchMode=yes /tmp/learn-release.tar.gz "${VPS_USER}@${VPS_HOST}:/tmp/learn-release.tar.gz"
+          ssh -i ~/.ssh/deploy_key -o BatchMode=yes "${VPS_USER}@${VPS_HOST}" 'bash -s -- /tmp/learn-release.tar.gz' < deploy/deploy-release.sh
