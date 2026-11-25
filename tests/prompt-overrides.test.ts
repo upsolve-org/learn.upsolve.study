@@ -274,17 +274,19 @@ describe("composeInstructions: override honoring + the byte-identical source pat
 	});
 
 	it("an enabled override swaps in; switch off or file absent composes source", () => {
+		const teaching = fs.readFileSync("src/agent/prompts/teacher/20-teaching.md", "utf8").trim();
+		const planning = fs.readFileSync("src/agent/prompts/teacher/10-planning.md", "utf8").trim();
 		promptOverrides.writeOverride("teacher/20-teaching.md", "CUSTOM TEACHING LOOP");
 		try {
 			const on = composeInstructions("teacher", { "teacher/20-teaching.md": true });
 			assert.ok(on.includes("CUSTOM TEACHING LOOP"), "override composes when switch on");
-			assert.ok(!on.includes("# Teach — one step at a time"), "source text is replaced");
+			assert.ok(!on.includes(teaching), "source text is replaced");
 			// switch off → source default (the file stays on disk)
 			const off = composeInstructions("teacher", {});
-			assert.ok(off.includes("# Teach — one step at a time"), "source composes when switch off");
+			assert.ok(off.includes(teaching), "source composes when switch off");
 			// switch on for a segment with NO file → source (enabled needs both)
 			const noFile = composeInstructions("teacher", { "teacher/10-planning.md": true });
-			assert.ok(noFile.includes("# Planning"), "file absent → source default");
+			assert.ok(noFile.includes(planning), "file absent → source default");
 		} finally {
 			promptOverrides.deleteOverride("teacher/20-teaching.md");
 		}
