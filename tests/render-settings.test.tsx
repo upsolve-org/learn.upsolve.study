@@ -60,7 +60,6 @@ describe("SettingsDialog (the designed surface, SSR)", () => {
 			["appearance", "Appearance", "palette"],
 			["graph", "Graph", "waypoints"],
 			["keyboard", "Keyboard", "keyboard"],
-			["general", "General", "settings"],
 			["core-plugins", "Core plugins", "plug"],
 			["plugins", "Community plugins", "puzzle"],
 		];
@@ -85,17 +84,17 @@ describe("SettingsDialog (the designed surface, SSR)", () => {
 		}
 	});
 
-	it("the dialog frame: role=dialog + the ✕ + the six-section nav, Providers first and General last", () => {
+	it("the dialog frame: role=dialog + the ✕ + the five-section nav, Providers first and General removed", () => {
 		const html = renderToStaticMarkup(<SettingsDialogBody onClose={() => {}} />);
 		assert.ok(html.includes('role="dialog"'));
 		assert.ok(html.includes('aria-modal="true"'));
 		assert.ok(html.includes('aria-label="Close settings"'));
-		for (const id of ["general", "keys", "agent", "appearance", "graph", "keyboard"]) {
+		for (const id of ["keys", "agent", "appearance", "graph", "keyboard"]) {
 			assert.ok(html.includes(`data-testid="settings-nav-${id}"`), id);
 		}
+		assert.ok(!html.includes('data-testid="settings-nav-general"'));
 		// Providers is the first landing section; internal keys deep links survive.
 		assert.ok(tagOf(html, "settings-nav-keys").includes('aria-current="true"'));
-		assert.ok(html.indexOf('data-testid="settings-nav-keys"') < html.indexOf('data-testid="settings-nav-general"'));
 		assert.ok(tagOf(html, "settings-nav-keyboard").includes('aria-current="false"'));
 		// Fetches don't run under SSR — the loading state IS the SSR state.
 		assert.ok(html.includes("Loading settings…"));

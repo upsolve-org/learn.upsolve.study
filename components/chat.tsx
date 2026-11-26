@@ -25,7 +25,8 @@ import {
 	ConversationScrollButton,
 } from "@/components/ai-elements/conversation";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
-import { PathText } from "@/components/file-path-chip";
+import { FileViewerContext, PathText } from "@/components/file-path-chip";
+import { FileViewerPanel } from "@/components/file-viewer-panel";
 import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
 import { Shimmer } from "@/components/ai-elements/shimmer";
 import { BrailleSpinner } from "@/components/braille-spinner";
@@ -50,6 +51,7 @@ import { JobsContext } from "@/components/jobs-context";
 import { StatsBar } from "@/components/stats-bar";
 import { useServerEvent, useServerResync } from "@/components/server-events";
 import {
+	collectUploadedAttachments,
 	isProviderKeyRefusal,
 	firstSourceTextParts,
 	cliContextWindowOf,
@@ -67,7 +69,7 @@ import { PlanBlock, PlanPopup, latestTree } from "@/components/plan-block";
 import { PlanMarginalia, planExists } from "@/components/plan-window";
 import { MermaidOverlay, SessionMermaidContext, type SessionImage } from "@/components/session-overlay";
 import { AbortTurnDialog, type AbortMode } from "@/components/abort-turn-dialog";
-import { ArrowRightIcon, DumbbellIcon, MessageCircleQuestionIcon, WaypointsIcon } from "lucide-react";
+import { ArrowRightIcon, DumbbellIcon, FileTextIcon, MessageCircleQuestionIcon, WaypointsIcon } from "lucide-react";
 import type { PlanBlockData } from "@/src/core";
 import { QuestionDock } from "@/components/question-dock";
 import { PluginQuestionDock } from "./plugin-question-dock";
@@ -1042,6 +1044,26 @@ export function Chat({
 	sideThreadOpenRef.current = sideThread.state !== null;
 	const closeSideThreadRef = useRef(closeSideThread);
 	closeSideThreadRef.current = closeSideThread;
+
+	// Right-side uploaded file viewer (PDF / text / Markdown side-by-side with chat).
+	const uploadedFiles = useMemo(() => {
+		const texts: string[] = [];
+		for (const message of messages) {
+			for (const part of message.parts) {
+				if (part.type === "text" && part.text) texts.push(part.text);
+			}
+		}
+		return collectUploadedAttachments(texts);
+	}, [messages]);
+	const [openFilePath, setOpenFilePath] = useState<string | null>(null);
+	const openFileViewer = useCallback((path: string) => {
+		if (sideThread.state?.mode === "panel") closeSideThreadRef.current();
+		setOpenFilePath(path);
+	}, [sideThread.state?.mode]);
+	const fileViewerActions = useMemo(() => ({ openFile: openFileViewer }), [openFileViewer]);
+	useEffect(() => {
+		if (sideThread.state?.mode === "panel") setOpenFilePath(null);
+	}, [sideThread.state?.mode]);
 	const toggleQuestionThread = useCallback(() => {
 		if (!isInteractionScopeEligible(sessionFindScopeRef.current, controller)) return;
 		if (sideThreadOpenRef.current) closeSideThreadRef.current();
@@ -1610,6 +1632,7 @@ export function Chat({
 		>
 		<JobsContext.Provider value={jobs}>
 		<CitationActionsContext.Provider value={citationActions}>
+		<FileViewerContext.Provider value={fileViewerActions}>
 		{/* The session surface: the transcript column (header + scroller) and
 		    the plan-tree panel as full-height SIBLINGS — the panel spans top to
 		    bottom exactly like the left sidebar, and the header (name + phase
@@ -1699,6 +1722,30 @@ export function Chat({
 					{/* The plan chip (owner, plan-placement round): session-level
 					    structure beside the phase chip — access to the full-DAG popup
 					    at every width; the marginalia is the wide-screen glance view. */}
+					{uploadedFiles.length > 0 && (
+						<Hint label={openFilePath ? "Hide uploaded file" : "View uploaded file"} side="bottom">
+							<button
+								type="button"
+								data-testid="files-chip"
+								onClick={(e) => {
+									blurAfterPointerClick(e);
+									if (openFilePath) {
+										setOpenFilePath(null);
+									} else if (uploadedFiles[0]) {
+										openFileViewer(uploadedFiles[0].path);
+									}
+								}}
+								className={`lh-no-drag flex shrink-0 cursor-pointer items-center gap-1.5 rounded-full border px-2 py-0.5 text-xs font-medium uppercase tracking-wide transition-colors ${
+									openFilePath
+										? "border-primary/60 bg-primary/10 text-foreground"
+										: "border-border/80 text-muted-foreground hover:border-border hover:text-foreground"
+								}`}
+							>
+								<FileTextIcon className="size-3.5 text-primary" aria-hidden />
+								{uploadedFiles.length > 1 ? `Files (${uploadedFiles.length})` : "File"}
+							</button>
+						</Hint>
+					)}
 					{planTree && (
 						<Hint label="Open the full plan" side="bottom">
 <button
@@ -2167,6 +2214,14 @@ export function Chat({
 						/>
 					</SideThreadPanel>
 				)}
+				{openFilePath && uploadedFiles.length > 0 && (
+					<FileViewerPanel
+						files={uploadedFiles}
+						activePath={openFilePath}
+						onSelect={setOpenFilePath}
+						onClose={() => setOpenFilePath(null)}
+					/>
+				)}
 
 				{sideThread.state?.mode === "popover" && (
 					<SideThreadPopover
@@ -2221,6 +2276,7 @@ export function Chat({
 				</div>
 			</div>
 		</div>
+		</FileViewerContext.Provider>
 		</CitationActionsContext.Provider>
 		</JobsContext.Provider>
 		</SessionMermaidContext.Provider>

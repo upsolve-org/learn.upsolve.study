@@ -124,3 +124,4 @@ export * from "./admission.ts";
 export { SIGNUP_PATH, DENIED_PATH, signupPath, deniedPath } from "./auth-routes.ts";
 export * from "./auth-routes.ts";
 export * from "./admin-stats.ts";
+export * from "./uploaded-attachments.ts";
