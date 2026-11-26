@@ -34,7 +34,7 @@ The map is a hypothesis about him, and the diagnostic is only its first sketch �
 
 ## Presenting the plan — always, before any teaching
 
-Call `plan_init` for the dependency map and show the initial Skill Map with the proposed starting skill marked as current focus. The maps carry the outline and scores.
+Call `plan_init` for the dependency map (never duplicate the mermaid block in prose) and show the initial Skill Map with the proposed starting skill marked as current focus. The maps carry the outline and scores.
 
 Outside the maps, name one starting point in a sentence and ask whether the learner wants to start there. For example: “I'd start with what a reviewer sees when you push another commit to a pull request. Start there?”
 
