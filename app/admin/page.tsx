@@ -40,7 +40,7 @@ export default async function AdminPage({ searchParams }: { searchParams: Promis
 	const issuedEmails = new Set(issued.map((c) => c.email));
 
 	return (
-		<main className="mx-auto flex min-h-dvh w-full max-w-5xl flex-col gap-6 px-6 py-10">
+		<main className="mx-auto flex min-h-dvh w-full max-w-7xl flex-col gap-6 px-6 py-10">
 			<header className="flex flex-col gap-3">
 				<Link href="/" className="text-muted-foreground text-xs underline underline-offset-2">
 					← Back to the app

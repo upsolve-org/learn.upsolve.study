@@ -9,7 +9,7 @@ type SortDir = "asc" | "desc";
 const COLUMNS: readonly { key: SortKey; label: string; align: "left" | "right" }[] = [
 	{ key: "email", label: "User", align: "left" },
 	{ key: "sessions", label: "Sessions", align: "right" },
-	{ key: "total", label: "Total tokens", align: "right" },
+	{ key: "total", label: "Total", align: "right" },
 	{ key: "input", label: "Input", align: "right" },
 	{ key: "output", label: "Output", align: "right" },
 	{ key: "cacheRead", label: "Cache read", align: "right" },
@@ -84,13 +84,13 @@ export function AdminStatsTable({ users }: { users: AdminUserStatsRow[] }) {
 		<div className="overflow-x-auto rounded-lg border border-border">
 			<table className="w-full border-collapse text-sm">
 				<thead>
-					<tr className="border-b border-border bg-card/50 text-xs uppercase tracking-wider text-muted-foreground">
+					<tr className="border-b border-border bg-card/50 text-xs uppercase tracking-wide text-muted-foreground">
 						{COLUMNS.map((col) => {
 							const active = sortKey === col.key;
 							return (
 								<th
 									key={col.key}
-									className={`px-3 py-2.5 font-medium whitespace-nowrap ${col.align === "right" ? "text-right" : "text-left"}`}
+									className={`px-2.5 py-2 font-medium whitespace-nowrap ${col.align === "right" ? "text-right" : "text-left"}`}
 									aria-sort={active ? (sortDir === "asc" ? "ascending" : "descending") : "none"}
 								>
 									<button
@@ -109,34 +109,34 @@ export function AdminStatsTable({ users }: { users: AdminUserStatsRow[] }) {
 				<tbody className="divide-y divide-border">
 					{sorted.map((row) => (
 						<tr key={row.userId ?? row.email} className="hover:bg-card/40 transition-colors">
-							<td className="px-3 py-2.5 max-w-[240px] truncate" title={row.email}>
+							<td className="px-2.5 py-2 max-w-[220px] truncate" title={row.email}>
 								<span>{row.email}</span>
 							</td>
-							<td className="px-3 py-2.5 text-right font-mono tabular-nums" title={row.sessions.toLocaleString("en-US")}>
+							<td className="px-2.5 py-2 text-right font-mono tabular-nums" title={row.sessions.toLocaleString("en-US")}>
 								{row.sessions.toLocaleString("en-US")}
 							</td>
 							<td
-								className="px-3 py-2.5 text-right font-mono font-medium tabular-nums"
+								className="px-2.5 py-2 text-right font-mono font-medium tabular-nums"
 								title={row.tokens.total.toLocaleString("en-US")}
 							>
 								{formatCompactNumber(row.tokens.total)}
 							</td>
-							<td className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground" title={row.tokens.input.toLocaleString("en-US")}>
+							<td className="px-2.5 py-2 text-right font-mono tabular-nums text-muted-foreground" title={row.tokens.input.toLocaleString("en-US")}>
 								{formatCompactNumber(row.tokens.input)}
 							</td>
-							<td className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground" title={row.tokens.output.toLocaleString("en-US")}>
+							<td className="px-2.5 py-2 text-right font-mono tabular-nums text-muted-foreground" title={row.tokens.output.toLocaleString("en-US")}>
 								{formatCompactNumber(row.tokens.output)}
 							</td>
-							<td className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground" title={row.tokens.cacheRead.toLocaleString("en-US")}>
+							<td className="px-2.5 py-2 text-right font-mono tabular-nums text-muted-foreground" title={row.tokens.cacheRead.toLocaleString("en-US")}>
 								{formatCompactNumber(row.tokens.cacheRead)}
 							</td>
-							<td className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground" title={row.tokens.cacheWrite.toLocaleString("en-US")}>
+							<td className="px-2.5 py-2 text-right font-mono tabular-nums text-muted-foreground" title={row.tokens.cacheWrite.toLocaleString("en-US")}>
 								{formatCompactNumber(row.tokens.cacheWrite)}
 							</td>
-							<td className="px-3 py-2.5 text-right font-mono tabular-nums text-muted-foreground" title={row.tokens.reasoning.toLocaleString("en-US")}>
+							<td className="px-2.5 py-2 text-right font-mono tabular-nums text-muted-foreground" title={row.tokens.reasoning.toLocaleString("en-US")}>
 								{formatCompactNumber(row.tokens.reasoning)}
 							</td>
-							<td className="px-3 py-2.5 text-right font-mono text-xs tabular-nums whitespace-nowrap text-muted-foreground">
+							<td className="px-2.5 py-2 text-right font-mono text-xs tabular-nums whitespace-nowrap text-muted-foreground">
 								{formatLastActive(row.lastActiveAt)}
 							</td>
 						</tr>
