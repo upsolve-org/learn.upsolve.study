@@ -158,6 +158,40 @@ export async function resolveUploadedAttachmentPath(rawPath: string, now = Date.
 	}
 }
 
+export interface LoadedAttachment {
+	bytes: Uint8Array;
+	filename: string;
+	contentType: string;
+	kind: "pdf" | "text";
+}
+
+/**
+ * Read one uploaded attachment belonging to the current owner. Reuses
+ * `resolveUploadedAttachmentPath` so tenant isolation, path containment, and
+ * 7-day TTL are enforced identically to pdf-reader.
+ */
+export async function readUploadedAttachment(
+	id: string,
+	filename: string,
+	now = Date.now(),
+): Promise<LoadedAttachment | null> {
+	const resolved = await resolveUploadedAttachmentPath(`/uploads/${id}/${filename}`, now);
+	if (!resolved) return null;
+	try {
+		const buf = await fs.readFile(resolved);
+		const bytes = new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+		const pdf = isPdfBytes(bytes);
+		return {
+			bytes,
+			filename: path.basename(resolved),
+			contentType: pdf ? "application/pdf" : "text/plain; charset=utf-8",
+			kind: pdf ? "pdf" : "text",
+		};
+	} catch {
+		return null;
+	}
+}
+
 /**
  * Delete uploaded attachments older than ATTACHMENT_TTL_MS (7 days) from the
  * current owner's upload directory (and from Postgres/RustFS uploaded_blobs

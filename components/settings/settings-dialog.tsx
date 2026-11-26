@@ -34,7 +34,7 @@ import {
 	type RefObject,
 } from "react";
 import { useFormStatus } from "react-dom";
-import { BotIcon, KeyIcon, KeyboardIcon, LogOutIcon, PaletteIcon, PlugIcon, PuzzleIcon, SettingsIcon, WaypointsIcon, type LucideIcon } from "lucide-react";
+import { BotIcon, KeyIcon, KeyboardIcon, LogOutIcon, PaletteIcon, PlugIcon, PuzzleIcon, WaypointsIcon, type LucideIcon } from "lucide-react";
 import { HostDialog } from "@/components/host-dialog";
 import { useInteractionLayers, type CloseOutcome } from "@/components/interaction-layers";
 import {
@@ -70,7 +70,6 @@ const SECTIONS = [
 	{ id: "appearance", label: "Appearance", icon: PaletteIcon },
 	{ id: "graph", label: "Graph", icon: WaypointsIcon },
 	{ id: "keyboard", label: "Keyboard", icon: KeyboardIcon, hint: "Stored on this device" },
-	{ id: "general", label: "General", icon: SettingsIcon },
 ] as const;
 type SectionId = (typeof SECTIONS)[number]["id"] | "plugins" | "core-plugins" | `plugin:${string}`;
 
@@ -517,14 +516,6 @@ export function SettingsDialogBody({
 									<KeyboardSection />
 								</SettingsSection>
 							)}
-							{active === "general" && (
-								<SettingsSection
-									title="General"
-									testid="section-general"
-								>
-									<GeneralSection />
-								</SettingsSection>
-							)}
 						</div>
 					)}
 				</div>
@@ -532,29 +523,6 @@ export function SettingsDialogBody({
 		</div>
 	);
 	return renderFrame ? renderFrame(frame) : frame;
-}
-
-/** General: the build identity. Update rows went with the desktop shell;
- *  what is left is the version and the link to its release notes. */
-function GeneralSection() {
-	const version = process.env.LH_VERSION;
-	const homepage = process.env.LH_HOMEPAGE;
-	return (
-		<div data-testid="row-version" className="flex flex-col gap-1 text-sm">
-			{version ? (
-				<>
-					<span>Version {version}</span>
-					{homepage && (
-						<a className="text-xs text-muted-foreground underline" href={`${homepage}/releases/tag/v${version}`}>
-							Release notes
-						</a>
-					)}
-				</>
-			) : (
-				<span>Version unknown</span>
-			)}
-		</div>
-	);
 }
 
 function LogoutButton() {
