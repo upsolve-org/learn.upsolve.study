@@ -22,11 +22,18 @@ function request(names: string[]) {
 it("route keeps three-worker batching, request positions and mixed per-file outcomes/config details", async () => {
 	let active = 0;
 	let peak = 0;
+	let started = 0;
+	let releaseBatch!: () => void;
+	const batchFull = new Promise<void>((resolve) => { releaseBatch = resolve; });
+	let releaseSlow!: () => void;
+	const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
 	const outcomeOf: Record<string, NotesImportError["outcome"]> = { "failed.md": "failed", "partial.md": "partial", "aborted.md": "aborted", "busy.md": "busy" };
 	extraction.importNotes = async ({ filePath }) => {
-		active++; peak = Math.max(peak, active);
+		active++; peak = Math.max(peak, active); started++;
+		if (peak >= 3) releaseBatch();
+		if (started >= 4) releaseSlow();
 		try {
-			await new Promise((resolve) => setTimeout(resolve, filePath === "slow.md" ? 25 : 1));
+			await (filePath === "slow.md" ? slowGate : batchFull);
 			if (filePath === "models.md") throw new ModelsNotConfiguredError(["cheap"]);
 			if (filePath === "key.md") throw new ProviderKeyMissingError("openai", ["cheap"]);
 			if (filePath in outcomeOf) throw new NotesImportError(outcomeOf[filePath]!, { nodes: 2, chains: 1 }, `synthetic ${filePath}`);
