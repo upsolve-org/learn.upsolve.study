@@ -109,3 +109,4 @@ export {
 	type ProvisionResult,
 	type AccountProvisioner,
 } from "../core/hosted-credentials.ts";
+export { getAdminStats } from "./admin-stats.ts";

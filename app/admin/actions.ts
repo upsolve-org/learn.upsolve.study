@@ -24,7 +24,7 @@ export async function approveAction(formData: FormData): Promise<void> {
 	if (typeof email !== "string") return;
 	const result = await approveAccount(email);
 	revalidatePath("/admin");
-	if (!result.ok) redirect("/admin?error=provisioning");
+	if (!result.ok) redirect("/admin?tab=requests&error=provisioning");
 }
 
 export async function retryEmailAction(formData: FormData): Promise<void> {
